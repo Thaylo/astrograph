@@ -63,7 +63,7 @@ Add `.mcp.json` to your project root:
 }
 ```
 
-The codebase is auto-indexed when the Docker container starts. Then:
+The codebase is auto-indexed at startup and re-indexed on file changes. Then:
 1. `astrograph_analyze()` - Find existing duplicates
 2. Use `astrograph_write` / `astrograph_edit` - They'll block duplicates automatically
 
