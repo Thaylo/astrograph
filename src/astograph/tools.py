@@ -41,6 +41,37 @@ if TYPE_CHECKING:
 PERSISTENCE_DIR = ".metadata_astograph"
 
 
+def _resolve_docker_path(path: str) -> str:
+    """
+    Resolve path, handling Docker volume mounts.
+
+    When running in Docker with a volume mount like `-v ".:/workspace"`,
+    the host paths don't exist inside the container. This function detects
+    that situation and translates paths like:
+      /Users/.../project/src → /workspace/src
+    """
+    # If path exists, use it directly
+    if os.path.exists(path):
+        return path
+
+    # Check if we're in a Docker container with /workspace mount
+    workspace = Path("/workspace")
+    dockerenv = Path("/.dockerenv")
+    if not (workspace.exists() and dockerenv.exists()):
+        return path
+
+    # Try to find a matching subpath under /workspace
+    # For /Users/foo/project/src, try: /workspace/foo/project/src, /workspace/project/src, /workspace/src
+    parts = Path(path).parts
+    for i in range(len(parts)):
+        candidate = workspace.joinpath(*parts[i:])
+        if candidate.exists():
+            return str(candidate)
+
+    # Fallback to /workspace if nothing else matches
+    return str(workspace)
+
+
 def _get_persistence_path(indexed_path: str) -> Path:
     """Get metadata directory for an indexed codebase."""
     base = Path(indexed_path).resolve()
@@ -419,6 +450,9 @@ class CodeStructureTools:
             recursive: Search directories recursively (default True)
             incremental: Only re-index changed files (default True, 98% faster)
         """
+        # Resolve path (handles Docker volume mounts)
+        path = _resolve_docker_path(path)
+
         if not os.path.exists(path):
             return ToolResult(f"Error: Path does not exist: {path}")
 
@@ -1006,6 +1040,10 @@ class CodeStructureTools:
 
         # Proactive notification of invalidated suppressions
         prefix = self._check_invalidated_suppressions()
+
+        # Resolve path (handles Docker volume mounts)
+        if path is not None:
+            path = _resolve_docker_path(path)
 
         report = self.index.get_staleness_report(path)
 
