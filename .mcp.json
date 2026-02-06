@@ -4,8 +4,7 @@
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
-        "-v", ".:/workspace:ro",
-        "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
+        "-v", ".:/workspace",
         "thaylo/astrograph"
       ]
     }
