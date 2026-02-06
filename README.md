@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Server-purple)](https://modelcontextprotocol.io)
 
-Detect structural code duplication in **Python** codebases using AST graph isomorphism. An MCP server that helps AI assistants avoid creating duplicate code by checking if similar structures already exist.
+Detect structural code duplication in **Python** codebases using AST graph isomorphism. An MCP server that identifies duplicate code structures before they proliferate.
 
 > **Note:** Currently supports Python only. Additional language support planned for future releases.
 
@@ -23,13 +23,13 @@ docker build -t astograph .
 
 ## Problem
 
-AI coding assistants have limited context windows. As they generate code across a large codebase, they often:
+Large codebases accumulate structural duplication over time:
 
-1. Cannot see all existing code
-2. Create structural duplicates
-3. Inflate the codebase
-4. Which further limits context visibility
-5. Leading to more duplication (a vicious cycle)
+1. Developers can't remember every existing implementation
+2. Similar patterns get reimplemented independently
+3. The codebase inflates with redundant code
+4. Maintenance burden increases
+5. Bugs fixed in one place remain in duplicates
 
 ## Solution
 
@@ -53,6 +53,17 @@ ASTograph provides 9 tools to break this cycle:
 2. **Weisfeiler-Leman Hashing**: Graphs are hashed using WL algorithm for O(1) lookup of potential matches
 3. **Structural Fingerprinting**: Quick filtering based on node counts, label histograms, degree sequences
 4. **Full Isomorphism Verification**: NetworkX VF2 algorithm for definitive structural equivalence check
+
+## Event-Driven Mode
+
+The Docker image runs in **event-driven mode** by default, providing:
+
+- **In-memory index**: Always hot, no cold starts
+- **File watching**: Automatic re-indexing when files change
+- **Analysis cache**: Pre-computed results for instant `analyze()` responses
+- **SQLite persistence**: Survives container restarts within a session
+
+This is enabled via `ASTOGRAPH_EVENT_DRIVEN=1` in the Dockerfile. The `--tmpfs` mount in the configuration examples provides a writable space for the index while keeping your source code read-only.
 
 ## Installation
 
