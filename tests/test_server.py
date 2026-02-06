@@ -14,37 +14,35 @@ from astrograph.tools import (
     CodeStructureTools,
     ToolResult,
     _get_persistence_path,
-    _resolve_docker_path,
 )
 
 
 class TestResolveDockerPath:
-    """Tests for Docker path resolution."""
+    """Tests for Docker path resolution via CodeStructureTools._resolve_path."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
 
     def test_existing_path_unchanged(self):
         """Existing paths are returned unchanged."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = _resolve_docker_path(tmpdir)
+            result = self.tools._resolve_path(tmpdir)
             assert result == tmpdir
 
     def test_nonexistent_path_no_docker(self):
         """Non-existent paths without Docker environment return unchanged."""
         path = "/nonexistent/host/path/to/project"
-        # When /.dockerenv doesn't exist, path returns unchanged
-        result = _resolve_docker_path(path)
-        # Should return unchanged since we're not in Docker
+        result = self.tools._resolve_path(path)
         assert result == path
 
     def test_docker_path_subpath_matching(self):
         """Test that subpaths are checked when resolving Docker paths."""
-        # This tests the logic flow - actual Docker resolution is tested in e2e tests
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a structure: tmpdir/src
             src_dir = os.path.join(tmpdir, "src")
             os.makedirs(src_dir)
 
-            # When path exists, it should return unchanged
-            result = _resolve_docker_path(src_dir)
+            result = self.tools._resolve_path(src_dir)
             assert result == src_dir
 
     def test_persistence_path_normal(self):
@@ -66,8 +64,6 @@ class TestResolveDockerPath:
             return original_exists(self)
 
         with patch.object(Path, "exists", mock_exists):
-            # When indexing a subdirectory of /workspace in Docker,
-            # persistence should go to /workspace root
             result = _get_persistence_path("/workspace/src")
             assert str(result) == "/workspace/.metadata_astrograph"
 
@@ -77,14 +73,12 @@ class TestResolveDockerPath:
 
         def mock_exists(self):
             path_str = str(self)
-            # Simulate Docker env where /workspace/src exists
             if path_str in ("/workspace", "/.dockerenv", "/workspace/src"):
                 return True
             return original_exists(self)
 
         with patch.object(Path, "exists", mock_exists):
-            # Non-existent host path should resolve to /workspace/src
-            result = _resolve_docker_path("/Users/foo/bar/src")
+            result = self.tools._resolve_path("/Users/foo/bar/src")
             assert result == "/workspace/src"
 
     def test_resolve_docker_path_new_file(self):
@@ -105,8 +99,7 @@ class TestResolveDockerPath:
             return original_is_dir(self)
 
         with patch.object(Path, "exists", mock_exists), patch.object(Path, "is_dir", mock_is_dir):
-            # New file: parent /workspace/src exists but new_file.py doesn't
-            result = _resolve_docker_path("/Users/foo/bar/src/new_file.py")
+            result = self.tools._resolve_path("/Users/foo/bar/src/new_file.py")
             assert result == "/workspace/src/new_file.py"
 
     def test_resolve_docker_path_new_file_at_root(self):
@@ -127,9 +120,49 @@ class TestResolveDockerPath:
             return original_is_dir(self)
 
         with patch.object(Path, "exists", mock_exists), patch.object(Path, "is_dir", mock_is_dir):
-            # New file at workspace root
-            result = _resolve_docker_path("/Users/foo/bar/test.py")
+            result = self.tools._resolve_path("/Users/foo/bar/test.py")
             assert result == "/workspace/test.py"
+
+    def test_learned_root_mapping_speeds_up_subsequent_calls(self):
+        """After first successful resolution, host_root is cached and reused."""
+        original_exists = Path.exists
+
+        def mock_exists(self):
+            path_str = str(self)
+            if path_str in ("/workspace", "/.dockerenv", "/workspace/src"):
+                return True
+            return original_exists(self)
+
+        with patch.object(Path, "exists", mock_exists):
+            # First call learns the mapping
+            result1 = self.tools._resolve_path("/Users/foo/project/src")
+            assert result1 == "/workspace/src"
+            assert self.tools._host_root == "/Users/foo/project"
+
+            # Second call uses cached mapping — no need for filesystem lookups
+            result2 = self.tools._resolve_path("/Users/foo/project/lib/utils.py")
+            assert result2 == "/workspace/lib/utils.py"
+
+    def test_error_messages_do_not_contain_workspace(self):
+        """User-facing error messages should not leak /workspace paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create and index a real file so _require_index passes
+            py_file = os.path.join(tmpdir, "existing.py")
+            with open(py_file, "w") as f:
+                f.write("def foo(): pass\n")
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+
+            # Edit a file that exists — old_string won't be found
+            result = tools.edit(py_file, "nonexistent_string_xyz", "new")
+            assert "/workspace" not in result.text
+            assert "old_string not found" in result.text
+
+            # Write to a path that can't be created
+            result = tools.write("/nonexistent/dir/file.py", "def bar(): pass")
+            assert "/workspace" not in result.text
+            assert "Failed to write" in result.text
 
 
 def _get_analyze_details(tools, result):
@@ -1721,46 +1754,45 @@ def transform_data(data):
             tools.close()
 
 
-class TestNonBlockingDuringIndexing:
-    """Tests that tools return immediately during background indexing."""
+class TestBlockingDuringIndexing:
+    """Tests that tools wait for background indexing then proceed."""
 
-    def test_analyze_returns_indexing_message(self):
-        """Analyze should return indexing status instead of blocking."""
+    def test_analyze_waits_for_background_index(self):
+        """Analyze should wait for background indexing, then report no index."""
         tools = CodeStructureTools()
         tools._bg_index_done.clear()
+
+        # Simulate background finishing shortly
+        def finish_bg():
+            time.sleep(0.05)
+            tools._bg_index_done.set()
+
+        import threading
+
+        threading.Thread(target=finish_bg, daemon=True).start()
         result = tools.analyze()
-        assert "indexing" in result.text.lower()
-        assert "Try again" in result.text
-        tools._bg_index_done.set()
+        # After waiting, empty index → "No code indexed"
+        assert "No code indexed" in result.text
 
-    def test_check_returns_indexing_message(self):
-        """Check should return indexing status instead of blocking."""
+    def test_check_waits_for_background_index(self):
+        """Check should wait for background indexing, then report no index."""
         tools = CodeStructureTools()
         tools._bg_index_done.clear()
+
+        def finish_bg():
+            time.sleep(0.05)
+            tools._bg_index_done.set()
+
+        import threading
+
+        threading.Thread(target=finish_bg, daemon=True).start()
         result = tools.check("def foo(): pass")
-        assert "indexing" in result.text.lower()
-        tools._bg_index_done.set()
+        assert "No code indexed" in result.text
 
-    def test_suppress_returns_indexing_message(self):
-        """Suppress should return indexing status instead of blocking."""
+    def test_status_returns_immediately_during_indexing(self):
+        """Status should return indexing state without blocking."""
         tools = CodeStructureTools()
         tools._bg_index_done.clear()
-        result = tools.suppress("some_hash")
-        assert "indexing" in result.text.lower()
-        tools._bg_index_done.set()
-
-    def test_write_returns_indexing_message(self):
-        """Write should return indexing status instead of blocking."""
-        tools = CodeStructureTools()
-        tools._bg_index_done.clear()
-        result = tools.write("/tmp/test.py", "def foo(): pass")
-        assert "indexing" in result.text.lower()
-        tools._bg_index_done.set()
-
-    def test_edit_returns_indexing_message(self):
-        """Edit should return indexing status instead of blocking."""
-        tools = CodeStructureTools()
-        tools._bg_index_done.clear()
-        result = tools.edit("/tmp/test.py", "old", "new")
-        assert "indexing" in result.text.lower()
+        result = tools.status()
+        assert "indexing" in result.text
         tools._bg_index_done.set()

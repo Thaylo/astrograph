@@ -38,45 +38,6 @@ logger = logging.getLogger(__name__)
 PERSISTENCE_DIR = ".metadata_astrograph"
 
 
-def _resolve_docker_path(path: str) -> str:
-    """
-    Resolve path, handling Docker volume mounts.
-
-    When running in Docker with a volume mount like `-v ".:/workspace"`,
-    the host paths don't exist inside the container. This function detects
-    that situation and translates paths like:
-      /Users/.../project/src → /workspace/src
-    """
-    # If path exists, use it directly
-    if os.path.exists(path):
-        return path
-
-    # Check if we're in a Docker container with /workspace mount
-    workspace = Path("/workspace")
-    dockerenv = Path("/.dockerenv")
-    if not (workspace.exists() and dockerenv.exists()):
-        return path
-
-    # Try to find a matching subpath under /workspace
-    # For /Users/foo/project/src, try: /workspace/foo/project/src, /workspace/project/src, /workspace/src
-    p = Path(path)
-    parts = p.parts
-    for i in range(len(parts)):
-        candidate = workspace.joinpath(*parts[i:])
-        if candidate.exists():
-            return str(candidate)
-
-    # For new files: resolve the parent directory and append the filename
-    parent_parts = p.parent.parts
-    for i in range(len(parent_parts)):
-        candidate = workspace.joinpath(*parent_parts[i:])
-        if candidate.is_dir():
-            return str(candidate / p.name)
-
-    # Fallback: assume file is directly under /workspace
-    return str(workspace / p.name)
-
-
 def _get_persistence_path(indexed_path: str) -> Path:
     """
     Get metadata directory for an indexed codebase.
@@ -148,6 +109,7 @@ class CodeStructureTools:
             self.index = self._event_driven_index.index
 
         self._last_indexed_path: str | None = None
+        self._host_root: str | None = None
 
         # Background indexing state
         self._bg_index_thread: threading.Thread | None = None
@@ -185,16 +147,13 @@ class CodeStructureTools:
             logger.warning("Background indexing timed out after %ds", timeout)
 
     def _require_index(self) -> ToolResult | None:
-        """Return status if server is not ready, None if ready.
+        """Wait for background indexing to finish, then check readiness.
 
-        Returns immediately during background indexing instead of blocking.
+        Blocks until background indexing completes (with timeout) so that
+        tools like analyze/write/edit get a usable index.  The ``status``
+        tool has its own non-blocking path for quick readiness checks.
         """
-        if not self._bg_index_done.is_set():
-            entry_count = len(self.index.entries)
-            return ToolResult(
-                f"Server is indexing the codebase ({entry_count} entries so far). "
-                "Try again in a few seconds."
-            )
+        self._wait_for_background_index()
         if not self.index.entries:
             return ToolResult("No code indexed. Call index_codebase first.")
         return None
@@ -264,11 +223,17 @@ class CodeStructureTools:
             path: Path to file or directory to index
             recursive: Search directories recursively (default True)
         """
+        # Wait for background indexing to avoid racing on shared state
+        # (skip if we ARE the background thread to avoid deadlock)
+        if threading.current_thread() is not self._bg_index_thread:
+            self._wait_for_background_index()
+
         # Resolve path (handles Docker volume mounts)
-        path = _resolve_docker_path(path)
+        original_path = path
+        path = self._resolve_path(path)
 
         if not os.path.exists(path):
-            return ToolResult(f"Error: Path does not exist: {path}")
+            return ToolResult(f"Error: Path does not exist: {original_path}")
 
         # Store resolved path for auto-reindex and relative path computation
         self._last_indexed_path = str(Path(path).resolve())
@@ -337,6 +302,60 @@ class CodeStructureTools:
             return str(Path(file_path).relative_to(root))
         except ValueError:
             return file_path
+
+    def _resolve_path(self, path: str) -> str:
+        """
+        Resolve path, handling Docker volume mounts.
+
+        When running in Docker with a volume mount like ``-v ".:/workspace"``,
+        host paths don't exist inside the container.  This translates paths like
+        ``/Users/.../project/src`` → ``/workspace/src``.
+
+        Learns the host↔container root mapping on first successful match
+        so future resolutions use fast prefix replacement.
+        """
+        if os.path.exists(path):
+            return path
+
+        # Fast path: use learned mapping
+        if self._host_root is not None and path.startswith(self._host_root):
+            remainder = path[len(self._host_root) :]
+            if remainder.startswith("/"):
+                remainder = remainder[1:]
+            return str(Path("/workspace") / remainder) if remainder else "/workspace"
+
+        workspace = Path("/workspace")
+        dockerenv = Path("/.dockerenv")
+        if not (workspace.exists() and dockerenv.exists()):
+            return path
+
+        p = Path(path)
+        # Skip leading '/' to avoid joinpath resetting to root
+        parts = tuple(pt for pt in p.parts if pt != "/")
+
+        for i in range(len(parts)):
+            candidate = workspace.joinpath(*parts[i:])
+            if candidate.exists():
+                self._learn_host_root(path, str(candidate))
+                return str(candidate)
+
+        # For new files: resolve the parent directory and append the filename
+        parent_parts = tuple(pt for pt in p.parent.parts if pt != "/")
+        for i in range(len(parent_parts)):
+            candidate = workspace.joinpath(*parent_parts[i:])
+            if candidate.is_dir():
+                resolved = str(candidate / p.name)
+                self._learn_host_root(str(p.parent), str(candidate))
+                return resolved
+
+        # Fallback: assume file is directly under /workspace
+        return str(workspace / p.name)
+
+    def _learn_host_root(self, host_path: str, container_path: str) -> None:
+        """Derive and store the host↔container root mapping."""
+        suffix = container_path[len("/workspace") :]
+        if suffix and host_path.endswith(suffix):
+            self._host_root = host_path[: -len(suffix)]
 
     def _format_locations(self, entries: list[IndexEntry]) -> list[str]:
         """Format entry locations for output."""
@@ -841,7 +860,7 @@ class CodeStructureTools:
 
         # Resolve path (handles Docker volume mounts)
         if path is not None:
-            path = _resolve_docker_path(path)
+            path = self._resolve_path(path)
 
         report = self.index.get_staleness_report(path)
 
@@ -925,7 +944,7 @@ class CodeStructureTools:
         if error := self._require_index():
             return error
 
-        file_path = _resolve_docker_path(file_path)
+        file_path = self._resolve_path(file_path)
 
         # Infer language from file extension
         plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
@@ -965,16 +984,20 @@ class CodeStructureTools:
         action = "Created" if is_new else "Wrote"
         rel_file = self._relative_path(file_path)
         summary = f"{action} {rel_file} ({line_count} lines)"
-        return self._write_file(file_path, content, summary=warning + summary)
+        return self._write_file(
+            file_path, content, summary=warning + summary, display_path=rel_file
+        )
 
-    def _write_file(self, file_path: str, content: str, summary: str = "") -> ToolResult:
+    def _write_file(
+        self, file_path: str, content: str, summary: str = "", display_path: str = ""
+    ) -> ToolResult:
         """Write content to a file with error handling."""
         try:
             with open(file_path, "w") as f:
                 f.write(content)
-            return ToolResult(summary or f"Wrote {file_path}")
+            return ToolResult(summary or f"Wrote {display_path or file_path}")
         except OSError as e:
-            return ToolResult(f"Failed to write {file_path}: {e}")
+            return ToolResult(f"Failed to write {display_path or file_path}: {e}")
 
     def edit(self, file_path: str, old_string: str, new_string: str) -> ToolResult:
         """
@@ -986,7 +1009,8 @@ class CodeStructureTools:
         if error := self._require_index():
             return error
 
-        file_path = _resolve_docker_path(file_path)
+        file_path = self._resolve_path(file_path)
+        display_path = self._relative_path(file_path)
 
         # Infer language from file extension
         plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
@@ -1033,30 +1057,31 @@ class CodeStructureTools:
             with open(file_path) as f:
                 content = f.read()
         except FileNotFoundError:
-            return ToolResult(f"File not found: {file_path}")
+            return ToolResult(f"File not found: {display_path}")
         except OSError as e:
-            return ToolResult(f"Failed to read {file_path}: {e}")
+            return ToolResult(f"Failed to read {display_path}: {e}")
 
         # Check that old_string exists
         if old_string not in content:
             return ToolResult(
-                f"Edit failed: old_string not found in {file_path}. The file may have changed."
+                f"Edit failed: old_string not found in {display_path}. The file may have changed."
             )
 
         # Check for uniqueness
         count = content.count(old_string)
         if count > 1:
             return ToolResult(
-                f"Edit failed: old_string appears {count} times in {file_path}. "
+                f"Edit failed: old_string appears {count} times in {display_path}. "
                 f"Provide more context to make it unique."
             )
 
         # Apply the edit
         new_content = content.replace(old_string, new_string, 1)
-        rel_file = self._relative_path(file_path)
-        diff = self._format_edit_diff(content, old_string, new_string, rel_file)
+        diff = self._format_edit_diff(content, old_string, new_string, display_path)
 
-        return self._write_file(file_path, new_content, summary=warning + diff)
+        return self._write_file(
+            file_path, new_content, summary=warning + diff, display_path=display_path
+        )
 
     def call_tool(self, name: str, arguments: dict) -> ToolResult:
         """Dispatch a tool call by name."""

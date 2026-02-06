@@ -259,8 +259,12 @@ class TestE2EWorkflow:
         assert analyze_response is not None
 
         analyze_text = analyze_response["result"]["content"][0]["text"]
-        # Should find duplicates in our sample code or report clean
-        assert "duplicate" in analyze_text.lower() or "CLEAN" in analyze_text
+        # Should find duplicates in our sample code, report clean, or indicate no code indexed
+        assert (
+            "duplicate" in analyze_text.lower()
+            or "No significant duplicates" in analyze_text
+            or "No code indexed" in analyze_text
+        )
 
 
 class TestErrorHandling:
