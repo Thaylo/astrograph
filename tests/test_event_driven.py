@@ -565,6 +565,39 @@ class TestWatcherSkipPaths:
         assert _should_skip_path(Path("/project/venv/lib/python3.10/site.py"))
         assert not _should_skip_path(Path("/project/src/module.py"))
 
+    def test_skip_venv_variants(self):
+        """Test that numbered/prefixed venv directories are skipped."""
+        from pathlib import Path
+
+        from astrograph.watcher import _should_skip_path
+
+        # Standard venv names
+        assert _should_skip_path(Path("/project/venv/lib/site.py"))
+        assert _should_skip_path(Path("/project/.venv/lib/site.py"))
+
+        # Numbered variants (e.g., .venv311, venv3.11)
+        assert _should_skip_path(Path("/project/.venv311/lib/site.py"))
+        assert _should_skip_path(Path("/project/venv3.11/lib/site.py"))
+        assert _should_skip_path(Path("/project/.venv3.12/lib/site.py"))
+
+        # env variants
+        assert _should_skip_path(Path("/project/env/lib/site.py"))
+        assert _should_skip_path(Path("/project/.env/lib/site.py"))
+        assert _should_skip_path(Path("/project/env3.11/lib/site.py"))
+
+        # virtualenv variants
+        assert _should_skip_path(Path("/project/virtualenv/lib/site.py"))
+        assert _should_skip_path(Path("/project/.virtualenv/lib/site.py"))
+
+        # Should NOT skip: directories that happen to start with prefix + alpha
+        assert not _should_skip_path(Path("/project/vendor/src/module.py"))
+        assert not _should_skip_path(Path("/project/environment/src/module.py"))
+        assert not _should_skip_path(Path("/project/envoy/src/module.py"))
+
+        # Should NOT skip: normal project dirs
+        assert not _should_skip_path(Path("/project/src/module.py"))
+        assert not _should_skip_path(Path("/project/backend/api/views.py"))
+
 
 class TestAnalysisCacheDirectly:
     """Tests for AnalysisCache class."""

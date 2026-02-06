@@ -35,8 +35,6 @@ _SKIP_DIRS = frozenset(
     [
         "__pycache__",
         ".git",
-        "venv",
-        ".venv",
         "node_modules",
         ".tox",
         ".mypy_cache",
@@ -49,10 +47,35 @@ _SKIP_DIRS = frozenset(
     ]
 )
 
+# Prefixes that indicate virtual environment directories.
+# Matches: venv, .venv, venv311, .venv3.11, env, .env, virtualenv, etc.
+_VENV_PREFIXES = ("venv", ".venv", "env", ".env", "virtualenv", ".virtualenv")
+
+
+def _is_skip_dir(dirname: str) -> bool:
+    """Check if a directory name should be skipped during indexing.
+
+    Uses exact match for known dirs, prefix match for venv variants,
+    and suffix match for .egg-info.
+    """
+    if dirname in _SKIP_DIRS:
+        return True
+    if dirname.endswith(".egg-info"):
+        return True
+    # Prefix-based venv detection: catches .venv311, venv3.11, env_project, etc.
+    lower = dirname.lower()
+    for prefix in _VENV_PREFIXES:
+        if lower == prefix or (
+            lower.startswith(prefix)
+            and (len(lower) == len(prefix) or not lower[len(prefix)].isalpha())
+        ):
+            return True
+    return False
+
 
 def _should_skip_path(path_parts: tuple[str, ...]) -> bool:
     """Check if a path should be skipped based on directory names."""
-    return any(p in _SKIP_DIRS or p.endswith(".egg-info") for p in path_parts)
+    return any(_is_skip_dir(p) for p in path_parts)
 
 
 def _walk_python_files(root: str, recursive: bool = True) -> Iterator[str]:
@@ -64,7 +87,7 @@ def _walk_python_files(root: str, recursive: bool = True) -> Iterator[str]:
     """
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune skip dirs IN-PLACE so os.walk never descends into them
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.endswith(".egg-info")]
+        dirnames[:] = [d for d in dirnames if not _is_skip_dir(d)]
         for fname in filenames:
             if fname.endswith(".py"):
                 yield os.path.join(dirpath, fname)

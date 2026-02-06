@@ -11,6 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .index import _is_skip_dir
+
 try:
     from watchdog.events import FileSystemEvent, FileSystemEventHandler
     from watchdog.observers import Observer
@@ -24,29 +26,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Directories to skip when watching
-SKIP_DIRS = frozenset(
-    [
-        "__pycache__",
-        ".git",
-        "venv",
-        ".venv",
-        "node_modules",
-        ".tox",
-        ".metadata_astrograph",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        "dist",
-        "build",
-        ".eggs",
-    ]
-)
-
 
 def _should_skip_path(path: Path) -> bool:
     """Check if a path should be skipped based on directory names."""
-    return any(part in SKIP_DIRS or part.endswith(".egg-info") for part in path.parts)
+    return any(_is_skip_dir(part) for part in path.parts)
 
 
 class DebouncedCallback:

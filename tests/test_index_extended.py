@@ -172,6 +172,41 @@ class TestCodeStructureIndexExtended:
         file_paths = [e.code_unit.file_path for e in entries]
         assert not any("__pycache__" in fp for fp in file_paths)
 
+    def test_index_directory_skips_venv_variants(self, tmp_path):
+        """Test that numbered/prefixed venv directories are skipped."""
+        index = CodeStructureIndex()
+
+        # Create venv variant directories with Python files
+        for venv_dir in [".venv311", "venv3.11", ".env", "env", "virtualenv"]:
+            d = tmp_path / venv_dir / "lib"
+            d.mkdir(parents=True)
+            (d / "site.py").write_text("def f(): pass")
+
+        # Create a normal project file
+        (tmp_path / "app.py").write_text("def main(): pass")
+
+        entries = index.index_directory(str(tmp_path))
+
+        # Should only index app.py
+        file_paths = [e.code_unit.file_path for e in entries]
+        assert len(file_paths) == 1
+        assert file_paths[0].endswith("app.py")
+
+    def test_index_directory_does_not_skip_similar_names(self, tmp_path):
+        """Directories like 'vendor', 'environment', 'envoy' should NOT be skipped."""
+        index = CodeStructureIndex()
+
+        for normal_dir in ["vendor", "environment", "envoy"]:
+            d = tmp_path / normal_dir
+            d.mkdir()
+            (d / "module.py").write_text("def f(): pass")
+
+        entries = index.index_directory(str(tmp_path))
+
+        # All three should be indexed
+        file_paths = [e.code_unit.file_path for e in entries]
+        assert len(file_paths) == 3
+
     def test_index_directory_non_recursive(self, tmp_path):
         index = CodeStructureIndex()
 
