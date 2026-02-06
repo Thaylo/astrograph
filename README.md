@@ -5,88 +5,33 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Server-purple)](https://modelcontextprotocol.io)
 
-Detect structural code duplication in **Python** codebases using AST graph isomorphism. An MCP server that identifies duplicate code structures before they proliferate.
+**Stop writing code that already exists in your codebase.**
 
-> **Note:** Currently supports Python only. Additional language support planned for future releases.
+ASTograph is an MCP server that detects when you're about to create duplicate code - and blocks it before it happens.
 
-## Quick Start (Docker)
+## See It In Action
 
-**30 seconds to get started:**
-
-```bash
-# Pull from Docker Hub
-docker pull thaylo/astograph
-
-# Or build locally
-docker build -t astograph .
+You write this:
+```python
+def add_numbers(x, y):
+    return x + y
 ```
 
-## Problem
+ASTograph says:
+```
+BLOCKED: Identical code exists at src/math.py:calculate_sum (lines 5-8).
+Reuse the existing implementation instead.
+```
 
-Large codebases accumulate structural duplication over time:
+It catches duplicates even when variable names differ - because it compares **code structure**, not text.
 
-1. Developers can't remember every existing implementation
-2. Similar patterns get reimplemented independently
-3. The codebase inflates with redundant code
-4. Maintenance burden increases
-5. Bugs fixed in one place remain in duplicates
-
-## Solution
-
-ASTograph provides 11 tools to break this cycle:
-
-| Tool | Purpose |
-|------|---------|
-| `astograph_index` | Index a Python codebase's structural patterns |
-| `astograph_analyze` | Find existing structural duplicates |
-| `astograph_check` | Check before creating new code |
-| `astograph_compare` | Compare two code snippets |
-| `astograph_write` | Write file with duplicate detection (blocks if duplicate exists) |
-| `astograph_edit` | Edit file with duplicate detection (blocks if duplicate exists) |
-| `astograph_suppress` | Mute acceptable duplicates |
-| `astograph_unsuppress` | Restore suppressed duplicates |
-| `astograph_suppress_idiomatic` | Suppress all idiomatic patterns at once |
-| `astograph_list_suppressions` | View suppressed hashes |
-| `astograph_check_staleness` | Check if index needs refresh |
-
-## How It Works
-
-1. **AST to Graph**: Python code is parsed into AST, then converted to a labeled directed graph
-2. **Weisfeiler-Leman Hashing**: Graphs are hashed using WL algorithm for O(1) lookup of potential matches
-3. **Structural Fingerprinting**: Quick filtering based on node counts, label histograms, degree sequences
-4. **Full Isomorphism Verification**: NetworkX VF2 algorithm for definitive structural equivalence check
-
-## Event-Driven Mode
-
-The Docker image runs in **event-driven mode** by default, providing:
-
-- **In-memory index**: Always hot, no cold starts
-- **File watching**: Automatic re-indexing when files change
-- **Analysis cache**: Pre-computed results for instant `analyze()` responses
-
-This is enabled via `ASTOGRAPH_EVENT_DRIVEN=1` in the Dockerfile. The `--tmpfs` mount in the configuration examples provides a writable space for the index while keeping your source code read-only.
-
-> **Note:** The index is ephemeral with the default Docker configuration. For persistent indexing across sessions, replace `"--tmpfs", "/workspace/.metadata_astograph"` with `"-v", "astograph-data:/workspace/.metadata_astograph"` to use a named volume.
-
-## Installation
-
-### Option 1: Docker (Recommended)
+## Quick Start
 
 ```bash
 docker pull thaylo/astograph
 ```
 
-### Option 2: Local Python
-
-```bash
-pip install -e .
-```
-
-## MCP Configuration Examples
-
-### Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -104,9 +49,137 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-### Generic MCP Client (Project-level)
+Then in Claude:
+1. `astograph_index(path="/workspace")` - Index your codebase
+2. `astograph_analyze()` - Find existing duplicates
+3. Use `astograph_write` / `astograph_edit` - They'll block duplicates automatically
 
-Add to `.mcp.json` in your project root:
+## The Problem
+
+Large codebases accumulate duplicate code because:
+- Developers can't remember every function they wrote 6 months ago
+- Similar patterns get reimplemented independently
+- Copy-paste spreads bugs across multiple locations
+
+## Key Tools
+
+| Tool | What It Does |
+|------|--------------|
+| `astograph_index` | Scans your codebase (run this first) |
+| `astograph_analyze` | Lists all duplicates found |
+| `astograph_write` | Writes files, blocks if duplicate exists |
+| `astograph_edit` | Edits files, blocks if new code is a duplicate |
+| `astograph_check` | Check if code exists before writing |
+
+[See all 11 tools →](#tool-reference)
+
+## Works With
+
+- **Claude Desktop** - Full MCP integration
+- **Cursor** - Via MCP settings
+- **Any MCP Client** - Standard protocol
+
+> **Note:** Python only for now. More languages coming.
+
+---
+
+## Tool Reference
+
+<details>
+<summary><strong>Click to expand full tool documentation</strong></summary>
+
+### astograph_index
+
+Index a Python codebase for structural analysis. **Call this first.**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `path` | string | Yes | - | Path to directory or file to index |
+| `incremental` | boolean | No | `true` | Only re-index changed files |
+
+### astograph_analyze
+
+Find duplicates in the indexed codebase.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `thorough` | boolean | No | `true` | Show all duplicates including small ones |
+
+### astograph_check
+
+Check if similar code exists **before** creating new code.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `code` | string | Yes | - | Python code to check |
+
+Returns: `STOP` (duplicate), `CAUTION` (similar), or `NOTE` (partial match)
+
+### astograph_compare
+
+Compare two code snippets for structural equivalence.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `code1` | string | Yes | - | First Python code snippet |
+| `code2` | string | Yes | - | Second Python code snippet |
+
+### astograph_write
+
+Write Python code to a file with automatic duplicate detection.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `file_path` | string | Yes | - | Absolute path to the file to write |
+| `content` | string | Yes | - | The Python code content to write |
+
+Returns: `BLOCKED` if duplicate exists, `WARNING + Success` if similar, or `Success`
+
+### astograph_edit
+
+Edit a Python file with automatic duplicate detection.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `file_path` | string | Yes | - | Absolute path to the file to edit |
+| `old_string` | string | Yes | - | The exact text to replace |
+| `new_string` | string | Yes | - | The replacement Python code |
+
+### astograph_suppress
+
+Suppress a duplicate group by its WL hash (shown in analyze output).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `wl_hash` | string | Yes | - | WL hash from analyze output |
+
+### astograph_unsuppress
+
+Remove suppression from a hash.
+
+### astograph_suppress_idiomatic
+
+Suppress all idiomatic patterns (guard clauses, test setup, etc.) in one call.
+
+### astograph_list_suppressions
+
+List all currently suppressed hashes.
+
+### astograph_check_staleness
+
+Check if the index needs to be refreshed.
+
+</details>
+
+---
+
+## Configuration Examples
+
+<details>
+<summary><strong>Claude Desktop</strong></summary>
+
+macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -115,7 +188,7 @@ Add to `.mcp.json` in your project root:
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
-        "-v", ".:/workspace:ro",
+        "-v", "/path/to/your/project:/workspace:ro",
         "--tmpfs", "/workspace/.metadata_astograph",
         "thaylo/astograph"
       ]
@@ -124,9 +197,10 @@ Add to `.mcp.json` in your project root:
 }
 ```
 
-### Cursor
+</details>
 
-Add to Cursor's MCP settings:
+<details>
+<summary><strong>Cursor</strong></summary>
 
 ```json
 {
@@ -144,7 +218,35 @@ Add to Cursor's MCP settings:
 }
 ```
 
-### Local Python (without Docker)
+</details>
+
+<details>
+<summary><strong>Project-level (.mcp.json)</strong></summary>
+
+```json
+{
+  "mcpServers": {
+    "astograph": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-v", ".:/workspace:ro",
+        "--tmpfs", "/workspace/.metadata_astograph",
+        "thaylo/astograph"
+      ]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Local Python (without Docker)</strong></summary>
+
+```bash
+pip install -e .
+```
 
 ```json
 {
@@ -158,187 +260,38 @@ Add to Cursor's MCP settings:
 }
 ```
 
-**Note:** When using Docker, paths are relative to `/workspace` (the mounted directory). Use `astograph_index` with path `/workspace` to index the current project.
+</details>
 
-## Tool Reference
+---
 
-### astograph_index
+## How It Works
 
-Index a Python codebase for structural analysis. **Call this first.**
+<details>
+<summary><strong>Technical details</strong></summary>
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `path` | string | Yes | - | Path to directory or file to index |
-| `incremental` | boolean | No | `true` | Only re-index changed files (98% faster) |
-
-```
-astograph_index(path="/workspace")
-```
-
-### astograph_analyze
-
-Find duplicates in the indexed codebase.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `thorough` | boolean | No | `true` | Show all duplicates including small ones (~2+ lines) |
-
-Returns:
-- **Exact duplicates**: Structurally identical code (verified via graph isomorphism)
-- **Block duplicates**: Duplicate for/while/if/try/with blocks
-- **Pattern duplicates**: Same structure, different operators
-
-### astograph_check
-
-Check if similar code exists **before** creating new code.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `code` | string | Yes | - | Python code to check |
-
-Returns:
-- **STOP**: Identical code exists - reuse it
-- **CAUTION**: Very similar code exists - consider reusing
-- **NOTE**: Partially similar code - review for potential reuse
-
-### astograph_compare
-
-Compare two code snippets for structural equivalence.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `code1` | string | Yes | - | First Python code snippet |
-| `code2` | string | Yes | - | Second Python code snippet |
-
-Returns:
-- **EQUIVALENT**: Structurally identical
-- **SIMILAR**: Compatible structure but not identical
-- **DIFFERENT**: Structurally different
-
-### astograph_suppress
-
-Suppress a duplicate group by its WL hash.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `wl_hash` | string | Yes | - | WL hash from analyze output |
-
-### astograph_unsuppress
-
-Remove suppression from a hash.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `wl_hash` | string | Yes | - | WL hash to unsuppress |
-
-### astograph_suppress_idiomatic
-
-Suppress all idiomatic patterns (guard clauses, test setup, etc.) in one call. No parameters.
-
-### astograph_list_suppressions
-
-List all currently suppressed hashes. No parameters.
-
-### astograph_write
-
-Write Python code to a file with automatic duplicate detection. **Blocks** if identical code exists elsewhere; **warns** on high similarity but proceeds.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `file_path` | string | Yes | - | Absolute path to the file to write |
-| `content` | string | Yes | - | The Python code content to write |
-
-Returns:
-- **BLOCKED**: Identical code exists at location - file not written
-- **WARNING + Success**: Similar code exists - file written with warning
-- **Success**: No duplicates - file written
-
-### astograph_edit
-
-Edit a Python file with automatic duplicate detection. **Blocks** if the new code is identical to existing code elsewhere; **warns** on high similarity but proceeds.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `file_path` | string | Yes | - | Absolute path to the file to edit |
-| `old_string` | string | Yes | - | The exact text to replace (must be unique in file) |
-| `new_string` | string | Yes | - | The replacement Python code |
-
-Returns:
-- **BLOCKED**: Identical code exists at location - edit not applied
-- **WARNING + Success**: Similar code exists - edit applied with warning
-- **Success**: No duplicates - edit applied
-
-### astograph_check_staleness
-
-Check if the index is stale (files changed since indexing).
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `path` | string | No | - | Root path to check for new files |
-
-## Workflow Example
+1. **AST to Graph**: Python code is parsed into AST, then converted to a labeled directed graph
+2. **Weisfeiler-Leman Hashing**: Graphs are hashed using WL algorithm for O(1) lookup
+3. **Structural Fingerprinting**: Quick filtering based on node counts and degree sequences
+4. **Full Isomorphism Verification**: NetworkX VF2 algorithm confirms structural equivalence
 
 ```
-1. astograph_index(path="/workspace")     # Index the codebase
-2. astograph_analyze()                     # Find duplicates
-3. For each duplicate:
-   - Refactor to eliminate duplication, OR
-   - astograph_suppress(wl_hash="...")     # If intentional
-4. astograph_index(incremental=True)       # Re-index after changes
-5. astograph_analyze()                     # Verify: 0 pending duplicates
+Python Source → AST Parser → Graph → WL Hash → Index Lookup → Match
 ```
 
-## Code Example
+The Docker image runs in **event-driven mode** by default:
+- In-memory index (no cold starts)
+- File watching (auto re-index on changes)
+- Analysis cache (instant responses)
 
-These two functions are **structurally identical** (isomorphic ASTs):
+</details>
 
-```python
-def calculate(a, b):
-    return a + b
-
-def sum_values(x, y):
-    return x + y
-```
-
-ASTograph detects these as duplicates because they have the same AST structure, even though variable names differ.
-
-## Architecture
-
-```
-+------------------+     +-------------------+
-| Python Source    |---->| AST Parser        |
-+------------------+     +---------+---------+
-                                   |
-                         +---------v---------+
-                         | Graph Conversion  |
-                         | (labeled DiGraph) |
-                         +---------+---------+
-                                   |
-              +--------------------+--------------------+
-              |                    |                    |
-    +---------v-----+    +---------v-----+    +--------v--------+
-    | WL Hash       |    | Fingerprint   |    | Hierarchy       |
-    | (fast lookup) |    | (filtering)   |    | Hashes          |
-    +---------------+    +---------------+    +-----------------+
-              |                    |                    |
-              +--------------------+--------------------+
-                                   |
-                         +---------v---------+
-                         | Index Storage     |
-                         | (hash buckets)    |
-                         +-------------------+
-```
+---
 
 ## Development
 
 ```bash
-# Install with dev dependencies
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/ -q
-
-# Build Docker image
 docker build -t astograph .
 ```
 
