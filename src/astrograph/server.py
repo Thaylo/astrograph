@@ -5,8 +5,8 @@ Auto-indexes the codebase at startup and maintains the index via file watching.
 
 Provides 8 tools (all prefixed with astrograph_):
 - astrograph_analyze: Find duplicates and similar patterns
-- astrograph_write: Write Python file with duplicate detection (blocks if duplicate exists)
-- astrograph_edit: Edit Python file with duplicate detection (blocks if duplicate exists)
+- astrograph_write: Write file with duplicate detection (blocks if duplicate exists)
+- astrograph_edit: Edit file with duplicate detection (blocks if duplicate exists)
 - astrograph_suppress: Suppress a duplicate group by hash
 - astrograph_suppress_batch: Suppress multiple duplicates by hash list
 - astrograph_unsuppress: Remove suppression from a hash
@@ -53,7 +53,7 @@ def create_server() -> Server:
         return [
             Tool(
                 name="astrograph_analyze",
-                description="Find duplicate Python code (verified via graph isomorphism).",
+                description="Find duplicate code (verified via graph isomorphism).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -143,7 +143,7 @@ def create_server() -> Server:
                         },
                         "content": {
                             "type": "string",
-                            "description": "Python code to write",
+                            "description": "Code to write",
                         },
                     },
                     "required": ["file_path", "content"],

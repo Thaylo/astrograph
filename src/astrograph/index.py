@@ -29,23 +29,7 @@ from .canonical_hash import (
     structural_fingerprint,
     weisfeiler_leman_hash,
 )
-
-# Directories to skip when indexing (never entered during os.walk)
-_SKIP_DIRS = frozenset(
-    [
-        "__pycache__",
-        ".git",
-        "node_modules",
-        ".tox",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".pytest_cache",
-        "dist",
-        "build",
-        ".metadata_astrograph",
-        ".eggs",
-    ]
-)
+from .languages.registry import LanguageRegistry
 
 # Prefixes that indicate virtual environment directories.
 # Matches: venv, .venv, venv311, .venv3.11, env, .env, virtualenv, etc.
@@ -55,10 +39,10 @@ _VENV_PREFIXES = ("venv", ".venv", "env", ".env", "virtualenv", ".virtualenv")
 def _is_skip_dir(dirname: str) -> bool:
     """Check if a directory name should be skipped during indexing.
 
-    Uses exact match for known dirs, prefix match for venv variants,
+    Uses registry skip dirs for exact match, prefix match for venv variants,
     and suffix match for .egg-info.
     """
-    if dirname in _SKIP_DIRS:
+    if dirname in LanguageRegistry.get().skip_dirs:
         return True
     if dirname.endswith(".egg-info"):
         return True
@@ -78,21 +62,31 @@ def _should_skip_path(path_parts: tuple[str, ...]) -> bool:
     return any(_is_skip_dir(p) for p in path_parts)
 
 
-def _walk_python_files(root: str, recursive: bool = True) -> Iterator[str]:
-    """Walk a directory yielding .py file paths, pruning skip dirs early.
+def _walk_source_files(root: str, recursive: bool = True) -> Iterator[str]:
+    """Walk a directory yielding source file paths, pruning skip dirs early.
 
     Uses os.walk with in-place directory pruning so we never enter
     __pycache__, .venv, node_modules, etc. This is O(project files)
     instead of O(all files including virtualenvs).
+
+    Yields files matching any registered language plugin's extensions.
     """
+    registry = LanguageRegistry.get()
+    supported_exts = registry.supported_extensions
+
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune skip dirs IN-PLACE so os.walk never descends into them
         dirnames[:] = [d for d in dirnames if not _is_skip_dir(d)]
         for fname in filenames:
-            if fname.endswith(".py"):
+            ext = os.path.splitext(fname)[1]
+            if ext in supported_exts:
                 yield os.path.join(dirpath, fname)
         if not recursive:
             break  # Only process top-level directory
+
+
+# Backward compatibility alias
+_walk_python_files = _walk_source_files
 
 
 @dataclass
@@ -117,6 +111,7 @@ class IndexEntry:
             "line_end": self.code_unit.line_end,
             "unit_type": self.code_unit.unit_type,
             "parent_name": self.code_unit.parent_name,
+            "language": self.code_unit.language,
         }
         # Include block-specific fields if present
         if self.code_unit.block_type:
@@ -166,6 +161,7 @@ class IndexEntry:
             block_type=cu_data.get("block_type"),
             nesting_depth=cu_data.get("nesting_depth", 0),
             parent_block_name=cu_data.get("parent_block_name"),
+            language=cu_data.get("language", "python"),
         )
         return cls(
             id=data["id"],
@@ -392,7 +388,12 @@ class CodeStructureIndex:
         hierarchy = list(compute_hierarchy_hash(ast_graph.graph))
 
         # Compute pattern hash with normalized operators
-        pattern_graph = ast_to_graph(ast_graph.code_unit.code, normalize_ops=True)
+        language = ast_graph.code_unit.language
+        plugin = LanguageRegistry.get().get_plugin(language)
+        if plugin is not None:
+            pattern_graph = plugin.source_to_graph(ast_graph.code_unit.code, normalize_ops=True)
+        else:
+            pattern_graph = ast_to_graph(ast_graph.code_unit.code, normalize_ops=True)
         pattern_hash = weisfeiler_leman_hash(pattern_graph)
 
         entry = IndexEntry(
@@ -452,7 +453,10 @@ class CodeStructureIndex:
             max_block_depth: Maximum nesting depth for block extraction (default 3)
         """
         path = Path(file_path)
-        if not path.exists() or path.suffix != ".py":
+        if not path.exists():
+            return []
+        plugin = LanguageRegistry.get().get_plugin_for_file(path)
+        if plugin is None:
             return []
 
         try:
@@ -643,9 +647,10 @@ class CodeStructureIndex:
         # Remove file metadata
         self.file_metadata.pop(file_path, None)
 
-    def find_exact_matches(self, code: str) -> list[IndexEntry]:
+    def find_exact_matches(self, code: str, language: str = "python") -> list[IndexEntry]:
         """Find entries with the same WL hash as the given code."""
-        graph = ast_to_graph(code)
+        plugin = LanguageRegistry.get().get_plugin(language)
+        graph = plugin.source_to_graph(code) if plugin else ast_to_graph(code)
         wl_hash = weisfeiler_leman_hash(graph)
 
         if wl_hash not in self.hash_buckets:
@@ -653,14 +658,17 @@ class CodeStructureIndex:
 
         return [self.entries[eid] for eid in self.hash_buckets[wl_hash] if eid in self.entries]
 
-    def find_similar(self, code: str, min_node_count: int = 5) -> list[SimilarityResult]:
+    def find_similar(
+        self, code: str, min_node_count: int = 5, language: str = "python"
+    ) -> list[SimilarityResult]:
         """
         Find entries similar to the given code.
 
         Returns results sorted by similarity (exact > high > partial).
         Uses fingerprint index for O(1) candidate lookup instead of O(n) linear scan.
         """
-        graph = ast_to_graph(code)
+        plugin = LanguageRegistry.get().get_plugin(language)
+        graph = plugin.source_to_graph(code) if plugin else ast_to_graph(code)
         if graph.number_of_nodes() < min_node_count:
             return []
 
@@ -935,19 +943,24 @@ class CodeStructureIndex:
         self, wl_hash: str, info: SuppressionInfo, deleted_files: list[str]
     ) -> bool:
         """Check if the suppressed code structure still exists in source files."""
-        from .ast_to_graph import code_unit_to_ast_graph, extract_code_units
         from .canonical_hash import weisfeiler_leman_hash
+
+        registry = LanguageRegistry.get()
 
         for file_path in info.source_files:
             if file_path in deleted_files or not os.path.exists(file_path):
+                continue
+
+            plugin = registry.get_plugin_for_file(file_path)
+            if plugin is None:
                 continue
 
             try:
                 with open(file_path, encoding="utf-8") as f:
                     source = f.read()
 
-                for unit in extract_code_units(source, file_path, include_blocks=True):
-                    ast_graph = code_unit_to_ast_graph(unit)
+                for unit in plugin.extract_code_units(source, file_path, include_blocks=True):
+                    ast_graph = plugin.code_unit_to_ast_graph(unit)
                     if weisfeiler_leman_hash(ast_graph.graph) == wl_hash:
                         return True
             except (OSError, SyntaxError, UnicodeDecodeError):
@@ -1030,8 +1043,20 @@ class CodeStructureIndex:
 
     def verify_isomorphism(self, entry1: IndexEntry, entry2: IndexEntry) -> bool:
         """Verify that two entries are truly isomorphic using full graph isomorphism."""
-        g1 = ast_to_graph(entry1.code_unit.code)
-        g2 = ast_to_graph(entry2.code_unit.code)
+        registry = LanguageRegistry.get()
+        plugin1 = registry.get_plugin(entry1.code_unit.language)
+        plugin2 = registry.get_plugin(entry2.code_unit.language)
+
+        g1 = (
+            plugin1.source_to_graph(entry1.code_unit.code)
+            if plugin1
+            else ast_to_graph(entry1.code_unit.code)
+        )
+        g2 = (
+            plugin2.source_to_graph(entry2.code_unit.code)
+            if plugin2
+            else ast_to_graph(entry2.code_unit.code)
+        )
 
         return bool(nx.is_isomorphic(g1, g2, node_match=node_match))
 

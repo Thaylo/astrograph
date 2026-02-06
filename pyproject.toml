@@ -12,6 +12,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+treesitter = [
+    "tree-sitter>=0.23.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
@@ -51,12 +54,19 @@ addopts = "-v --tb=short --no-header --cov=src/astrograph --cov-report= --cov-fa
 [tool.coverage.run]
 source = ["src/astrograph"]
 branch = true
+omit = [
+    "src/astrograph/languages/_treesitter_base.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
+    "^\\s*\\.\\.\\.$",
+]
+omit = [
+    "src/astrograph/languages/_treesitter_base.py",
 ]
 # AI-friendly: minimal output
 show_missing = false
@@ -74,7 +84,7 @@ strict_optional = true
 files = ["src/astrograph"]
 
 [[tool.mypy.overrides]]
-module = ["networkx.*", "mcp.*", "xxhash.*", "watchdog.*"]
+module = ["networkx.*", "mcp.*", "xxhash.*", "watchdog.*", "tree_sitter.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
@@ -99,6 +109,10 @@ ignore = [
     "E501",   # line too long (handled by formatter)
     "B008",   # function call in default argument
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Base class with overridable methods — unused args are intentional
+"src/astrograph/languages/_treesitter_base.py" = ["ARG002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["astrograph"]

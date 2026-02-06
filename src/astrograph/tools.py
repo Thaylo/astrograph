@@ -12,6 +12,8 @@ Supports two modes:
 - Event-driven mode: SQLite persistence, file watching, pre-computed analysis
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import threading
@@ -27,6 +29,7 @@ from .canonical_hash import (
     weisfeiler_leman_hash,
 )
 from .index import CodeStructureIndex, DuplicateGroup, IndexEntry
+from .languages.registry import LanguageRegistry
 
 if TYPE_CHECKING:
     from .event_driven import EventDrivenIndex
@@ -133,7 +136,7 @@ class CodeStructureTools:
                          SQLite persistence. Provides instant analyze() responses.
         """
         self._event_driven_mode = event_driven
-        self._event_driven_index: "EventDrivenIndex | None" = None
+        self._event_driven_index: EventDrivenIndex | None = None
 
         if event_driven:
             # Lazy import to avoid circular dependency
@@ -619,10 +622,11 @@ class CodeStructureTools:
 
         return ToolResult(prefix + "No similar code found. Safe to proceed.")
 
-    def compare(self, code1: str, code2: str) -> ToolResult:
+    def compare(self, code1: str, code2: str, language: str = "python") -> ToolResult:
         """Compare two code snippets for structural equivalence."""
-        g1 = ast_to_graph(code1)
-        g2 = ast_to_graph(code2)
+        plugin = LanguageRegistry.get().get_plugin(language)
+        g1 = plugin.source_to_graph(code1) if plugin else ast_to_graph(code1)
+        g2 = plugin.source_to_graph(code2) if plugin else ast_to_graph(code2)
 
         h1 = weisfeiler_leman_hash(g1)
         h2 = weisfeiler_leman_hash(g2)
@@ -830,7 +834,7 @@ class CodeStructureTools:
 
     def write(self, file_path: str, content: str) -> ToolResult:
         """
-        Write Python code to a file with automatic duplicate detection.
+        Write code to a file with automatic duplicate detection.
 
         Checks the content for structural duplicates before writing.
         Blocks if identical code exists elsewhere; warns on high similarity.
@@ -838,8 +842,14 @@ class CodeStructureTools:
         if error := self._require_index():
             return error
 
+        # Infer language from file extension
+        plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
+        language = plugin.language_id if plugin else "python"
+
         # Check for duplicates in the content
-        results = self.index.find_similar(content, min_node_count=self._CHECK_MIN_STATEMENTS)
+        results = self.index.find_similar(
+            content, min_node_count=self._CHECK_MIN_STATEMENTS, language=language
+        )
 
         exact = [r for r in results if r.similarity_type == "exact"]
         high = [r for r in results if r.similarity_type == "high"]
@@ -880,7 +890,7 @@ class CodeStructureTools:
 
     def edit(self, file_path: str, old_string: str, new_string: str) -> ToolResult:
         """
-        Edit a Python file with automatic duplicate detection.
+        Edit a file with automatic duplicate detection.
 
         Checks the new_string for structural duplicates before applying.
         Blocks if identical code exists elsewhere; warns on high similarity.
@@ -888,8 +898,14 @@ class CodeStructureTools:
         if error := self._require_index():
             return error
 
+        # Infer language from file extension
+        plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
+        language = plugin.language_id if plugin else "python"
+
         # Check for duplicates in the new code being introduced
-        results = self.index.find_similar(new_string, min_node_count=self._CHECK_MIN_STATEMENTS)
+        results = self.index.find_similar(
+            new_string, min_node_count=self._CHECK_MIN_STATEMENTS, language=language
+        )
 
         exact = [r for r in results if r.similarity_type == "exact"]
         high = [r for r in results if r.similarity_type == "high"]
@@ -931,7 +947,7 @@ class CodeStructureTools:
         # Check that old_string exists
         if old_string not in content:
             return ToolResult(
-                f"Edit failed: old_string not found in {file_path}. " f"The file may have changed."
+                f"Edit failed: old_string not found in {file_path}. The file may have changed."
             )
 
         # Check for uniqueness
@@ -1000,7 +1016,7 @@ class CodeStructureTools:
             self._event_driven_index.close()
             self._event_driven_index = None
 
-    def __enter__(self) -> "CodeStructureTools":
+    def __enter__(self) -> CodeStructureTools:
         return self
 
     def __exit__(self, *args: Any) -> None:

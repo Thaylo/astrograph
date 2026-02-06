@@ -994,12 +994,15 @@ class TestWatcherEdgeCases:
         if not HAS_WATCHDOG:
             pytest.skip("watchdog not installed")
 
-        with tempfile.TemporaryDirectory() as tmpdir, FileWatcher(
-            root_path=tmpdir,
-            on_file_changed=lambda _: None,
-            on_file_created=lambda _: None,
-            on_file_deleted=lambda _: None,
-        ) as watcher:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            FileWatcher(
+                root_path=tmpdir,
+                on_file_changed=lambda _: None,
+                on_file_created=lambda _: None,
+                on_file_deleted=lambda _: None,
+            ) as watcher,
+        ):
             assert watcher.is_watching
 
     def test_debounced_callback_cancel(self):

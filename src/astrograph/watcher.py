@@ -165,7 +165,7 @@ class FileWatcher:
         """
         if not HAS_WATCHDOG:
             raise ImportError(
-                "watchdog is required for file watching. " "Install with: pip install watchdog"
+                "watchdog is required for file watching. Install with: pip install watchdog"
             )
 
         self.root_path = Path(root_path).resolve()
