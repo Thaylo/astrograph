@@ -22,19 +22,26 @@ ASTograph is an MCP server that detects when you're about to create duplicate co
 
 ## See It In Action
 
-You write this:
+Your codebase has this:
+```python
+# src/math.py
+def calculate_sum(a, b):
+    return a + b
+```
+
+You ask Claude to write this:
 ```python
 def add_numbers(x, y):
     return x + y
 ```
 
-ASTograph says:
+ASTograph blocks it:
 ```
 BLOCKED: Identical code exists at src/math.py:calculate_sum (lines 5-8).
 Reuse the existing implementation instead.
 ```
 
-It catches duplicates even when variable names differ - because it compares **code structure**, not text.
+Different names (`a, b` vs `x, y`), same structure. ASTograph compares **code graphs**, not text.
 
 ## Quick Start
 
@@ -50,9 +57,9 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
     "astograph": {
       "command": "docker",
       "args": [
-        "run", "--rm", "-i",
+        "run", "--rm", "-i", "--pull", "always",
         "-v", "/path/to/your/project:/workspace:ro",
-        "--tmpfs", "/workspace/.metadata_astograph",
+        "-v", "/path/to/your/project/.metadata_astograph:/workspace/.metadata_astograph",
         "thaylo/astograph"
       ]
     }
@@ -60,10 +67,9 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-Then in Claude:
-1. `astograph_index(path="/workspace")` - Index your codebase
-2. `astograph_analyze()` - Find existing duplicates
-3. Use `astograph_write` / `astograph_edit` - They'll block duplicates automatically
+That's it. The codebase is auto-indexed at startup. In Claude:
+1. `astograph_analyze()` - Find existing duplicates
+2. Use `astograph_write` / `astograph_edit` - They'll block duplicates automatically
 
 ## The Problem
 
@@ -77,11 +83,11 @@ Large codebases accumulate duplicate code because:
 
 | Tool | What It Does |
 |------|--------------|
-| `astograph_index` | Scans your codebase (run this first) |
 | `astograph_analyze` | Lists all duplicates found |
 | `astograph_write` | Writes files, blocks if duplicate exists |
 | `astograph_edit` | Edits files, blocks if new code is a duplicate |
 | `astograph_check` | Check if code exists before writing |
+| `astograph_index` | Re-index specific paths (auto-indexed at startup) |
 
 [See all 11 tools →](#tool-reference)
 
@@ -102,7 +108,7 @@ Large codebases accumulate duplicate code because:
 
 ### astograph_index
 
-Index a Python codebase for structural analysis. **Call this first.**
+Index a Python codebase for structural analysis. *(Auto-indexed at startup; use for re-indexing specific paths.)*
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -199,9 +205,9 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
     "astograph": {
       "command": "docker",
       "args": [
-        "run", "--rm", "-i",
+        "run", "--rm", "-i", "--pull", "always",
         "-v", "/path/to/your/project:/workspace:ro",
-        "--tmpfs", "/workspace/.metadata_astograph",
+        "-v", "/path/to/your/project/.metadata_astograph:/workspace/.metadata_astograph",
         "thaylo/astograph"
       ]
     }
@@ -220,9 +226,9 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
     "astograph": {
       "command": "docker",
       "args": [
-        "run", "--rm", "-i",
+        "run", "--rm", "-i", "--pull", "always",
         "-v", "${workspaceFolder}:/workspace:ro",
-        "--tmpfs", "/workspace/.metadata_astograph",
+        "-v", "${workspaceFolder}/.metadata_astograph:/workspace/.metadata_astograph",
         "thaylo/astograph"
       ]
     }
@@ -241,9 +247,9 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
     "astograph": {
       "command": "docker",
       "args": [
-        "run", "--rm", "-i",
+        "run", "--rm", "-i", "--pull", "always",
         "-v", ".:/workspace:ro",
-        "--tmpfs", "/workspace/.metadata_astograph",
+        "-v", "./.metadata_astograph:/workspace/.metadata_astograph",
         "thaylo/astograph"
       ]
     }
