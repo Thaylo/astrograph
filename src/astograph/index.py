@@ -708,6 +708,15 @@ class CodeStructureIndex:
         groups.sort(key=lambda g: len(g.entries), reverse=True)
         return groups
 
+    def _get_entries_for_hash(self, wl_hash: str) -> list[IndexEntry]:
+        """Get all entries matching a hash from any bucket."""
+        entry_ids: set[str] = (
+            self.hash_buckets.get(wl_hash, set())
+            or self.pattern_buckets.get(wl_hash, set())
+            or self.block_buckets.get(wl_hash, set())
+        )
+        return [e for eid in entry_ids if (e := self.entries.get(eid)) is not None]
+
     def _find_linked_hashes(self, entries: list[IndexEntry]) -> set[str]:
         """
         Find duplicate hashes for entries contained within the given entries.
@@ -791,10 +800,24 @@ class CodeStructureIndex:
         linked_hashes -= self.suppressed_hashes  # Only newly suppressed ones
 
         newly_suppressed: list[str] = []
+        created_at = time.time()
         for linked_hash in linked_hashes:
             if linked_hash not in self.suppressed_hashes:
                 self.suppressed_hashes.add(linked_hash)
                 newly_suppressed.append(linked_hash)
+                # Create SuppressionInfo for linked hash so it can be persisted
+                linked_entries = self._get_entries_for_hash(linked_hash)
+                linked_first = linked_entries[0] if linked_entries else None
+                self.suppression_details[linked_hash] = SuppressionInfo(
+                    wl_hash=linked_hash,
+                    reason=f"Linked to {wl_hash}",
+                    created_at=created_at,
+                    source_name=linked_first.code_unit.name if linked_first else None,
+                    code_preview=linked_first.code_unit.code[:200] if linked_first else None,
+                    entry_count=len(linked_entries),
+                    source_files=[],
+                    file_hashes={},
+                )
 
         # Capture source files and their content hashes for structural change detection
         source_files: list[str] = []
