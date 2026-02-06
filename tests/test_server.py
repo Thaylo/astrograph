@@ -923,42 +923,30 @@ class TestIncrementalIndexing:
 class TestAnalyzeStalenessWarning:
     """Tests for staleness warning in analyze output."""
 
-    def test_analyze_warns_on_stale_index(self, tools):
-        """Test analyze shows warning when index is stale."""
-        import time
-
+    @staticmethod
+    def _analyze_with_stale_index(tools, auto_reindex: bool) -> "ToolResult":
+        """Index a file, modify it to make index stale, then analyze."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write("def foo(): pass\ndef bar(): pass")
             f.flush()
             tools.index_codebase(f.name)
 
-            # Modify file
             time.sleep(0.01)
             with open(f.name, "w") as mod_f:
                 mod_f.write("def baz(): pass")
 
-            # With auto_reindex=False, should show warning
-            result = tools.analyze(auto_reindex=False)
+            result = tools.analyze(auto_reindex=auto_reindex)
         os.unlink(f.name)
+        return result
 
+    def test_analyze_warns_on_stale_index(self, tools):
+        """Test analyze shows warning when index is stale."""
+        result = self._analyze_with_stale_index(tools, auto_reindex=False)
         assert "WARNING" in result.text or "stale" in result.text.lower()
 
     def test_analyze_auto_reindex_on_stale(self, tools):
         """Test analyze auto-reindexes when stale and auto_reindex=True."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("def foo(): pass\ndef bar(): pass")
-            f.flush()
-            tools.index_codebase(f.name)
-
-            # Modify file to make index stale
-            time.sleep(0.01)
-            with open(f.name, "w") as mod_f:
-                mod_f.write("def baz(): pass")
-
-            # With auto_reindex=True (default), should auto-reindex
-            result = tools.analyze(auto_reindex=True)
-        os.unlink(f.name)
-
+        result = self._analyze_with_stale_index(tools, auto_reindex=True)
         assert "Auto-reindexed" in result.text
         assert "WARNING" not in result.text
 

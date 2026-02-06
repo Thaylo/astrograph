@@ -1642,35 +1642,25 @@ class TestCloudDetectionPlatformSpecific:
                 else:
                     del os.environ[onedrive_var]
 
+    @staticmethod
+    def _get_platform_key_for(system_name: str) -> str:
+        """Mock platform.system and return the resulting platform key."""
+        import importlib
+        from unittest.mock import patch
+
+        import astrograph.cloud_detect
+
+        with patch("platform.system", return_value=system_name):
+            importlib.reload(astrograph.cloud_detect)
+            return astrograph.cloud_detect._get_platform_key()
+
     def test_get_platform_key_mocked_windows(self):
         """Test platform key for Windows."""
-        from unittest.mock import patch
-
-        with patch("platform.system") as mock:
-            mock.return_value = "Windows"
-            # Need to re-import to use the new mock
-            import importlib
-
-            import astrograph.cloud_detect
-
-            importlib.reload(astrograph.cloud_detect)
-            key = astrograph.cloud_detect._get_platform_key()
-            assert key == "win32"
+        assert self._get_platform_key_for("Windows") == "win32"
 
     def test_get_platform_key_mocked_unknown(self):
-        """Test platform key for unknown platform."""
-        from unittest.mock import patch
-
-        with patch("platform.system") as mock:
-            mock.return_value = "FreeBSD"  # Unknown platform
-            import importlib
-
-            import astrograph.cloud_detect
-
-            importlib.reload(astrograph.cloud_detect)
-            key = astrograph.cloud_detect._get_platform_key()
-            # Should default to linux
-            assert key == "linux"
+        """Test platform key for unknown platform defaults to linux."""
+        assert self._get_platform_key_for("FreeBSD") == "linux"
 
     def test_get_cloud_storage_paths_returns_dict(self):
         """Test get_cloud_storage_paths returns a dict."""
