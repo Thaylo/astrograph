@@ -3,7 +3,7 @@
 import os
 import tempfile
 import time
-from unittest import mock
+from unittest.mock import patch
 
 import pytest
 
@@ -33,46 +33,66 @@ class TestResolveDockerPath:
         # Should return unchanged since we're not in Docker
         assert result == path
 
-    def test_docker_path_resolution(self):
-        """Test path resolution in Docker-like environment."""
+    def test_docker_path_subpath_matching(self):
+        """Test that subpaths are checked when resolving Docker paths."""
+        # This tests the logic flow - actual Docker resolution is tested in e2e tests
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a mock Docker environment
-            workspace = os.path.join(tmpdir, "workspace")
-            dockerenv = os.path.join(tmpdir, ".dockerenv")
-            subdir = os.path.join(workspace, "src")
+            # Create a structure: tmpdir/src
+            src_dir = os.path.join(tmpdir, "src")
+            os.makedirs(src_dir)
 
-            os.makedirs(subdir)
-            open(dockerenv, "w").close()
+            # When path exists, it should return unchanged
+            result = _resolve_docker_path(src_dir)
+            assert result == src_dir
 
-            # Mock the Path class to use our temp directory
-            with mock.patch("astograph.tools.Path") as MockPath:
-                # Set up the mock to simulate Docker environment
-                mock_workspace = mock.MagicMock()
-                mock_workspace.exists.return_value = True
-                mock_workspace.joinpath.side_effect = lambda *args: mock.MagicMock(
-                    exists=lambda: os.path.exists(os.path.join(workspace, *args)),
-                    __str__=lambda args=args: os.path.join(workspace, *args),
-                )
+    def test_persistence_path_normal(self):
+        """Test persistence path for normal (non-Docker) environments."""
+        from astograph.tools import _get_persistence_path
 
-                mock_dockerenv = mock.MagicMock()
-                mock_dockerenv.exists.return_value = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = _get_persistence_path(tmpdir)
+            assert str(result).endswith(".metadata_astograph")
+            assert tmpdir in str(result)
 
-                def path_constructor(p):
-                    if p == "/workspace":
-                        return mock_workspace
-                    elif p == "/.dockerenv":
-                        return mock_dockerenv
-                    else:
-                        real_path = mock.MagicMock()
-                        real_path.parts = p.split("/")
-                        return real_path
+    def test_persistence_path_docker_subdirectory(self):
+        """Test persistence path redirects to workspace root in Docker."""
+        from pathlib import Path
 
-                MockPath.side_effect = path_constructor
+        from astograph.tools import _get_persistence_path
 
-                # Test that a host path gets resolved to /workspace/src
-                result = _resolve_docker_path("/Users/foo/project/src")
-                # Since src exists in our mock workspace, it should resolve
-                assert "src" in result or result == str(mock_workspace)
+        original_exists = Path.exists
+
+        def mock_exists(self):
+            path_str = str(self)
+            if path_str == "/workspace" or path_str == "/.dockerenv":
+                return True
+            return original_exists(self)
+
+        with patch.object(Path, "exists", mock_exists):
+            # When indexing a subdirectory of /workspace in Docker,
+            # persistence should go to /workspace root
+            result = _get_persistence_path("/workspace/src")
+            assert str(result) == "/workspace/.metadata_astograph"
+
+    def test_resolve_docker_path_with_mock_docker_env(self):
+        """Test Docker path resolution with mocked Docker environment."""
+        from pathlib import Path
+
+        from astograph.tools import _resolve_docker_path
+
+        original_exists = Path.exists
+
+        def mock_exists(self):
+            path_str = str(self)
+            # Simulate Docker env where /workspace/src exists
+            if path_str in ("/workspace", "/.dockerenv", "/workspace/src"):
+                return True
+            return original_exists(self)
+
+        with patch.object(Path, "exists", mock_exists):
+            # Non-existent host path should resolve to /workspace/src
+            result = _resolve_docker_path("/Users/foo/bar/src")
+            assert result == "/workspace/src"
 
 
 @pytest.fixture

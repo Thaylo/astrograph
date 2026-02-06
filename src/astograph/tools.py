@@ -73,11 +73,26 @@ def _resolve_docker_path(path: str) -> str:
 
 
 def _get_persistence_path(indexed_path: str) -> Path:
-    """Get metadata directory for an indexed codebase."""
+    """
+    Get metadata directory for an indexed codebase.
+
+    In Docker with read-only mounts, the metadata is stored at the workspace
+    root (which has a tmpfs mount) rather than the indexed subdirectory.
+    """
     base = Path(indexed_path).resolve()
     if base.is_file():
         base = base.parent
-    return base / PERSISTENCE_DIR
+
+    persistence_path = base / PERSISTENCE_DIR
+
+    # In Docker, /workspace might be read-only but /workspace/.metadata_astograph
+    # has a tmpfs mount. If we're indexing a subdirectory, use the root.
+    workspace = Path("/workspace")
+    if workspace.exists() and Path("/.dockerenv").exists() and str(base).startswith("/workspace/"):
+        # Use workspace root for persistence (has tmpfs mount)
+        persistence_path = workspace / PERSISTENCE_DIR
+
+    return persistence_path
 
 
 def _get_sqlite_path(indexed_path: str) -> Path:
@@ -1097,11 +1112,16 @@ class CodeStructureTools:
                 f"Consider reusing. Proceeding with write.\n\n"
             )
 
-        # Write the file
+        return self._write_file(file_path, content, "wrote", warning)
+
+    def _write_file(
+        self, file_path: str, content: str, action: str, prefix: str = ""
+    ) -> ToolResult:
+        """Write content to a file with error handling."""
         try:
             with open(file_path, "w") as f:
                 f.write(content)
-            return ToolResult(warning + f"Successfully wrote {file_path}")
+            return ToolResult(prefix + f"Successfully {action} {file_path}")
         except OSError as e:
             return ToolResult(f"Failed to write {file_path}: {e}")
 
@@ -1172,12 +1192,7 @@ class CodeStructureTools:
         # Apply the edit
         new_content = content.replace(old_string, new_string, 1)
 
-        try:
-            with open(file_path, "w") as f:
-                f.write(new_content)
-            return ToolResult(warning + f"Successfully edited {file_path}")
-        except OSError as e:
-            return ToolResult(f"Failed to write {file_path}: {e}")
+        return self._write_file(file_path, new_content, "edited", warning)
 
     def call_tool(self, name: str, arguments: dict) -> ToolResult:
         """Dispatch a tool call by name."""
