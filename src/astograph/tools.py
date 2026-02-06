@@ -941,16 +941,15 @@ class CodeStructureTools:
         prefix = self._check_invalidated_suppressions()
 
         # Toggle suppression state using appropriate index
-        if self._event_driven_mode and self._event_driven_index is not None:
-            if suppress:
-                success, linked_hashes = self._event_driven_index.suppress(wl_hash)
-            else:
-                success, linked_hashes = self._event_driven_index.unsuppress(wl_hash), []
+        active_index: CodeStructureIndex | EventDrivenIndex = (
+            self._event_driven_index
+            if self._event_driven_mode and self._event_driven_index
+            else self.index
+        )
+        if suppress:
+            success, linked_hashes = active_index.suppress(wl_hash)
         else:
-            if suppress:
-                success, linked_hashes = self.index.suppress(wl_hash)
-            else:
-                success, linked_hashes = self.index.unsuppress(wl_hash), []
+            success, linked_hashes = active_index.unsuppress(wl_hash), []
 
         if suppress:
             success_msg = f"Suppressed hash {wl_hash}. It will no longer appear in analyze results."
