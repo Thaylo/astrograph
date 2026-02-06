@@ -46,11 +46,7 @@ Different variable names, same structure. ASTrograph compares **code graphs**, n
 
 ## Quick Start
 
-```bash
-docker pull thaylo/astrograph
-```
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add `.mcp.json` to your project root:
 
 ```json
 {
@@ -59,8 +55,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
       "command": "docker",
       "args": [
         "run", "--rm", "-i", "--pull", "always",
-        "-v", "/path/to/your/project:/workspace",
-        "-v", "/path/to/your/project/.metadata_astrograph:/workspace/.metadata_astrograph",
+        "-v", ".:/workspace",
         "thaylo/astrograph"
       ]
     }
@@ -68,7 +63,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-That's it. The codebase is auto-indexed at startup. In Claude:
+The codebase is auto-indexed when the Docker container starts. Then:
 1. `astrograph_analyze()` - Find existing duplicates
 2. Use `astrograph_write` / `astrograph_edit` - They'll block duplicates automatically
 
@@ -95,7 +90,7 @@ Large codebases accumulate duplicate code because:
 - **Claude Code** - Tested. Project-level `.mcp.json`
 - **Any MCP client** - Should work (standard stdio protocol), but untested
 
-> **Note:** Python only for now. More languages coming.
+> **Note:** Python only for now.
 
 ---
 
@@ -172,26 +167,6 @@ List suppressed hashes.
 ---
 
 ## Configuration Examples
-
-<details>
-<summary><strong>Claude Code (.mcp.json in project root)</strong></summary>
-
-```json
-{
-  "mcpServers": {
-    "astrograph": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i", "--pull", "always",
-        "-v", ".:/workspace",
-        "thaylo/astrograph"
-      ]
-    }
-  }
-}
-```
-
-</details>
 
 <details>
 <summary><strong>Claude Desktop</strong></summary>
