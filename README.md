@@ -22,26 +22,26 @@ ASTograph is an MCP server that detects when you're about to create duplicate co
 
 ## See It In Action
 
-Your codebase has this:
+Your codebase already has this:
 ```python
 # src/math.py
 def calculate_sum(a, b):
     return a + b
 ```
 
-You ask your AI Agent to write this:
+Your AI agent tries to write this:
 ```python
 def add_numbers(x, y):
     return x + y
 ```
 
-ASTograph blocks it:
+ASTograph intercepts and blocks:
 ```
 BLOCKED: Identical code exists at src/math.py:calculate_sum (lines 5-8).
 Reuse the existing implementation instead.
 ```
 
-Different names (`a, b` vs `x, y`), same structure. ASTograph compares **code graphs**, not text.
+Different variable names, same structure. ASTograph compares **code graphs**, not text.
 
 ## Quick Start
 
