@@ -1352,3 +1352,54 @@ def placeholder():
             },
         )
         assert "Edited" in result.text
+
+
+class TestSuppressionPersistenceAcrossRestart:
+    """Test that suppressions survive a simulated container restart (close + reopen)."""
+
+    def test_suppression_survives_close_and_reopen(self):
+        """Suppress a hash, close tools (flushes WAL), reopen, verify suppression loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            code = """
+def process_items(items):
+    results = []
+    for item in items:
+        if item > 0:
+            results.append(item * 2)
+    return results
+
+def transform_data(data):
+    output = []
+    for element in data:
+        if element > 0:
+            output.append(element * 2)
+    return output
+"""
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write(code)
+
+            # --- Session 1: index, suppress, close ---
+            tools1 = CodeStructureTools()
+            tools1.index_codebase(tmpdir)
+
+            import re
+
+            analyze_result = tools1.analyze()
+            details = _get_analyze_details(tools1, analyze_result)
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
+            if not match:
+                pytest.skip("No duplicates found to suppress")
+
+            wl_hash = match.group(1)
+            tools1.suppress(wl_hash)
+
+            # Explicitly close (simulates Docker SIGTERM → _tools.close())
+            tools1.close()
+
+            # --- Session 2: fresh tools, reopen, verify ---
+            tools2 = CodeStructureTools()
+            tools2.index_codebase(tmpdir)
+
+            assert wl_hash in tools2.index.suppressed_hashes
+            tools2.close()

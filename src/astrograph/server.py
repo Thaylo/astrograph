@@ -15,7 +15,10 @@ Provides 8 tools (all prefixed with astrograph_):
 """
 
 import asyncio
+import atexit
 import os
+import signal
+import sys
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -198,8 +201,16 @@ async def run_server() -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
+def _shutdown_handler(_signum: int, _frame: object) -> None:
+    """Handle SIGTERM from Docker by flushing and closing resources."""
+    _tools.close()
+    sys.exit(0)
+
+
 def main() -> None:
     """Entry point for the MCP server."""
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    atexit.register(_tools.close)
     asyncio.run(run_server())
 
 

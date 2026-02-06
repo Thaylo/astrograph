@@ -103,6 +103,7 @@ class SQLitePersistence:
     def close(self) -> None:
         """Close the database connection."""
         if self._conn is not None:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._conn.close()
             self._conn = None
 
