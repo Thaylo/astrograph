@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .cloud_detect import check_and_warn_cloud_sync, is_cloud_synced_path
-from .index import CodeStructureIndex, DuplicateGroup
+from .index import CodeStructureIndex, DuplicateGroup, batch_hash_operation
 from .persistence import SQLitePersistence
 
 logger = logging.getLogger(__name__)
@@ -420,25 +420,15 @@ class EventDrivenIndex:
 
         return success
 
-    def _batch_operation(
-        self, wl_hashes: list[str], operation: Callable[[str], bool]
-    ) -> tuple[list[str], list[str]]:
-        """Apply an operation to multiple hashes. Returns (changed, not_found)."""
-        changed: list[str] = []
-        not_found: list[str] = []
-        for wl_hash in wl_hashes:
-            (changed if operation(wl_hash) else not_found).append(wl_hash)
-        return changed, not_found
-
     def unsuppress_batch(self, wl_hashes: list[str]) -> tuple[list[str], list[str]]:
         """Unsuppress multiple hashes and persist. Returns (unsuppressed, not_found)."""
-        return self._batch_operation(wl_hashes, self.unsuppress)
+        return batch_hash_operation(wl_hashes, self.unsuppress)
 
     def suppress_batch(
         self, wl_hashes: list[str], reason: str | None = None
     ) -> tuple[list[str], list[str]]:
         """Suppress multiple hashes and persist. Returns (suppressed, not_found)."""
-        return self._batch_operation(wl_hashes, lambda h: self.suppress(h, reason))
+        return batch_hash_operation(wl_hashes, lambda h: self.suppress(h, reason))
 
     # =========================================================================
     # Stats

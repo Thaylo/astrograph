@@ -18,9 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
-if TYPE_CHECKING:
-    from .event_driven import EventDrivenIndex
-
 from .ast_to_graph import ast_to_graph, node_match
 from .canonical_hash import (
     fingerprints_compatible,
@@ -343,6 +340,32 @@ class CodeStructureTools:
             for e in entries
         ]
 
+    def _write_analysis_report(self, content: str) -> Path | None:
+        """Write full analysis report to persistence directory.
+
+        Returns the file path on success, None on failure.
+        """
+        if self._last_indexed_path is None:
+            return None
+        try:
+            persistence_path = _get_persistence_path(self._last_indexed_path)
+            persistence_path.mkdir(exist_ok=True)
+            report_file = persistence_path / "analysis_report.txt"
+            report_file.write_text(content)
+            return report_file
+        except OSError:
+            return None
+
+    def _clear_analysis_report(self) -> None:
+        """Remove stale analysis report file when no findings."""
+        if self._last_indexed_path is None:
+            return
+        try:
+            report_file = _get_persistence_path(self._last_indexed_path) / "analysis_report.txt"
+            report_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def analyze(self, auto_reindex: bool = True) -> ToolResult:
         """
         Analyze the indexed codebase for duplicates and similar patterns.
@@ -462,6 +485,7 @@ class CodeStructureTools:
         suppressed_count = stats["suppressed_hashes"]
 
         if not findings:
+            self._clear_analysis_report()
             hidden = hidden_exact + hidden_block
             msg = "No significant duplicates."
             if hidden or suppressed_count:
@@ -500,7 +524,37 @@ class CodeStructureTools:
             lines.append(f"+ {suppressed_count} suppressed")
         lines.append(f"{len(findings)} duplicate groups.")
 
-        return ToolResult(invalidation_warning + staleness_warning + "\n".join(lines))
+        full_output = "\n".join(lines)
+
+        # Write full report to file, return compact summary inline
+        report_path = self._write_analysis_report(full_output)
+        if report_path is not None:
+            # Count type breakdown
+            exact_count = sum(1 for f in findings if f["type"] == "exact")
+            block_count = sum(1 for f in findings if f["type"] == "block")
+            pattern_count = sum(1 for f in findings if f["type"] == "pattern")
+            type_parts = []
+            if exact_count:
+                type_parts.append(f"{exact_count} exact")
+            if block_count:
+                type_parts.append(f"{block_count} block")
+            if pattern_count:
+                type_parts.append(f"{pattern_count} pattern")
+            summary_parts = [f"Found {len(findings)} duplicate groups: {', '.join(type_parts)}."]
+            hidden_total = hidden_exact + hidden_block
+            if hidden_total > 0:
+                summary_parts.append(f"+ {hidden_total} trivial hidden.")
+            if suppressed_count > 0:
+                summary_parts.append(f"+ {suppressed_count} suppressed.")
+            line_count_report = full_output.count("\n") + 1
+            summary_parts.append(
+                f"Details: {PERSISTENCE_DIR}/analysis_report.txt ({line_count_report} lines)"
+            )
+            summary_parts.append("Read the file to see locations and suppress commands.")
+            return ToolResult(invalidation_warning + staleness_warning + "\n".join(summary_parts))
+
+        # Fallback: file write failed or no indexed path — return full output inline
+        return ToolResult(invalidation_warning + staleness_warning + full_output)
 
     def check(self, code: str) -> ToolResult:
         """

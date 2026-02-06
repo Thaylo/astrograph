@@ -226,6 +226,17 @@ class StalenessReport:
     stale_suppressions: list[str] = field(default_factory=list)
 
 
+def batch_hash_operation(
+    wl_hashes: list[str], operation: Callable[[str], bool]
+) -> tuple[list[str], list[str]]:
+    """Apply an operation to multiple hashes. Returns (changed, not_found)."""
+    changed: list[str] = []
+    not_found: list[str] = []
+    for wl_hash in wl_hashes:
+        (changed if operation(wl_hash) else not_found).append(wl_hash)
+    return changed, not_found
+
+
 class CodeStructureIndex:
     """
     Index for code structures enabling fast duplicate detection.
@@ -788,25 +799,15 @@ class CodeStructureIndex:
             return True
         return False
 
-    def _batch_operation(
-        self, wl_hashes: list[str], operation: Callable[[str], bool]
-    ) -> tuple[list[str], list[str]]:
-        """Apply an operation to multiple hashes. Returns (changed, not_found)."""
-        changed: list[str] = []
-        not_found: list[str] = []
-        for wl_hash in wl_hashes:
-            (changed if operation(wl_hash) else not_found).append(wl_hash)
-        return changed, not_found
-
     def suppress_batch(
         self, wl_hashes: list[str], reason: str | None = None
     ) -> tuple[list[str], list[str]]:
         """Suppress multiple hashes. Returns (suppressed, not_found)."""
-        return self._batch_operation(wl_hashes, lambda h: self.suppress(h, reason))
+        return batch_hash_operation(wl_hashes, lambda h: self.suppress(h, reason))
 
     def unsuppress_batch(self, wl_hashes: list[str]) -> tuple[list[str], list[str]]:
         """Unsuppress multiple hashes. Returns (unsuppressed, not_found)."""
-        return self._batch_operation(wl_hashes, self.unsuppress)
+        return batch_hash_operation(wl_hashes, self.unsuppress)
 
     def get_suppressed(self) -> list[str]:
         """Get list of suppressed hashes."""

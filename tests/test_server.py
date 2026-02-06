@@ -3,6 +3,7 @@
 import os
 import tempfile
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +13,7 @@ from astrograph.tools import (
     PERSISTENCE_DIR,
     CodeStructureTools,
     ToolResult,
+    _get_persistence_path,
     _resolve_docker_path,
 )
 
@@ -47,7 +49,6 @@ class TestResolveDockerPath:
 
     def test_persistence_path_normal(self):
         """Test persistence path for normal (non-Docker) environments."""
-        from astrograph.tools import _get_persistence_path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _get_persistence_path(tmpdir)
@@ -56,10 +57,6 @@ class TestResolveDockerPath:
 
     def test_persistence_path_docker_subdirectory(self):
         """Test persistence path redirects to workspace root in Docker."""
-        from pathlib import Path
-
-        from astrograph.tools import _get_persistence_path
-
         original_exists = Path.exists
 
         def mock_exists(self):
@@ -76,10 +73,6 @@ class TestResolveDockerPath:
 
     def test_resolve_docker_path_with_mock_docker_env(self):
         """Test Docker path resolution with mocked Docker environment."""
-        from pathlib import Path
-
-        from astrograph.tools import _resolve_docker_path
-
         original_exists = Path.exists
 
         def mock_exists(self):
@@ -93,6 +86,16 @@ class TestResolveDockerPath:
             # Non-existent host path should resolve to /workspace/src
             result = _resolve_docker_path("/Users/foo/bar/src")
             assert result == "/workspace/src"
+
+
+def _get_analyze_details(tools, result):
+    """Read full analyze details from report file if it exists, else inline text."""
+    if ".metadata_astrograph/analysis_report.txt" not in result.text:
+        return result.text
+    indexed = Path(tools._last_indexed_path).resolve()
+    base = indexed.parent if not indexed.is_dir() else indexed
+    report = base / PERSISTENCE_DIR / "analysis_report.txt"
+    return report.read_text() if report.exists() else result.text
 
 
 @pytest.fixture
@@ -312,7 +315,8 @@ def transform_data(data):
 
         result = tools.analyze()
         # Should find duplicates with suppress calls or no findings
-        assert "suppress(wl_hash=" in result.text or "No significant duplicates" in result.text
+        details = _get_analyze_details(tools, result)
+        assert "suppress(wl_hash=" in details or "No significant duplicates" in result.text
 
     def test_analyze_duplicates_at_different_depths(self, tools):
         """Test analyze with duplicates at different path depths."""
@@ -461,7 +465,8 @@ def func2():
         os.unlink(f.name)
 
         # Should find duplicates with suppress calls or no findings
-        assert "suppress(wl_hash=" in result.text or "No significant duplicates" in result.text
+        details = _get_analyze_details(tools, result)
+        assert "suppress(wl_hash=" in details or "No significant duplicates" in result.text
 
     def test_analyze_block_duplicates_show_parent_functions(self, tools):
         """Test analyze output includes parent function names for block duplicates."""
@@ -533,11 +538,12 @@ def transform_data(data):
         """Test suppress with valid hash."""
         # First get a valid hash from analyze output
         analyze_result = tools.analyze()
-        if "suppress(wl_hash=" in analyze_result.text:
+        details = _get_analyze_details(tools, analyze_result)
+        if "suppress(wl_hash=" in details:
             # Extract hash from analyze output (format: suppress(wl_hash="HASH"))
             import re
 
-            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
             if match:
                 wl_hash = match.group(1)
 
@@ -562,8 +568,9 @@ def transform_data(data):
         import re
 
         analyze_result = tools.analyze()
-        if "suppress(wl_hash=" in analyze_result.text:
-            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+        details = _get_analyze_details(tools, analyze_result)
+        if "suppress(wl_hash=" in details:
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
             if match:
                 wl_hash = match.group(1)
 
@@ -573,7 +580,8 @@ def transform_data(data):
 
                 # Hash should appear again
                 analyze_after = tools.analyze()
-                assert wl_hash in analyze_after.text
+                details_after = _get_analyze_details(tools, analyze_after)
+                assert wl_hash in details_after
 
     def test_list_suppressions_empty(self, tools, _indexed_with_duplicates):
         """Test list_suppressions when nothing is suppressed."""
@@ -614,14 +622,16 @@ def transform_data(data):
         """Test analyze output includes hash for suppression."""
         result = tools.analyze()
         if "duplicate groups" in result.text:
-            assert "suppress(wl_hash=" in result.text
+            details = _get_analyze_details(tools, result)
+            assert "suppress(wl_hash=" in details
 
     def test_suppress_batch_valid(self, tools, _indexed_with_duplicates):
         """Test batch suppress with valid hashes."""
         import re
 
         analyze_result = tools.analyze()
-        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+        details = _get_analyze_details(tools, analyze_result)
+        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
             result = tools.suppress_batch(hashes)
             assert "Suppressed" in result.text
@@ -632,7 +642,8 @@ def transform_data(data):
         import re
 
         analyze_result = tools.analyze()
-        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+        details = _get_analyze_details(tools, analyze_result)
+        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
             mixed = hashes + ["nonexistent_hash_abc"]
             result = tools.suppress_batch(mixed)
@@ -654,7 +665,8 @@ def transform_data(data):
         import re
 
         analyze_result = tools.analyze()
-        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+        details = _get_analyze_details(tools, analyze_result)
+        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
             tools.suppress_batch(hashes)
             result = tools.unsuppress_batch(hashes)
@@ -666,7 +678,8 @@ def transform_data(data):
         import re
 
         analyze_result = tools.analyze()
-        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+        details = _get_analyze_details(tools, analyze_result)
+        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
             tools.suppress_batch(hashes)
             mixed = hashes + ["nonexistent_hash_abc"]
@@ -714,18 +727,18 @@ def sum_values(numbers):
 
             # Step 2: Analyze - should find duplicates
             analyze_result = tools.analyze()
+            details = _get_analyze_details(tools, analyze_result)
             # Output shows suppress calls for duplicates or no findings
             assert (
-                "suppress(wl_hash=" in analyze_result.text
-                or "No significant duplicates" in analyze_result.text
+                "suppress(wl_hash=" in details or "No significant duplicates" in analyze_result.text
             )
 
             # Step 3: If duplicates found, suppress one
-            if "suppress(wl_hash=" in analyze_result.text:
+            if "suppress(wl_hash=" in details:
                 # Extract hash from output
                 import re
 
-                match = re.search(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+                match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
                 if match:
                     wl_hash = match.group(1)
 
@@ -735,10 +748,10 @@ def sum_values(numbers):
 
                     # Step 4: Analyze again - should show fewer or no duplicates
                     analyze_after = tools.analyze()
+                    details_after = _get_analyze_details(tools, analyze_after)
                     # The suppressed hash should not appear as actionable
                     assert (
-                        wl_hash not in analyze_after.text
-                        or "suppressed" in analyze_after.text.lower()
+                        wl_hash not in details_after or "suppressed" in analyze_after.text.lower()
                     )
 
         os.unlink(f.name)
@@ -1032,7 +1045,8 @@ def transform_data(data):
             import re
 
             analyze_result = tools1.analyze()
-            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+            details = _get_analyze_details(tools1, analyze_result)
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
             if match:
                 wl_hash = match.group(1)
                 tools1.suppress(wl_hash)
@@ -1073,7 +1087,8 @@ def transform_data(data):
             import re
 
             analyze_result = tools1.analyze()
-            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+            details = _get_analyze_details(tools1, analyze_result)
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
             if match:
                 wl_hash = match.group(1)
                 tools1.suppress(wl_hash)
