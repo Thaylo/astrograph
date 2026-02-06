@@ -392,27 +392,20 @@ class EventDrivenIndex:
         logger.info(f"Indexed {len(self.index.entries)} entries from {path}")
         return len(self.index.entries)
 
-    def suppress(self, wl_hash: str, reason: str | None = None) -> tuple[bool, list[str]]:
-        """Suppress a hash and persist, including linked duplicates."""
-        success, linked_hashes = self.index.suppress(wl_hash, reason)
+    def suppress(self, wl_hash: str, reason: str | None = None) -> bool:
+        """Suppress a hash and persist."""
+        success = self.index.suppress(wl_hash, reason)
 
         if success and self._persistence is not None:
-            # Save main suppression
             info = self.index.get_suppression_info(wl_hash)
             if info:
                 self._persistence.save_suppression(info)
-
-            # Save linked suppressions
-            for linked_hash in linked_hashes:
-                linked_info = self.index.get_suppression_info(linked_hash)
-                if linked_info:
-                    self._persistence.save_suppression(linked_info)
 
         # Invalidate cache (suppressions affect analysis)
         self._cache.invalidate()
         self._schedule_analysis_recompute()
 
-        return success, linked_hashes
+        return success
 
     def unsuppress(self, wl_hash: str) -> bool:
         """Unsuppress a hash and persist."""
@@ -426,6 +419,18 @@ class EventDrivenIndex:
         self._schedule_analysis_recompute()
 
         return success
+
+    def suppress_batch(
+        self, wl_hashes: list[str], reason: str | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Suppress multiple hashes and persist. Returns (suppressed, not_found)."""
+        suppressed, not_found = [], []
+        for wl_hash in wl_hashes:
+            if self.suppress(wl_hash, reason):
+                suppressed.append(wl_hash)
+            else:
+                not_found.append(wl_hash)
+        return suppressed, not_found
 
     # =========================================================================
     # Stats

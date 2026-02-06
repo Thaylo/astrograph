@@ -3,11 +3,12 @@ MCP server for code structure analysis.
 
 Auto-indexes the codebase at startup and maintains the index via file watching.
 
-Provides 6 tools (all prefixed with astrograph_):
+Provides 7 tools (all prefixed with astrograph_):
 - astrograph_analyze: Find duplicates and similar patterns
 - astrograph_write: Write Python file with duplicate detection (blocks if duplicate exists)
 - astrograph_edit: Edit Python file with duplicate detection (blocks if duplicate exists)
 - astrograph_suppress: Suppress a duplicate group by hash
+- astrograph_suppress_batch: Suppress multiple duplicates by hash list
 - astrograph_unsuppress: Remove suppression from a hash
 - astrograph_list_suppressions: List all suppressed hashes
 """
@@ -48,29 +49,13 @@ def create_server() -> Server:
         return [
             Tool(
                 name="astrograph_analyze",
-                description=(
-                    "Analyze the indexed Python codebase for duplicate functions, methods, and "
-                    "code blocks (for/while/if/try/with). Returns exact duplicates verified via "
-                    "graph isomorphism."
-                ),
+                description="Find duplicate Python code (verified via graph isomorphism).",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "thorough": {
-                            "type": "boolean",
-                            "description": (
-                                "If true, show ALL duplicates including small ones (~2+ lines). "
-                                "If false, show only significant duplicates (~6+ lines). "
-                                "Default: true"
-                            ),
-                            "default": True,
-                        },
                         "auto_reindex": {
                             "type": "boolean",
-                            "description": (
-                                "If true and index is stale, automatically re-index before analyzing. "
-                                "Default: true"
-                            ),
+                            "description": "Auto re-index if stale (default: true)",
                             "default": True,
                         },
                     },
@@ -78,27 +63,36 @@ def create_server() -> Server:
             ),
             Tool(
                 name="astrograph_suppress",
-                description=(
-                    "Suppress a duplicate group by its WL hash. "
-                    "Use this to mute idiomatic patterns or acceptable duplications "
-                    "that don't need to be refactored. The hash is shown in astrograph_analyze output."
-                ),
+                description="Suppress a duplicate by WL hash (from analyze output).",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "wl_hash": {
                             "type": "string",
-                            "description": "The WL hash of the duplicate group to suppress",
+                            "description": "WL hash from analyze output",
                         },
                     },
                     "required": ["wl_hash"],
                 },
             ),
             Tool(
+                name="astrograph_suppress_batch",
+                description="Suppress multiple duplicates by WL hash list.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "wl_hashes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "WL hashes from analyze output",
+                        },
+                    },
+                    "required": ["wl_hashes"],
+                },
+            ),
+            Tool(
                 name="astrograph_unsuppress",
-                description=(
-                    "Remove suppression from a hash, making it appear in astrograph_analyze results again."
-                ),
+                description="Unsuppress a hash.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -112,7 +106,7 @@ def create_server() -> Server:
             ),
             Tool(
                 name="astrograph_list_suppressions",
-                description="List all currently suppressed hashes.",
+                description="List suppressed hashes.",
                 inputSchema={
                     "type": "object",
                     "properties": {},
@@ -120,22 +114,17 @@ def create_server() -> Server:
             ),
             Tool(
                 name="astrograph_write",
-                description=(
-                    "Write Python code to a file with automatic duplicate detection. "
-                    "Checks the content for structural duplicates before writing. "
-                    "BLOCKS if identical code exists elsewhere (returns existing location). "
-                    "WARNS on high similarity but proceeds with write."
-                ),
+                description="Write Python file. Blocks if duplicate exists, warns on similarity.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "Absolute path to the file to write",
+                            "description": "Absolute file path",
                         },
                         "content": {
                             "type": "string",
-                            "description": "The Python code content to write",
+                            "description": "Python code to write",
                         },
                     },
                     "required": ["file_path", "content"],
@@ -143,26 +132,21 @@ def create_server() -> Server:
             ),
             Tool(
                 name="astrograph_edit",
-                description=(
-                    "Edit a Python file with automatic duplicate detection. "
-                    "Checks the new_string for structural duplicates before applying. "
-                    "BLOCKS if identical code exists elsewhere (returns existing location). "
-                    "WARNS on high similarity but proceeds with edit."
-                ),
+                description="Edit Python file. Blocks if new code duplicates existing, warns on similarity.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "Absolute path to the file to edit",
+                            "description": "Absolute file path",
                         },
                         "old_string": {
                             "type": "string",
-                            "description": "The exact text to replace (must be unique in file)",
+                            "description": "Exact text to replace (must be unique)",
                         },
                         "new_string": {
                             "type": "string",
-                            "description": "The replacement Python code",
+                            "description": "Replacement code",
                         },
                     },
                     "required": ["file_path", "old_string", "new_string"],
@@ -176,6 +160,7 @@ def create_server() -> Server:
         "astrograph_write": "write",
         "astrograph_edit": "edit",
         "astrograph_suppress": "suppress",
+        "astrograph_suppress_batch": "suppress_batch",
         "astrograph_unsuppress": "unsuppress",
         "astrograph_list_suppressions": "list_suppressions",
     }

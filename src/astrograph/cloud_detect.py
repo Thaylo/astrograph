@@ -180,26 +180,13 @@ def get_cloud_sync_warning(path: str | Path) -> str | None:
     if not is_synced:
         return None
 
-    return f"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  ⚠️  WARNING: CLOUD-SYNCED FOLDER DETECTED ({service})
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  The path you're indexing is inside a {service} folder.
-║                                                                              ║
-║  RISKS:                                                                      ║
-║  • File sync conflicts may corrupt the index database                        ║
-║  • Simultaneous edits from multiple devices can cause data loss              ║
-║  • File watchers may trigger excessive re-indexing during sync               ║
-║  • SQLite databases are NOT designed for cloud sync                          ║
-║                                                                              ║
-║  RECOMMENDATIONS:                                                            ║
-║  1. Move your project to a local (non-synced) folder                         ║
-║  2. Or add .metadata_astrograph/ to {service}'s ignore list
-║  3. Or disable event-driven mode: CodeStructureTools(event_driven=False)     ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
+    return (
+        f"WARNING: Cloud-synced folder ({service}). "
+        f"Risks: index corruption, sync conflicts, excessive re-indexing. "
+        f"Recommendations: (1) move to local folder, "
+        f"(2) add .metadata_astrograph/ to {service} ignore list, "
+        f"(3) or disable event-driven mode."
+    )
 
 
 def check_and_warn_cloud_sync(path: str | Path, logger: Any = None) -> bool:

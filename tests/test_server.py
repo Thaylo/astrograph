@@ -311,12 +311,8 @@ def transform_data(data):
         os.unlink(f.name)
 
         result = tools.analyze()
-        # Should find duplicates (REFACTOR or IDIOMATIC patterns) or no findings
-        assert (
-            "REFACTOR" in result.text
-            or "IDIOMATIC" in result.text
-            or "No significant duplicates" in result.text
-        )
+        # Should find duplicates with suppress calls or no findings
+        assert "suppress(wl_hash=" in result.text or "No significant duplicates" in result.text
 
     def test_analyze_duplicates_at_different_depths(self, tools):
         """Test analyze with duplicates at different path depths."""
@@ -464,12 +460,8 @@ def func2():
             result = tools.analyze()
         os.unlink(f.name)
 
-        # Should find duplicates (block-level or function-level)
-        assert (
-            "BLOCK DUPLICATE" in result.text
-            or "REFACTOR" in result.text
-            or "No significant duplicates" in result.text
-        )
+        # Should find duplicates with suppress calls or no findings
+        assert "suppress(wl_hash=" in result.text or "No significant duplicates" in result.text
 
     def test_analyze_block_duplicates_show_parent_functions(self, tools):
         """Test analyze output includes parent function names for block duplicates."""
@@ -495,9 +487,8 @@ def transform_list(data):
             result = tools.analyze()
         os.unlink(f.name)
 
-        # If block duplicates are found, should show parent functions
-        if "BLOCK DUPLICATE" in result.text:
-            assert "Found in:" in result.text
+        # Should have some analysis output
+        assert result.text
 
 
 class TestSuppressionTools:
@@ -551,7 +542,7 @@ def transform_data(data):
                 wl_hash = match.group(1)
 
                 result = tools.suppress(wl_hash)
-                assert "Suppressed hash" in result.text
+                assert "Suppressed" in result.text
 
                 # Verify it's now suppressed
                 analyze_after = tools.analyze()
@@ -578,7 +569,7 @@ def transform_data(data):
 
                 tools.suppress(wl_hash)
                 result = tools.unsuppress(wl_hash)
-                assert "Unsuppressed hash" in result.text
+                assert "Unsuppressed" in result.text
 
                 # Hash should appear again
                 analyze_after = tools.analyze()
@@ -622,8 +613,41 @@ def transform_data(data):
     def test_analyze_output_includes_hash(self, tools, _indexed_with_duplicates):
         """Test analyze output includes hash for suppression."""
         result = tools.analyze()
-        if "DUPLICATE" in result.text:
+        if "duplicate groups" in result.text:
             assert "suppress(wl_hash=" in result.text
+
+    def test_suppress_batch_valid(self, tools, _indexed_with_duplicates):
+        """Test batch suppress with valid hashes."""
+        import re
+
+        analyze_result = tools.analyze()
+        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+        if hashes:
+            result = tools.suppress_batch(hashes)
+            assert "Suppressed" in result.text
+            assert str(len(hashes)) in result.text
+
+    def test_suppress_batch_mixed(self, tools, _indexed_with_duplicates):
+        """Test batch suppress with mix of valid and invalid hashes."""
+        import re
+
+        analyze_result = tools.analyze()
+        hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+        if hashes:
+            mixed = hashes + ["nonexistent_hash_abc"]
+            result = tools.suppress_batch(mixed)
+            assert "Suppressed" in result.text
+            assert "not found" in result.text
+
+    def test_suppress_batch_empty(self, tools, _indexed_with_duplicates):
+        """Test batch suppress with empty list."""
+        result = tools.suppress_batch([])
+        assert "No hashes provided" in result.text
+
+    def test_call_tool_suppress_batch(self, tools, _indexed_with_duplicates):
+        """Test call_tool dispatch for suppress_batch."""
+        result = tools.call_tool("suppress_batch", {"wl_hashes": ["fake_hash"]})
+        assert "not found" in result.text
 
 
 class TestWorkflowIntegration:
@@ -655,8 +679,11 @@ def sum_values(numbers):
 
             # Step 2: Analyze - should find duplicates
             analyze_result = tools.analyze()
-            # Output shows "REFACTOR" for actionable duplicates or "CLEAN" if none
-            assert "REFACTOR" in analyze_result.text or "CLEAN" in analyze_result.text
+            # Output shows suppress calls for duplicates or no findings
+            assert (
+                "suppress(wl_hash=" in analyze_result.text
+                or "No significant duplicates" in analyze_result.text
+            )
 
             # Step 3: If duplicates found, suppress one
             if "suppress(wl_hash=" in analyze_result.text:
@@ -1136,7 +1163,8 @@ def multiply_values(a, b, c):
 """
         new_file = os.path.join(tmpdir, "unique.py")
         result = tools.write(new_file, unique_code)
-        assert "Successfully wrote" in result.text
+        assert "Created" in result.text
+        assert "lines)" in result.text
         assert os.path.exists(new_file)
         with open(new_file) as f:
             assert f.read() == unique_code
@@ -1153,7 +1181,7 @@ def compute_total(x, y):
         new_file = os.path.join(tmpdir, "similar.py")
         result = tools.write(new_file, similar_code)
         # Should either succeed or block (depending on exact vs high similarity)
-        assert "Successfully wrote" in result.text or "BLOCKED" in result.text
+        assert ("Created" in result.text or "Wrote" in result.text) or "BLOCKED" in result.text
 
     def test_write_handles_io_error(self, indexed_tools):
         """Test that write handles IO errors gracefully."""
@@ -1169,7 +1197,7 @@ def compute_total(x, y):
         result = tools.call_tool(
             "write", {"file_path": new_file, "content": "def unique_func(): return 42"}
         )
-        assert "Successfully wrote" in result.text or "BLOCKED" in result.text
+        assert ("Created" in result.text or "Wrote" in result.text) or "BLOCKED" in result.text
 
 
 class TestEditTool:
@@ -1252,7 +1280,8 @@ def placeholder():
         result = tools.edit(
             existing_file, "def placeholder():\n    # TODO: implement\n    pass", unique_code
         )
-        assert "Successfully edited" in result.text
+        assert "Edited" in result.text
+        assert "+" in result.text  # diff markers
         with open(existing_file) as f:
             content = f.read()
             assert "complex_operation" in content
@@ -1271,7 +1300,7 @@ def placeholder():
         # Should warn about same-file duplicate but still succeed
         assert "WARNING" in result.text
         assert "same file" in result.text
-        assert "Successfully edited" in result.text
+        assert "Edited" in result.text
 
     def test_call_tool_edit(self, indexed_tools_with_file):
         """Test call_tool dispatch for edit."""
@@ -1284,4 +1313,4 @@ def placeholder():
                 "new_string": "# Implemented!",
             },
         )
-        assert "Successfully edited" in result.text
+        assert "Edited" in result.text

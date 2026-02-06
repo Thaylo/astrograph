@@ -3,7 +3,7 @@
     "astrograph": {
       "command": "docker",
       "args": [
-        "run", "--rm", "-i", "--pull", "always",
+        "run", "--rm", "-i",
         "-v", ".:/workspace:ro",
         "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
         "thaylo/astrograph"

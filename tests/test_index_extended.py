@@ -761,15 +761,14 @@ class TestSuppression:
         assert len(groups) >= 1
 
         wl_hash = groups[0].wl_hash
-        success, linked = index.suppress(wl_hash)
+        success = index.suppress(wl_hash)
         assert success is True
 
     def test_suppress_invalid_hash(self):
         """Suppressing an invalid hash should return False."""
         index = CodeStructureIndex()
-        success, linked = index.suppress("nonexistent_hash")
+        success = index.suppress("nonexistent_hash")
         assert success is False
-        assert linked == []
 
     def test_suppressed_groups_not_in_duplicates(self):
         """Suppressed groups should not appear in find_all_duplicates."""
@@ -851,52 +850,6 @@ def func2():
         """Unsuppressing a non-suppressed hash should return False."""
         index = CodeStructureIndex()
         assert index.unsuppress("not_suppressed") is False
-
-    def test_linked_suppression(self, tmp_path):
-        """Suppressing a function should also suppress nested block duplicates."""
-        index = CodeStructureIndex()
-
-        # Create two functions with identical nested blocks
-        source = """
-def process_items(items):
-    results = []
-    for item in items:
-        if item > 0:
-            results.append(item * 2)
-    return results
-
-def transform_data(data):
-    output = []
-    for element in data:
-        if element > 0:
-            output.append(element * 2)
-    return output
-"""
-        file = tmp_path / "test.py"
-        file.write_text(source)
-
-        index.index_file(str(file), include_blocks=True)
-
-        # Get function-level duplicates
-        func_groups = index.find_all_duplicates(min_node_count=5)
-        assert len(func_groups) >= 1
-
-        # Get block-level duplicates (for/if blocks)
-        block_groups = index.find_block_duplicates(min_node_count=3)
-        initial_block_count = len(block_groups)
-        assert initial_block_count >= 1  # Should have duplicate for/if blocks
-
-        # Suppress the function-level duplicate
-        func_hash = func_groups[0].wl_hash
-        success, linked_hashes = index.suppress(func_hash)
-
-        assert success is True
-        # Linked hashes should include the nested block duplicates
-        assert len(linked_hashes) >= 1
-
-        # Verify nested blocks are also suppressed
-        block_groups_after = index.find_block_duplicates(min_node_count=3)
-        assert len(block_groups_after) < initial_block_count
 
     def test_get_suppressed(self):
         """get_suppressed should return list of suppressed hashes."""

@@ -717,55 +717,12 @@ class CodeStructureIndex:
         )
         return [e for eid in entry_ids if (e := self.entries.get(eid)) is not None]
 
-    def _find_linked_hashes(self, entries: list[IndexEntry]) -> set[str]:
+    def suppress(self, wl_hash: str, reason: str | None = None) -> bool:
         """
-        Find duplicate hashes for entries contained within the given entries.
-
-        When a function is suppressed, any blocks (if/for/while/with/try) nested
-        inside it should also be suppressed since they're part of the same code.
-
-        Args:
-            entries: The entries being suppressed
-
-        Returns:
-            Set of WL hashes for linked (contained) duplicates
-        """
-        linked_hashes: set[str] = set()
-
-        # Build lookup of suppressed regions by file
-        regions_by_file: dict[str, list[tuple[int, int]]] = {}
-        for entry in entries:
-            fp = entry.code_unit.file_path
-            if fp not in regions_by_file:
-                regions_by_file[fp] = []
-            regions_by_file[fp].append((entry.code_unit.line_start, entry.code_unit.line_end))
-
-        # Find entries contained within the suppressed regions
-        for other_entry in self.entries.values():
-            fp = other_entry.code_unit.file_path
-            if fp not in regions_by_file:
-                continue
-
-            # Check if this entry is contained within any suppressed region
-            for region_start, region_end in regions_by_file[fp]:
-                if (
-                    other_entry.code_unit.line_start >= region_start
-                    and other_entry.code_unit.line_end <= region_end
-                ):
-                    linked_hashes.add(other_entry.wl_hash)
-                    break
-
-        return linked_hashes
-
-    def suppress(self, wl_hash: str, reason: str | None = None) -> tuple[bool, list[str]]:
-        """
-        Suppress a duplicate group by its hash, including linked duplicates.
+        Suppress a duplicate group by its hash.
 
         Suppressed groups are excluded from analysis results.
-        Use this for idiomatic patterns or acceptable duplications.
-
-        When suppressing a function/method, any nested blocks (if/for/while/with/try)
-        that are also detected as duplicates will be automatically suppressed.
+        Use this for acceptable duplications that don't need refactoring.
 
         The suppression tracks source files and their content hashes. If the
         suppressed code structure no longer exists (not just file modifications),
@@ -776,8 +733,7 @@ class CodeStructureIndex:
             reason: Optional reason for suppression (for documentation)
 
         Returns:
-            Tuple of (success, linked_hashes) where linked_hashes are additionally
-            suppressed hashes that were contained within the suppressed entries.
+            True if the hash was found and suppressed, False if not found.
         """
         entry_ids: set[str] = (
             self.hash_buckets.get(wl_hash, set())
@@ -786,38 +742,13 @@ class CodeStructureIndex:
         )
 
         if not entry_ids:
-            return False, []
+            return False
 
         self.suppressed_hashes.add(wl_hash)
 
         entries: list[IndexEntry] = [
             e for eid in entry_ids if (e := self.entries.get(eid)) is not None
         ]
-
-        # Find and suppress linked duplicates (nested blocks)
-        linked_hashes = self._find_linked_hashes(entries)
-        linked_hashes.discard(wl_hash)  # Don't include the original hash
-        linked_hashes -= self.suppressed_hashes  # Only newly suppressed ones
-
-        newly_suppressed: list[str] = []
-        created_at = time.time()
-        for linked_hash in linked_hashes:
-            if linked_hash not in self.suppressed_hashes:
-                self.suppressed_hashes.add(linked_hash)
-                newly_suppressed.append(linked_hash)
-                # Create SuppressionInfo for linked hash so it can be persisted
-                linked_entries = self._get_entries_for_hash(linked_hash)
-                linked_first = linked_entries[0] if linked_entries else None
-                self.suppression_details[linked_hash] = SuppressionInfo(
-                    wl_hash=linked_hash,
-                    reason=f"Linked to {wl_hash}",
-                    created_at=created_at,
-                    source_name=linked_first.code_unit.name if linked_first else None,
-                    code_preview=linked_first.code_unit.code[:200] if linked_first else None,
-                    entry_count=len(linked_entries),
-                    source_files=[],
-                    file_hashes={},
-                )
 
         # Capture source files and their content hashes for structural change detection
         source_files: list[str] = []
@@ -846,7 +777,7 @@ class CodeStructureIndex:
         )
 
         self._auto_save()
-        return True, newly_suppressed
+        return True
 
     def unsuppress(self, wl_hash: str) -> bool:
         """Remove a hash from the suppressed set."""
@@ -856,6 +787,18 @@ class CodeStructureIndex:
             self._auto_save()
             return True
         return False
+
+    def suppress_batch(
+        self, wl_hashes: list[str], reason: str | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Suppress multiple hashes. Returns (suppressed, not_found)."""
+        suppressed, not_found = [], []
+        for wl_hash in wl_hashes:
+            if self.suppress(wl_hash, reason):
+                suppressed.append(wl_hash)
+            else:
+                not_found.append(wl_hash)
+        return suppressed, not_found
 
     def get_suppressed(self) -> list[str]:
         """Get list of suppressed hashes."""

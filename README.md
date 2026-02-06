@@ -111,7 +111,7 @@ Find duplicates in the indexed codebase.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `thorough` | boolean | No | `true` | Show all duplicates including small ones |
+| `auto_reindex` | boolean | No | `true` | If stale, automatically re-index before analyzing |
 
 ### astrograph_write
 
