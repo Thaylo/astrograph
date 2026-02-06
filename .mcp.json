@@ -3,7 +3,7 @@
     "astograph": {
       "command": "docker",
       "args": [
-        "run", "--rm", "-i",
+        "run", "--rm", "-i", "--pull", "always",
         "-v", ".:/workspace:ro",
         "--tmpfs", "/workspace/.metadata_astograph",
         "thaylo/astograph"
