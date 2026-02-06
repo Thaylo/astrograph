@@ -251,6 +251,10 @@ class CodeStructureTools:
         persistence_path.mkdir(exist_ok=True)
         sqlite_path = persistence_path / "index.db"
 
+        # Close old event-driven index (stops watcher, closes SQLite connection)
+        if self._event_driven_index is not None:
+            self._event_driven_index.close()
+
         # Create new event-driven index with persistence
         self._event_driven_index = EventDrivenIndex(
             persistence_path=sqlite_path,

@@ -1108,35 +1108,12 @@ class TestEventDrivenWithWatching:
 class TestWatcherHandlerEvents:
     """Test handler event methods directly."""
 
-    def test_handler_ignores_directory_events(self):
-        """Test that directory events are ignored."""
+    @staticmethod
+    def _assert_handler_filters(is_directory: bool, src_path: str) -> None:
+        """Assert that PythonFileHandler filters out events with given attributes."""
         from astrograph.watcher import PythonFileHandler
 
-        events = []
-
-        handler = PythonFileHandler(
-            on_modified=lambda p: events.append(("mod", p)),
-            on_created=lambda p: events.append(("create", p)),
-            on_deleted=lambda p: events.append(("delete", p)),
-        )
-
-        class MockDirEvent:
-            is_directory = True
-            src_path = "/test/dir"
-
-        handler.on_modified(MockDirEvent())
-        handler.on_created(MockDirEvent())
-        handler.on_deleted(MockDirEvent())
-
-        # No events should be recorded for directories
-        assert len(events) == 0
-
-    def test_handler_filters_non_python(self):
-        """Test that non-Python files are filtered."""
-        from astrograph.watcher import PythonFileHandler
-
-        events = []
-
+        events: list[tuple[str, str]] = []
         handler = PythonFileHandler(
             on_modified=lambda p: events.append(("mod", p)),
             on_created=lambda p: events.append(("create", p)),
@@ -1144,14 +1121,24 @@ class TestWatcherHandlerEvents:
         )
 
         class MockEvent:
-            is_directory = False
-            src_path = "/test/file.txt"
+            pass
 
-        handler.on_modified(MockEvent())
-        handler.on_created(MockEvent())
-        handler.on_deleted(MockEvent())
+        MockEvent.is_directory = is_directory  # type: ignore[attr-defined]
+        MockEvent.src_path = src_path  # type: ignore[attr-defined]
+
+        handler.on_modified(MockEvent())  # type: ignore[arg-type]
+        handler.on_created(MockEvent())  # type: ignore[arg-type]
+        handler.on_deleted(MockEvent())  # type: ignore[arg-type]
 
         assert len(events) == 0
+
+    def test_handler_ignores_directory_events(self):
+        """Test that directory events are ignored."""
+        self._assert_handler_filters(is_directory=True, src_path="/test/dir")
+
+    def test_handler_filters_non_python(self):
+        """Test that non-Python files are filtered."""
+        self._assert_handler_filters(is_directory=False, src_path="/test/file.txt")
 
     def test_handler_cancel_pending(self):
         """Test cancelling pending handler events."""
@@ -1276,8 +1263,9 @@ class TestWatcherNonDirectory:
 class TestEventDrivenFileHandlerCallback:
     """Test file event handler callbacks."""
 
-    def test_on_file_changed_callback(self):
-        """Test file changed callback."""
+    @staticmethod
+    def _run_file_event_callback(callback_name: str, create_extra_file: bool = False) -> None:
+        """Run a file event callback and assert it increments the event counter."""
         from pathlib import Path
 
         from astrograph.event_driven import EventDrivenIndex
@@ -1292,69 +1280,29 @@ class TestEventDrivenFileHandlerCallback:
             edi = EventDrivenIndex(persistence_path=db_path, watch_enabled=False)
             edi.index_directory(tmpdir)
 
+            target = file1
+            if create_extra_file:
+                target = os.path.join(tmpdir, "file2.py")
+                with open(target, "w") as f:
+                    f.write("def bar(): pass")
+
             initial_events = edi._file_events_processed
-
-            # Simulate file change
-            edi._on_file_changed(file1)
-
+            getattr(edi, callback_name)(target)
             assert edi._file_events_processed == initial_events + 1
 
             edi.close()
+
+    def test_on_file_changed_callback(self):
+        """Test file changed callback."""
+        self._run_file_event_callback("_on_file_changed")
 
     def test_on_file_created_callback(self):
         """Test file created callback."""
-        from pathlib import Path
-
-        from astrograph.event_driven import EventDrivenIndex
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = str(Path(tmpdir).resolve())
-            file1 = os.path.join(tmpdir, "file1.py")
-            with open(file1, "w") as f:
-                f.write("def foo(): pass")
-
-            db_path = os.path.join(tmpdir, "index.db")
-            edi = EventDrivenIndex(persistence_path=db_path, watch_enabled=False)
-            edi.index_directory(tmpdir)
-
-            # Create new file
-            file2 = os.path.join(tmpdir, "file2.py")
-            with open(file2, "w") as f:
-                f.write("def bar(): pass")
-
-            initial_events = edi._file_events_processed
-
-            # Simulate file creation
-            edi._on_file_created(file2)
-
-            assert edi._file_events_processed == initial_events + 1
-
-            edi.close()
+        self._run_file_event_callback("_on_file_created", create_extra_file=True)
 
     def test_on_file_deleted_callback(self):
         """Test file deleted callback."""
-        from pathlib import Path
-
-        from astrograph.event_driven import EventDrivenIndex
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = str(Path(tmpdir).resolve())
-            file1 = os.path.join(tmpdir, "file1.py")
-            with open(file1, "w") as f:
-                f.write("def foo(): pass")
-
-            db_path = os.path.join(tmpdir, "index.db")
-            edi = EventDrivenIndex(persistence_path=db_path, watch_enabled=False)
-            edi.index_directory(tmpdir)
-
-            initial_events = edi._file_events_processed
-
-            # Simulate file deletion (file doesn't need to exist for callback)
-            edi._on_file_deleted(file1)
-
-            assert edi._file_events_processed == initial_events + 1
-
-            edi.close()
+        self._run_file_event_callback("_on_file_deleted")
 
 
 class TestCloudDetection:
