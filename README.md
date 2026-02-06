@@ -92,11 +92,8 @@ Large codebases accumulate duplicate code because:
 
 ## Works With
 
-- **Claude Code** - Project-level `.mcp.json`
-- **Claude Desktop** - Full MCP integration
-- **Cursor** - Via MCP settings
-- **Windsurf** - Via MCP settings
-- **VS Code** - Via Copilot MCP
+- **Claude Code** - Tested. Project-level `.mcp.json`
+- **Any MCP client** - Should work (standard stdio protocol), but untested
 
 > **Note:** Python only for now. More languages coming.
 
