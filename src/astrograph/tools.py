@@ -208,7 +208,13 @@ class CodeStructureTools:
         if not invalidated:
             return ""
 
-        return f"Suppressions invalidated: {', '.join(h for h, _ in invalidated)}. Run analyze().\n"
+        max_shown = 5
+        hashes = [h for h, _ in invalidated]
+        if len(hashes) > max_shown:
+            shown = ", ".join(hashes[:max_shown]) + f" ... ({len(hashes)} total)"
+        else:
+            shown = ", ".join(hashes)
+        return f"Suppressions invalidated: {shown}. Run analyze().\n"
 
     def _has_significant_duplicates(self) -> bool:
         """Check if there are duplicates above the trivial threshold."""
@@ -489,7 +495,12 @@ class CodeStructureTools:
 
         def _format_finding(num: int, f: dict[str, Any]) -> list[str]:
             result: list[str] = []
-            locs = ", ".join(f["locations"])
+            all_locs = f["locations"]
+            max_locs = 5
+            if len(all_locs) > max_locs:
+                locs = ", ".join(all_locs[:max_locs]) + f" ... +{len(all_locs) - max_locs} more"
+            else:
+                locs = ", ".join(all_locs)
             wl_hash = f.get("hash", "")
             line_count = f.get("line_count", 0)
             verified = " (verified)" if f.get("verified") else ""
@@ -498,11 +509,7 @@ class CodeStructureTools:
                 result.append(f"{num}.{verified} {locs} ({line_count} lines)")
             elif f["type"] == "block":
                 block_type = f.get("block_type", "block")
-                parents = ", ".join(f.get("parent_funcs", []))
-                parent_info = f", in {parents}" if parents else ""
-                result.append(
-                    f"{num}. [{block_type}]{verified} {locs} ({line_count} lines{parent_info})"
-                )
+                result.append(f"{num}. [{block_type}]{verified} {locs} ({line_count} lines)")
             else:
                 result.append(f"{num}. [pattern] {locs} ({line_count} lines)")
 
@@ -593,23 +600,23 @@ class CodeStructureTools:
 
         if exact:
             entry = exact[0].entry
+            rel = self._relative_path(entry.code_unit.file_path)
             return ToolResult(
-                prefix
-                + f"STOP: Identical code exists at {entry.code_unit.file_path}:{entry.code_unit.name} "
+                prefix + f"STOP: Identical code exists at {rel}:{entry.code_unit.name} "
                 f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). Reuse it."
             )
         elif high:
             entry = high[0].entry
+            rel = self._relative_path(entry.code_unit.file_path)
             return ToolResult(
-                prefix
-                + f"CAUTION: Very similar code at {entry.code_unit.file_path}:{entry.code_unit.name}. "
+                prefix + f"CAUTION: Very similar code at {rel}:{entry.code_unit.name}. "
                 f"Consider reusing or extending."
             )
         elif partial:
             entry = partial[0].entry
+            rel = self._relative_path(entry.code_unit.file_path)
             return ToolResult(
-                prefix
-                + f"NOTE: Partially similar code at {entry.code_unit.file_path}:{entry.code_unit.name}. "
+                prefix + f"NOTE: Partially similar code at {rel}:{entry.code_unit.name}. "
                 f"Review for potential reuse."
             )
 
@@ -698,7 +705,12 @@ class CodeStructureTools:
             label = "Suppressed" if suppress else "Unsuppressed"
             parts.append(f"{label} {len(changed)} hashes.")
         if not_found:
-            parts.append(f"{len(not_found)} not found: {', '.join(not_found)}")
+            max_shown = 5
+            if len(not_found) > max_shown:
+                shown = ", ".join(not_found[:max_shown]) + f" ... ({len(not_found)} total)"
+            else:
+                shown = ", ".join(not_found)
+            parts.append(f"{len(not_found)} not found: {shown}")
         if not parts:
             parts.append("No hashes provided.")
         if changed and suppress:
@@ -719,9 +731,12 @@ class CodeStructureTools:
         suppressed = self.index.get_suppressed()
         if not suppressed:
             return ToolResult(prefix + "No hashes are currently suppressed.")
-        return ToolResult(
-            prefix + f"Suppressed hashes ({len(suppressed)}):\n" + "\n".join(suppressed)
-        )
+        max_shown = 20
+        shown = suppressed[:max_shown]
+        text = prefix + f"Suppressed hashes ({len(suppressed)}):\n" + "\n".join(shown)
+        if len(suppressed) > max_shown:
+            text += f"\n... +{len(suppressed) - max_shown} more"
+        return ToolResult(text)
 
     def status(self) -> ToolResult:
         """Return current server status without blocking."""
@@ -916,9 +931,10 @@ class CodeStructureTools:
 
         if exact:
             entry = exact[0].entry
+            rel = self._relative_path(entry.code_unit.file_path)
             return ToolResult(
                 f"BLOCKED: Cannot write - identical code exists at "
-                f"{entry.code_unit.file_path}:{entry.code_unit.name} "
+                f"{rel}:{entry.code_unit.name} "
                 f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
                 f"Reuse the existing implementation instead."
             )
@@ -926,8 +942,9 @@ class CodeStructureTools:
         warning = ""
         if high:
             entry = high[0].entry
+            rel = self._relative_path(entry.code_unit.file_path)
             warning = (
-                f"WARNING: Similar code exists at {entry.code_unit.file_path}:{entry.code_unit.name}. "
+                f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
                 f"Consider reusing. Proceeding with write.\n\n"
             )
 
@@ -936,7 +953,8 @@ class CodeStructureTools:
         is_new = not os.path.exists(file_path)
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         action = "Created" if is_new else "Wrote"
-        summary = f"{action} {file_path} ({line_count} lines)"
+        rel_file = self._relative_path(file_path)
+        summary = f"{action} {rel_file} ({line_count} lines)"
         return self._write_file(file_path, content, summary=warning + summary)
 
     def _write_file(self, file_path: str, content: str, summary: str = "") -> ToolResult:
@@ -976,9 +994,10 @@ class CodeStructureTools:
             # Compare resolved paths to handle symlinks (e.g., /var -> /private/var on macOS)
             if str(Path(entry.code_unit.file_path).resolve()) != str(Path(file_path).resolve()):
                 # Cross-file duplicate: block
+                rel = self._relative_path(entry.code_unit.file_path)
                 return ToolResult(
                     f"BLOCKED: Cannot edit - identical code exists at "
-                    f"{entry.code_unit.file_path}:{entry.code_unit.name} "
+                    f"{rel}:{entry.code_unit.name} "
                     f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
                     f"Reuse the existing implementation instead."
                 )
@@ -991,8 +1010,9 @@ class CodeStructureTools:
                 )
         elif high:
             entry = high[0].entry
+            rel = self._relative_path(entry.code_unit.file_path)
             warning = (
-                f"WARNING: Similar code exists at {entry.code_unit.file_path}:{entry.code_unit.name}. "
+                f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
                 f"Consider reusing. Proceeding with edit.\n\n"
             )
 
@@ -1021,7 +1041,8 @@ class CodeStructureTools:
 
         # Apply the edit
         new_content = content.replace(old_string, new_string, 1)
-        diff = self._format_edit_diff(content, old_string, new_string, file_path)
+        rel_file = self._relative_path(file_path)
+        diff = self._format_edit_diff(content, old_string, new_string, rel_file)
 
         return self._write_file(file_path, new_content, summary=warning + diff)
 
