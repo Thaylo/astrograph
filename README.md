@@ -10,7 +10,7 @@
   █       █
 ```
 
-[![Docker](https://img.shields.io/badge/Docker-Hub-blue?logo=docker)](https://hub.docker.com/r/thaylo/astograph)
+[![Docker](https://img.shields.io/badge/Docker-Hub-blue?logo=docker)](https://hub.docker.com/r/thaylo/astrograph)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Server-purple)](https://modelcontextprotocol.io)
@@ -69,8 +69,8 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ```
 
 That's it. The codebase is auto-indexed at startup. In Claude:
-1. `astograph_analyze()` - Find existing duplicates
-2. Use `astograph_write` / `astograph_edit` - They'll block duplicates automatically
+1. `astrograph_analyze()` - Find existing duplicates
+2. Use `astrograph_write` / `astrograph_edit` - They'll block duplicates automatically
 
 ## The Problem
 
@@ -273,7 +273,7 @@ The Docker image runs in **event-driven mode** by default:
 ```bash
 pip install -e ".[dev]"
 pytest tests/ -q
-docker build -t astograph .
+docker build -t astrograph .
 ```
 
 ## License
