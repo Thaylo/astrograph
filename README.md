@@ -29,7 +29,7 @@ def calculate_sum(a, b):
     return a + b
 ```
 
-You ask Claude to write this:
+You ask your AI Agent to write this:
 ```python
 def add_numbers(x, y):
     return x + y
