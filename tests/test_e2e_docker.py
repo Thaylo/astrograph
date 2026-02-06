@@ -207,9 +207,8 @@ class TestMCPProtocol:
         tools = tools_response["result"]["tools"]
         tool_names = {t["name"] for t in tools}
 
-        # Verify all 11 tools are present
+        # Verify all 9 tools are present (event-driven mode: no index or check_staleness)
         expected_tools = {
-            "astrograph_index",
             "astrograph_analyze",
             "astrograph_check",
             "astrograph_compare",
@@ -219,7 +218,6 @@ class TestMCPProtocol:
             "astrograph_unsuppress",
             "astrograph_list_suppressions",
             "astrograph_suppress_idiomatic",
-            "astrograph_check_staleness",
         }
         assert expected_tools == tool_names
 
@@ -235,8 +233,8 @@ class TestMCPProtocol:
         tools_response = next((r for r in responses if r.get("id") == 2), None)
         tools = {t["name"]: t for t in tools_response["result"]["tools"]}
 
-        # Check index tool mentions Python
-        assert "Python" in tools["astrograph_index"]["description"]
+        # Check analyze tool mentions Python
+        assert "Python" in tools["astrograph_analyze"]["description"]
 
         # Check check tool mentions Python
         assert "Python" in tools["astrograph_check"]["description"]
@@ -248,32 +246,22 @@ class TestMCPProtocol:
 class TestE2EWorkflow:
     """End-to-end workflow tests."""
 
-    def test_index_analyze_workflow(self, sample_workspace):
-        """Test full index → analyze workflow."""
+    def test_analyze_workflow(self, sample_workspace):
+        """Test analyze workflow (auto-indexes at startup in event-driven mode)."""
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_index", {"path": "/workspace"}, 3),
-                mcp_call_tool("astrograph_analyze", {"thorough": True}, 4),
+                mcp_call_tool("astrograph_analyze", {"thorough": True}, 3),
             ],
             workspace_path=sample_workspace,
         )
 
-        # Find index response
-        index_response = next((r for r in responses if r.get("id") == 3), None)
-        assert index_response is not None
-        assert "result" in index_response
-
-        index_text = index_response["result"]["content"][0]["text"]
-        assert "Indexed" in index_text
-        assert "code units" in index_text
-
         # Find analyze response
-        analyze_response = next((r for r in responses if r.get("id") == 4), None)
+        analyze_response = next((r for r in responses if r.get("id") == 3), None)
         assert analyze_response is not None
 
         analyze_text = analyze_response["result"]["content"][0]["text"]
-        # Should find duplicates in our sample code
+        # Should find duplicates in our sample code or report clean
         assert "duplicate" in analyze_text.lower() or "CLEAN" in analyze_text
 
     def test_check_similar_code(self, sample_workspace):
@@ -288,14 +276,13 @@ def add_values(a, b):
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_index", {"path": "/workspace"}, 3),
-                mcp_call_tool("astrograph_check", {"code": similar_code}, 4),
+                mcp_call_tool("astrograph_check", {"code": similar_code}, 3),
             ],
             workspace_path=sample_workspace,
         )
 
         # Find check response
-        check_response = next((r for r in responses if r.get("id") == 4), None)
+        check_response = next((r for r in responses if r.get("id") == 3), None)
         assert check_response is not None
 
         check_text = check_response["result"]["content"][0]["text"]
@@ -342,35 +329,36 @@ def add_values(a, b):
 class TestErrorHandling:
     """Tests for error handling in MCP protocol."""
 
-    def test_index_nonexistent_path(self):
-        """Test indexing a path that doesn't exist."""
+    def test_unknown_tool(self):
+        """Test calling a tool that doesn't exist."""
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_index", {"path": "/nonexistent/path"}, 3),
+                mcp_call_tool("astrograph_nonexistent", {}, 3),
             ]
         )
 
-        index_response = next((r for r in responses if r.get("id") == 3), None)
-        assert index_response is not None
+        response = next((r for r in responses if r.get("id") == 3), None)
+        assert response is not None
 
-        response_text = index_response["result"]["content"][0]["text"]
-        assert "Error" in response_text or "not exist" in response_text
+        response_text = response["result"]["content"][0]["text"]
+        assert "Unknown tool" in response_text
 
-    def test_analyze_without_index(self):
-        """Test analyzing before indexing."""
+    def test_suppress_without_hash(self):
+        """Test suppressing without providing a hash."""
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("astrograph_suppress", {}, 3),
             ]
         )
 
-        analyze_response = next((r for r in responses if r.get("id") == 3), None)
-        assert analyze_response is not None
+        response = next((r for r in responses if r.get("id") == 3), None)
+        assert response is not None
 
-        response_text = analyze_response["result"]["content"][0]["text"]
-        assert "index" in response_text.lower()
+        response_text = response["result"]["content"][0]["text"]
+        # Should require wl_hash parameter
+        assert "hash" in response_text.lower() or "required" in response_text.lower()
 
 
 # Skip Docker tests if Docker is not available
