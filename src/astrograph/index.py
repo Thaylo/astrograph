@@ -997,9 +997,6 @@ class CodeStructureIndex:
             "unique_patterns": len(self.pattern_buckets),
             "unique_block_hashes": len(self.block_buckets),
             "indexed_files": len(self.file_entries),
-            "duplicate_groups": sum(1 for ids in self.hash_buckets.values() if len(ids) > 1),
-            "pattern_groups": sum(1 for ids in self.pattern_buckets.values() if len(ids) > 1),
-            "block_duplicate_groups": sum(1 for ids in self.block_buckets.values() if len(ids) > 1),
             "suppressed_hashes": len(self.suppressed_hashes),
         }
 

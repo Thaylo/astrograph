@@ -174,16 +174,13 @@ class CodeStructureTools:
 
         return f"Suppressions invalidated: {', '.join(h for h, _ in invalidated)}. Run analyze().\n"
 
-    def _format_duplicate_warnings(
-        self, result_parts: list[str], dup_count: int, block_dup_count: int
-    ) -> int:
-        """Format duplicate warnings and append to result_parts. Returns total duplicates."""
-        total_dups = dup_count + block_dup_count
-        if total_dups > 0:
-            result_parts.append(f"\n{total_dups} duplicates. Run analyze().")
-        else:
-            result_parts.append("\nNo duplicates.")
-        return total_dups
+    def _has_significant_duplicates(self) -> bool:
+        """Check if there are duplicates above the trivial threshold."""
+        min_nodes = 5
+        return bool(
+            self.index.find_all_duplicates(min_node_count=min_nodes)
+            or self.index.find_block_duplicates(min_node_count=min_nodes)
+        )
 
     def _format_index_stats(self, include_blocks: bool, incremental_info: str = "") -> str:
         """Format index statistics for output."""
@@ -194,11 +191,12 @@ class CodeStructureTools:
         if include_blocks:
             result_parts.append(f"Extracted {stats['block_entries']} code blocks.")
 
-        dup_count = stats["duplicate_groups"]
-        block_dup_count = stats["block_duplicate_groups"] if include_blocks else 0
-        total_dups = self._format_duplicate_warnings(result_parts, dup_count, block_dup_count)
+        if self._has_significant_duplicates():
+            result_parts.append("\nDuplicates found. Run analyze().")
+            return "\n".join(result_parts)
 
-        return "\n".join(result_parts) if total_dups > 0 else " ".join(result_parts)
+        result_parts.append("\nNo duplicates.")
+        return " ".join(result_parts)
 
     def index_codebase(
         self,
@@ -270,10 +268,10 @@ class CodeStructureTools:
             f"Extracted {stats['block_entries']} code blocks.",
         ]
 
-        # Duplicate warnings
-        dup_count = stats["duplicate_groups"]
-        block_dup_count = stats["block_duplicate_groups"]
-        self._format_duplicate_warnings(result_parts, dup_count, block_dup_count)
+        if self._has_significant_duplicates():
+            result_parts.append("\nDuplicates found. Run analyze().")
+        else:
+            result_parts.append("\nNo duplicates.")
 
         # Prepend cloud warning if detected
         output = "\n".join(result_parts)
@@ -474,22 +472,13 @@ class CodeStructureTools:
                 }
             )
 
-        # Count hidden duplicates (filtered by min_node_count)
-        stats = self.index.get_stats()
-        total_dup_groups = stats["duplicate_groups"]
-        total_block_groups = stats["block_duplicate_groups"]
-        shown_exact = sum(1 for f in findings if f["type"] == "exact")
-        shown_block = sum(1 for f in findings if f["type"] == "block")
-        hidden_exact = total_dup_groups - shown_exact
-        hidden_block = total_block_groups - shown_block
-        suppressed_count = stats["suppressed_hashes"]
+        suppressed_count = self.index.get_stats()["suppressed_hashes"]
 
         if not findings:
             self._clear_analysis_report()
-            hidden = hidden_exact + hidden_block
             msg = "No significant duplicates."
-            if hidden or suppressed_count:
-                msg += f" {hidden} trivial, {suppressed_count} suppressed."
+            if suppressed_count:
+                msg += f" {suppressed_count} suppressed."
             return ToolResult(invalidation_warning + staleness_warning + msg)
 
         lines: list[str] = []
@@ -518,8 +507,6 @@ class CodeStructureTools:
             lines.append("")
 
         # Compact footer
-        if hidden_exact + hidden_block > 0:
-            lines.append(f"+ {hidden_exact + hidden_block} trivial hidden")
         if suppressed_count > 0:
             lines.append(f"+ {suppressed_count} suppressed")
         lines.append(f"{len(findings)} duplicate groups.")
@@ -541,9 +528,6 @@ class CodeStructureTools:
             if pattern_count:
                 type_parts.append(f"{pattern_count} pattern")
             summary_parts = [f"Found {len(findings)} duplicate groups: {', '.join(type_parts)}."]
-            hidden_total = hidden_exact + hidden_block
-            if hidden_total > 0:
-                summary_parts.append(f"+ {hidden_total} trivial hidden.")
             if suppressed_count > 0:
                 summary_parts.append(f"+ {suppressed_count} suppressed.")
             line_count_report = full_output.count("\n") + 1

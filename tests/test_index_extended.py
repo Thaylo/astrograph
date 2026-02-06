@@ -504,8 +504,7 @@ class TestPatternDuplicates:
         index.add_code_unit(unit2)
 
         stats = index.get_stats()
-        assert "pattern_groups" in stats
-        assert stats["pattern_groups"] >= 1
+        assert "unique_patterns" in stats
 
 
 class TestBlockDuplicates:
@@ -676,9 +675,7 @@ def func2():
 
         assert "block_entries" in stats
         assert "unique_block_hashes" in stats
-        assert "block_duplicate_groups" in stats
         assert stats["block_entries"] == 2
-        assert stats["block_duplicate_groups"] >= 1
 
     def test_clear_clears_block_data(self, tmp_path):
         """Clear should also clear block-related data."""
