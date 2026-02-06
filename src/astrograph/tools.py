@@ -12,7 +12,9 @@ Supports two modes:
 - Event-driven mode: SQLite persistence, file watching, pre-computed analysis
 """
 
+import logging
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +30,8 @@ from .index import CodeStructureIndex, DuplicateGroup, IndexEntry
 
 if TYPE_CHECKING:
     from .event_driven import EventDrivenIndex
+
+logger = logging.getLogger(__name__)
 
 
 # Persistence directory name for cached index
@@ -145,12 +149,38 @@ class CodeStructureTools:
 
         self._last_indexed_path: str | None = None
 
+        # Background indexing state
+        self._bg_index_thread: threading.Thread | None = None
+        self._bg_index_done = threading.Event()
+        self._bg_index_done.set()  # Initially "done" (no background work)
+
         # Auto-index /workspace at startup in event-driven mode (Docker)
+        # Run in background so the MCP handshake completes immediately.
         if event_driven and os.path.isdir("/workspace"):
-            self.index_codebase("/workspace")
+            self._bg_index_done.clear()
+            self._bg_index_thread = threading.Thread(
+                target=self._background_index,
+                args=("/workspace",),
+                daemon=True,
+            )
+            self._bg_index_thread.start()
+
+    def _background_index(self, path: str) -> None:
+        """Index a codebase in the background."""
+        try:
+            self.index_codebase(path)
+        except Exception:
+            logger.exception(f"Background indexing failed for {path}")
+        finally:
+            self._bg_index_done.set()
+
+    def _wait_for_background_index(self) -> None:
+        """Block until background indexing completes (if running)."""
+        self._bg_index_done.wait()
 
     def _require_index(self) -> ToolResult | None:
         """Return error result if index is empty, None if populated."""
+        self._wait_for_background_index()
         if not self.index.entries:
             return ToolResult("No code indexed. Call index_codebase first.")
         return None
@@ -965,6 +995,7 @@ class CodeStructureTools:
 
     def close(self) -> None:
         """Clean up resources (file watchers, database connections)."""
+        self._wait_for_background_index()
         if self._event_driven_index is not None:
             self._event_driven_index.close()
             self._event_driven_index = None

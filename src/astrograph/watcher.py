@@ -39,7 +39,7 @@ SKIP_DIRS = frozenset(
         ".ruff_cache",
         "dist",
         "build",
-        "*.egg-info",
+        ".eggs",
     ]
 )
 

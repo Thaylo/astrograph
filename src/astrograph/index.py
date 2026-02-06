@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,13 +30,46 @@ from .canonical_hash import (
     weisfeiler_leman_hash,
 )
 
-# Directories to skip when indexing Python files
-_SKIP_DIRS = frozenset(["__pycache__", ".git", "venv", ".venv", "node_modules", ".tox"])
+# Directories to skip when indexing (never entered during os.walk)
+_SKIP_DIRS = frozenset(
+    [
+        "__pycache__",
+        ".git",
+        "venv",
+        ".venv",
+        "node_modules",
+        ".tox",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "dist",
+        "build",
+        ".metadata_astrograph",
+        ".eggs",
+    ]
+)
 
 
 def _should_skip_path(path_parts: tuple[str, ...]) -> bool:
     """Check if a path should be skipped based on directory names."""
-    return any(p in _SKIP_DIRS for p in path_parts)
+    return any(p in _SKIP_DIRS or p.endswith(".egg-info") for p in path_parts)
+
+
+def _walk_python_files(root: str, recursive: bool = True) -> Iterator[str]:
+    """Walk a directory yielding .py file paths, pruning skip dirs early.
+
+    Uses os.walk with in-place directory pruning so we never enter
+    __pycache__, .venv, node_modules, etc. This is O(project files)
+    instead of O(all files including virtualenvs).
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune skip dirs IN-PLACE so os.walk never descends into them
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.endswith(".egg-info")]
+        for fname in filenames:
+            if fname.endswith(".py"):
+                yield os.path.join(dirpath, fname)
+        if not recursive:
+            break  # Only process top-level directory
 
 
 @dataclass
@@ -446,12 +479,9 @@ class CodeStructureIndex:
             return []
 
         all_entries = []
-        pattern = "**/*.py" if recursive else "*.py"
 
-        for py_file in path.glob(pattern):
-            if _should_skip_path(py_file.parts):
-                continue
-            entries = self.index_file(str(py_file), include_blocks, max_block_depth)
+        for py_file in _walk_python_files(str(path), recursive):
+            entries = self.index_file(py_file, include_blocks, max_block_depth)
             all_entries.extend(entries)
 
         return all_entries
@@ -508,13 +538,8 @@ class CodeStructureIndex:
         unchanged_count = 0
         seen_files: set[str] = set()
 
-        pattern = "**/*.py" if recursive else "*.py"
-
-        for py_file in path.glob(pattern):
-            if _should_skip_path(py_file.parts):
-                continue
-
-            file_str = str(py_file)
+        for py_file in _walk_python_files(str(path), recursive):
+            file_str = py_file
             seen_files.add(file_str)
 
             was_new = file_str not in self.file_metadata
@@ -1109,12 +1134,9 @@ class CodeStructureIndex:
 
         # Check for new files if root_path is provided
         if root_path and os.path.isdir(root_path):
-            for py_file in Path(root_path).glob("**/*.py"):
-                if _should_skip_path(py_file.parts):
-                    continue
-                file_str = str(py_file)
-                if file_str not in self.file_metadata:
-                    new_files.append(file_str)
+            for py_file in _walk_python_files(root_path):
+                if py_file not in self.file_metadata:
+                    new_files.append(py_file)
 
         # Check suppression staleness
         stale_suppressions = self.check_suppression_staleness()
