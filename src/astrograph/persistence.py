@@ -6,13 +6,17 @@ and crash safety for the code structure index.
 """
 
 import json
+import logging
 import sqlite3
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .index import CodeStructureIndex, FileMetadata, IndexEntry, SuppressionInfo
+
+logger = logging.getLogger(__name__)
 
 # Schema version for migrations
 SCHEMA_VERSION = 1
@@ -104,6 +108,7 @@ class SQLitePersistence:
         """Close the database connection."""
         if self._conn is not None:
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.vacuum()
             self._conn.close()
             self._conn = None
 
@@ -282,20 +287,20 @@ class SQLitePersistence:
 
         # Load entries
         cursor = self.conn.execute("SELECT id, data FROM entries")
-        index.entries = {}
-        for row in cursor.fetchall():
-            entry = IndexEntry.from_dict(json.loads(row["data"]))
-            index.entries[row["id"]] = entry
-
-        # Rebuild hash buckets from entries
-        index.hash_buckets = {}
-        index.pattern_buckets = {}
-        index.block_buckets = {}
-        index.block_type_index = {}
-        index.fingerprint_index = {}
-        index.file_entries = {}
+        index.entries.clear()
+        index.hash_buckets.clear()
+        index.pattern_buckets.clear()
+        index.block_buckets.clear()
+        index.block_type_index.clear()
+        index.fingerprint_index.clear()
+        index.file_entries.clear()
         index._block_entry_count = 0
         index._function_entry_count = 0
+
+        with index.entries.bulk_load():
+            for row in cursor.fetchall():
+                entry = IndexEntry.from_dict(json.loads(row["data"]))
+                index.entries[row["id"]] = entry
 
         for eid, entry in index.entries.items():
             is_block = entry.code_unit.unit_type == "block"
@@ -394,3 +399,58 @@ class SQLitePersistence:
             "suppression_count": suppression_count,
             "db_size_bytes": db_size,
         }
+
+    # =========================================================================
+    # Single/Batch Entry Lookup (for LRU cache misses)
+    # =========================================================================
+
+    def get_entry(self, entry_id: str) -> "IndexEntry | None":
+        """Load a single entry by primary key (for LRU cache miss)."""
+        from .index import IndexEntry
+
+        cursor = self.conn.execute("SELECT data FROM entries WHERE id = ?", (entry_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return IndexEntry.from_dict(json.loads(row["data"]))
+
+    def get_entries_batch(self, entry_ids: set[str]) -> Iterator[tuple[str, "IndexEntry"]]:
+        """Load multiple entries by ID (batch lookup for iteration)."""
+        from .index import IndexEntry
+
+        if not entry_ids:
+            return
+
+        # SQLite has a limit on the number of variables; chunk if needed
+        ids_list = list(entry_ids)
+        chunk_size = 500
+        for i in range(0, len(ids_list), chunk_size):
+            chunk = ids_list[i : i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            cursor = self.conn.execute(
+                f"SELECT id, data FROM entries WHERE id IN ({placeholders})",  # noqa: S608
+                chunk,
+            )
+            for row in cursor.fetchall():
+                yield row["id"], IndexEntry.from_dict(json.loads(row["data"]))
+
+    def iter_entries(self) -> Iterator[tuple[str, "IndexEntry"]]:
+        """Stream all entries from the database."""
+        from .index import IndexEntry
+
+        cursor = self.conn.execute("SELECT id, data FROM entries")
+        for row in cursor.fetchall():
+            yield row["id"], IndexEntry.from_dict(json.loads(row["data"]))
+
+    # =========================================================================
+    # Maintenance
+    # =========================================================================
+
+    def vacuum(self) -> None:
+        """Run VACUUM to reclaim unused space in the database."""
+        if self._conn is not None:
+            try:
+                self._conn.execute("VACUUM")
+            except sqlite3.OperationalError:
+                # VACUUM can fail if a transaction is active
+                logger.debug("VACUUM skipped (transaction active)")

@@ -633,6 +633,100 @@ class TestAnalysisCacheDirectly:
         assert cache.computed_at > 0
 
 
+class TestPersistenceEntryLookup:
+    """Tests for single/batch entry lookup on persistence."""
+
+    def test_get_entry_single(self):
+        """Test loading a single entry by ID."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+
+            index = CodeStructureIndex()
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write("def foo(): pass\ndef bar(): pass")
+
+            index.index_file(file1)
+            entry_ids = list(index.entries.keys())
+
+            persistence = SQLitePersistence(db_path)
+            persistence.save_full_index(index)
+
+            # Look up a single entry
+            entry = persistence.get_entry(entry_ids[0])
+            assert entry is not None
+            assert entry.id == entry_ids[0]
+
+            # Missing entry
+            missing = persistence.get_entry("nonexistent_id")
+            assert missing is None
+
+            persistence.close()
+
+    def test_get_entries_batch(self):
+        """Test batch loading entries by IDs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+
+            index = CodeStructureIndex()
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write("def foo(): pass\ndef bar(): pass\ndef baz(): pass")
+
+            index.index_file(file1)
+            entry_ids = list(index.entries.keys())
+
+            persistence = SQLitePersistence(db_path)
+            persistence.save_full_index(index)
+
+            batch = list(persistence.get_entries_batch(set(entry_ids)))
+            assert len(batch) == len(entry_ids)
+
+            persistence.close()
+
+    def test_iter_entries(self):
+        """Test streaming all entries."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+
+            index = CodeStructureIndex()
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write("def foo(): pass\ndef bar(): pass")
+
+            index.index_file(file1)
+
+            persistence = SQLitePersistence(db_path)
+            persistence.save_full_index(index)
+
+            all_entries = list(persistence.iter_entries())
+            assert len(all_entries) == len(index.entries)
+
+            persistence.close()
+
+    def test_vacuum(self):
+        """Test vacuum executes without error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+
+            persistence = SQLitePersistence(db_path)
+
+            # Vacuum on empty DB should not raise
+            persistence.vacuum()
+
+            # Add some data, then vacuum
+            index = CodeStructureIndex()
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write("def foo(): pass")
+            index.index_file(file1)
+            persistence.save_full_index(index)
+
+            persistence.vacuum()  # Should not raise
+
+            persistence.close()
+
+
 class TestPersistenceEdgeCases:
     """Tests for persistence edge cases."""
 
@@ -1723,3 +1817,46 @@ class TestCloudDetectionPlatformSpecific:
             is_synced, service = is_cloud_synced_path(check_dir)
             assert is_synced is False
             assert service is None
+
+
+class TestLRUPersistenceIntegration:
+    """End-to-end tests for LRU eviction with SQLite persistence."""
+
+    def test_index_stats_show_resident_vs_total(self):
+        """Test that get_stats shows entries_resident and entries_total."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write("def foo(): pass\ndef bar(): pass")
+
+            from astrograph.event_driven import EventDrivenIndex
+
+            db_path = os.path.join(tmpdir, "index.db")
+            edi = EventDrivenIndex(persistence_path=db_path, watch_enabled=False)
+            edi.index_directory(tmpdir)
+
+            stats = edi.index.get_stats()
+            assert "entries_resident" in stats
+            assert "entries_total" in stats
+            assert stats["entries_resident"] == stats["entries_total"]
+
+            edi.close()
+
+    def test_entry_store_persistence_wired(self):
+        """Test that EventDrivenIndex wires persistence to EntryStore."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "index.db")
+
+            from astrograph.event_driven import EventDrivenIndex
+
+            edi = EventDrivenIndex(persistence_path=db_path, watch_enabled=False)
+            assert edi.index.entries._persistence is not None
+            edi.close()
+
+    def test_entry_store_no_persistence_when_none(self):
+        """Test that EntryStore has no persistence when not configured."""
+        from astrograph.event_driven import EventDrivenIndex
+
+        edi = EventDrivenIndex(persistence_path=None, watch_enabled=False)
+        assert edi.index.entries._persistence is None
+        edi.close()

@@ -116,6 +116,8 @@ class EventDrivenIndex:
         self._persistence: SQLitePersistence | None = None
         if persistence_path:
             self._persistence = SQLitePersistence(persistence_path)
+            # Wire persistence to EntryStore for LRU eviction support
+            self.index.entries.set_persistence(self._persistence)
 
         # File watching
         self._watch_enabled = watch_enabled and HAS_WATCHDOG
@@ -358,6 +360,7 @@ class EventDrivenIndex:
             # Persist any changes
             if added > 0 or updated > 0:
                 self._persistence.save_full_index(self.index)
+                self._persistence.vacuum()
 
             logger.info(
                 f"Incremental update: {added} added, {updated} updated, {unchanged} unchanged"
@@ -380,6 +383,7 @@ class EventDrivenIndex:
         # Persist
         if self._persistence is not None:
             self._persistence.save_full_index(self.index)
+            self._persistence.vacuum()
 
         # Start watching if enabled
         if self._watch_enabled:

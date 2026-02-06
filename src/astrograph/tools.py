@@ -179,7 +179,9 @@ class CodeStructureTools:
 
     def _wait_for_background_index(self) -> None:
         """Block until background indexing completes (if running)."""
-        self._bg_index_done.wait()
+        timeout = int(os.environ.get("ASTROGRAPH_INDEX_TIMEOUT", "300"))
+        if not self._bg_index_done.wait(timeout=timeout):
+            logger.warning("Background indexing timed out after %ds", timeout)
 
     def _require_index(self) -> ToolResult | None:
         """Return error result if index is empty, None if populated."""
@@ -1025,5 +1027,14 @@ class CodeStructureTools:
     def get_event_driven_stats(self) -> dict | None:
         """Get event-driven mode statistics (returns None if not in event-driven mode)."""
         if self._event_driven_index is not None:
-            return self._event_driven_index.get_stats()
+            stats = self._event_driven_index.get_stats()
+            # Add process memory usage (stdlib, no new deps)
+            try:
+                import resource
+
+                rusage = resource.getrusage(resource.RUSAGE_SELF)
+                stats["process_rss_bytes"] = rusage.ru_maxrss * 1024  # macOS uses KB
+            except (ImportError, AttributeError):
+                pass
+            return stats
         return None

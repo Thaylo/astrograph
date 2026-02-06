@@ -7,6 +7,7 @@ Stores AST graphs with their hashes for efficient duplicate detection.
 import hashlib
 import json
 import os
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -301,7 +302,9 @@ class CodeStructureIndex:
     """
 
     def __init__(self) -> None:
-        self.entries: dict[str, IndexEntry] = {}  # id -> entry
+        from .entry_store import EntryStore
+
+        self.entries: EntryStore = EntryStore()  # id -> entry (LRU-bounded)
         self.hash_buckets: dict[str, set[str]] = {}  # wl_hash -> {entry_ids}
         self.pattern_buckets: dict[str, set[str]] = {}  # pattern_hash -> {entry_ids}
         self.file_entries: dict[str, list[str]] = {}  # file_path -> [entry_ids]
@@ -322,6 +325,8 @@ class CodeStructureIndex:
         self._function_entry_count = 0
         # Persistence path for auto-save (None = no auto-save)
         self._persistence_path: Path | None = None
+        # Thread safety for concurrent access from file watcher and MCP tools
+        self._lock = threading.RLock()
 
     def _generate_id(self) -> str:
         self._entry_counter += 1
@@ -381,62 +386,63 @@ class CodeStructureIndex:
 
     def add_ast_graph(self, ast_graph: ASTGraph) -> IndexEntry:
         """Add an AST graph to the index."""
-        entry_id = self._generate_id()
+        with self._lock:
+            entry_id = self._generate_id()
 
-        wl_hash = weisfeiler_leman_hash(ast_graph.graph)
-        fp = structural_fingerprint(ast_graph.graph)
-        hierarchy = list(compute_hierarchy_hash(ast_graph.graph))
+            wl_hash = weisfeiler_leman_hash(ast_graph.graph)
+            fp = structural_fingerprint(ast_graph.graph)
+            hierarchy = list(compute_hierarchy_hash(ast_graph.graph))
 
-        # Compute pattern hash with normalized operators
-        language = ast_graph.code_unit.language
-        plugin = LanguageRegistry.get().get_plugin(language)
-        if plugin is not None:
-            pattern_graph = plugin.source_to_graph(ast_graph.code_unit.code, normalize_ops=True)
-        else:
-            pattern_graph = ast_to_graph(ast_graph.code_unit.code, normalize_ops=True)
-        pattern_hash = weisfeiler_leman_hash(pattern_graph)
+            # Compute pattern hash with normalized operators
+            language = ast_graph.code_unit.language
+            plugin = LanguageRegistry.get().get_plugin(language)
+            if plugin is not None:
+                pattern_graph = plugin.source_to_graph(ast_graph.code_unit.code, normalize_ops=True)
+            else:
+                pattern_graph = ast_to_graph(ast_graph.code_unit.code, normalize_ops=True)
+            pattern_hash = weisfeiler_leman_hash(pattern_graph)
 
-        entry = IndexEntry(
-            id=entry_id,
-            wl_hash=wl_hash,
-            pattern_hash=pattern_hash,
-            fingerprint=fp,
-            hierarchy_hashes=hierarchy,
-            code_unit=ast_graph.code_unit,
-            node_count=ast_graph.node_count,
-            depth=ast_graph.depth,
-        )
+            entry = IndexEntry(
+                id=entry_id,
+                wl_hash=wl_hash,
+                pattern_hash=pattern_hash,
+                fingerprint=fp,
+                hierarchy_hashes=hierarchy,
+                code_unit=ast_graph.code_unit,
+                node_count=ast_graph.node_count,
+                depth=ast_graph.depth,
+            )
 
-        self.entries[entry_id] = entry
+            self.entries[entry_id] = entry
 
-        is_block = ast_graph.code_unit.unit_type == "block"
+            is_block = ast_graph.code_unit.unit_type == "block"
 
-        if is_block:
-            # Add to block-specific buckets (keeps function lookups O(1))
-            self.block_buckets.setdefault(wl_hash, set()).add(entry_id)
+            if is_block:
+                # Add to block-specific buckets (keeps function lookups O(1))
+                self.block_buckets.setdefault(wl_hash, set()).add(entry_id)
 
-            # Add to block type index
-            block_type = ast_graph.code_unit.block_type
-            if block_type:
-                self.block_type_index.setdefault(block_type, set()).add(entry_id)
-            self._block_entry_count += 1
-        else:
-            # Add to function/class hash bucket (exact matches)
-            self.hash_buckets.setdefault(wl_hash, set()).add(entry_id)
+                # Add to block type index
+                block_type = ast_graph.code_unit.block_type
+                if block_type:
+                    self.block_type_index.setdefault(block_type, set()).add(entry_id)
+                self._block_entry_count += 1
+            else:
+                # Add to function/class hash bucket (exact matches)
+                self.hash_buckets.setdefault(wl_hash, set()).add(entry_id)
 
-            # Add to pattern bucket (pattern matches - same structure, different operators)
-            self.pattern_buckets.setdefault(pattern_hash, set()).add(entry_id)
-            self._function_entry_count += 1
+                # Add to pattern bucket (pattern matches - same structure, different operators)
+                self.pattern_buckets.setdefault(pattern_hash, set()).add(entry_id)
+                self._function_entry_count += 1
 
-        # Add to fingerprint index for O(1) similarity lookups (skip empty graphs)
-        if "n_nodes" in fp:
-            fp_key = (fp["n_nodes"], fp["n_edges"])
-            self.fingerprint_index.setdefault(fp_key, set()).add(entry_id)
+            # Add to fingerprint index for O(1) similarity lookups (skip empty graphs)
+            if "n_nodes" in fp:
+                fp_key = (fp["n_nodes"], fp["n_edges"])
+                self.fingerprint_index.setdefault(fp_key, set()).add(entry_id)
 
-        # Add to file index
-        self.file_entries.setdefault(ast_graph.code_unit.file_path, []).append(entry_id)
+            # Add to file index
+            self.file_entries.setdefault(ast_graph.code_unit.file_path, []).append(entry_id)
 
-        return entry
+            return entry
 
     def index_file(
         self,
@@ -464,26 +470,27 @@ class CodeStructureIndex:
         except (OSError, UnicodeDecodeError):
             return []
 
-        # Remove existing entries for this file
-        self.remove_file(file_path)
+        with self._lock:
+            # Remove existing entries for this file
+            self.remove_file(file_path)
 
-        entries = []
-        for unit in extract_code_units(source, file_path, include_blocks, max_block_depth):
-            entry = self.add_code_unit(unit)
-            entries.append(entry)
+            entries = []
+            for unit in extract_code_units(source, file_path, include_blocks, max_block_depth):
+                entry = self.add_code_unit(unit)
+                entries.append(entry)
 
-        # Record file metadata for staleness detection
-        content_hash = self._compute_file_hash(file_path)
-        if content_hash:
-            self.file_metadata[file_path] = FileMetadata(
-                file_path=file_path,
-                mtime=os.path.getmtime(file_path),
-                content_hash=content_hash,
-                indexed_at=time.time(),
-                entry_count=len(entries),
-            )
+            # Record file metadata for staleness detection
+            content_hash = self._compute_file_hash(file_path)
+            if content_hash:
+                self.file_metadata[file_path] = FileMetadata(
+                    file_path=file_path,
+                    mtime=os.path.getmtime(file_path),
+                    content_hash=content_hash,
+                    indexed_at=time.time(),
+                    entry_count=len(entries),
+                )
 
-        return entries
+            return entries
 
     def index_directory(
         self,
@@ -507,9 +514,10 @@ class CodeStructureIndex:
 
         all_entries = []
 
-        for py_file in _walk_python_files(str(path), recursive):
-            entries = self.index_file(py_file, include_blocks, max_block_depth)
-            all_entries.extend(entries)
+        with self._lock:
+            for py_file in _walk_python_files(str(path), recursive):
+                entries = self.index_file(py_file, include_blocks, max_block_depth)
+                all_entries.extend(entries)
 
         return all_entries
 
@@ -559,93 +567,95 @@ class CodeStructureIndex:
         if not path.exists():
             return [], 0, 0, 0
 
-        all_entries: list[IndexEntry] = []
-        added_count = 0
-        updated_count = 0
-        unchanged_count = 0
-        seen_files: set[str] = set()
+        with self._lock:
+            all_entries: list[IndexEntry] = []
+            added_count = 0
+            updated_count = 0
+            unchanged_count = 0
+            seen_files: set[str] = set()
 
-        for py_file in _walk_python_files(str(path), recursive):
-            file_str = py_file
-            seen_files.add(file_str)
+            for py_file in _walk_python_files(str(path), recursive):
+                file_str = py_file
+                seen_files.add(file_str)
 
-            was_new = file_str not in self.file_metadata
-            entries, was_changed = self.index_file_if_changed(
-                file_str, include_blocks, max_block_depth
-            )
+                was_new = file_str not in self.file_metadata
+                entries, was_changed = self.index_file_if_changed(
+                    file_str, include_blocks, max_block_depth
+                )
 
-            if was_changed:
-                if was_new:
-                    added_count += 1
+                if was_changed:
+                    if was_new:
+                        added_count += 1
+                    else:
+                        updated_count += 1
+                    all_entries.extend(entries)
                 else:
-                    updated_count += 1
-                all_entries.extend(entries)
-            else:
-                unchanged_count += 1
-                # Include existing entries in result
-                if file_str in self.file_entries:
-                    for entry_id in self.file_entries[file_str]:
-                        if entry_id in self.entries:
-                            all_entries.append(self.entries[entry_id])
+                    unchanged_count += 1
+                    # Include existing entries in result
+                    if file_str in self.file_entries:
+                        for entry_id in self.file_entries[file_str]:
+                            if entry_id in self.entries:
+                                all_entries.append(self.entries[entry_id])
 
-        # Remove files that no longer exist
-        files_to_remove = [f for f in self.file_metadata if f not in seen_files]
-        for file_path in files_to_remove:
-            self.remove_file(file_path)
+            # Remove files that no longer exist
+            files_to_remove = [f for f in self.file_metadata if f not in seen_files]
+            for file_path in files_to_remove:
+                self.remove_file(file_path)
 
-        return all_entries, added_count, updated_count, unchanged_count
+            return all_entries, added_count, updated_count, unchanged_count
 
     def remove_file(self, file_path: str) -> None:
         """Remove all entries for a file from the index. O(k) where k = entries in file."""
-        if file_path not in self.file_entries:
-            return
+        with self._lock:
+            if file_path not in self.file_entries:
+                return
 
-        for entry_id in self.file_entries[file_path]:
-            entry = self.entries.get(entry_id)
-            if entry:
-                is_block = entry.code_unit.unit_type == "block"
+            for entry_id in self.file_entries[file_path]:
+                # Use hot metadata to avoid loading full entry from SQLite
+                meta = self.entries.get_meta(entry_id)
+                if meta:
+                    is_block = meta.unit_type == "block"
 
-                if is_block:
-                    # O(1) removal from block bucket
-                    if entry.wl_hash in self.block_buckets:
-                        self.block_buckets[entry.wl_hash].discard(entry_id)
-                        if not self.block_buckets[entry.wl_hash]:
-                            del self.block_buckets[entry.wl_hash]
-                    # O(1) removal from block type index
-                    block_type = entry.code_unit.block_type
-                    if block_type and block_type in self.block_type_index:
-                        self.block_type_index[block_type].discard(entry_id)
-                        if not self.block_type_index[block_type]:
-                            del self.block_type_index[block_type]
-                    self._block_entry_count -= 1
-                else:
-                    # O(1) removal from hash bucket
-                    if entry.wl_hash in self.hash_buckets:
-                        self.hash_buckets[entry.wl_hash].discard(entry_id)
-                        if not self.hash_buckets[entry.wl_hash]:
-                            del self.hash_buckets[entry.wl_hash]
-                    # O(1) removal from pattern bucket
-                    if entry.pattern_hash in self.pattern_buckets:
-                        self.pattern_buckets[entry.pattern_hash].discard(entry_id)
-                        if not self.pattern_buckets[entry.pattern_hash]:
-                            del self.pattern_buckets[entry.pattern_hash]
-                    self._function_entry_count -= 1
+                    if is_block:
+                        # O(1) removal from block bucket
+                        if meta.wl_hash in self.block_buckets:
+                            self.block_buckets[meta.wl_hash].discard(entry_id)
+                            if not self.block_buckets[meta.wl_hash]:
+                                del self.block_buckets[meta.wl_hash]
+                        # O(1) removal from block type index
+                        if meta.block_type and meta.block_type in self.block_type_index:
+                            self.block_type_index[meta.block_type].discard(entry_id)
+                            if not self.block_type_index[meta.block_type]:
+                                del self.block_type_index[meta.block_type]
+                        self._block_entry_count -= 1
+                    else:
+                        # O(1) removal from hash bucket
+                        if meta.wl_hash in self.hash_buckets:
+                            self.hash_buckets[meta.wl_hash].discard(entry_id)
+                            if not self.hash_buckets[meta.wl_hash]:
+                                del self.hash_buckets[meta.wl_hash]
+                        # O(1) removal from pattern bucket
+                        if meta.pattern_hash in self.pattern_buckets:
+                            self.pattern_buckets[meta.pattern_hash].discard(entry_id)
+                            if not self.pattern_buckets[meta.pattern_hash]:
+                                del self.pattern_buckets[meta.pattern_hash]
+                        self._function_entry_count -= 1
 
-                # O(1) removal from fingerprint index (skip empty graphs)
-                if "n_nodes" in entry.fingerprint:
-                    fp_key = (entry.fingerprint["n_nodes"], entry.fingerprint["n_edges"])
-                    if fp_key in self.fingerprint_index:
-                        self.fingerprint_index[fp_key].discard(entry_id)
-                        if not self.fingerprint_index[fp_key]:
-                            del self.fingerprint_index[fp_key]
+                    # O(1) removal from fingerprint index
+                    if meta.fingerprint_key is not None:
+                        fp_key = meta.fingerprint_key
+                        if fp_key in self.fingerprint_index:
+                            self.fingerprint_index[fp_key].discard(entry_id)
+                            if not self.fingerprint_index[fp_key]:
+                                del self.fingerprint_index[fp_key]
 
-                # Remove entry
-                del self.entries[entry_id]
+                    # Remove entry
+                    del self.entries[entry_id]
 
-        del self.file_entries[file_path]
+            del self.file_entries[file_path]
 
-        # Remove file metadata
-        self.file_metadata.pop(file_path, None)
+            # Remove file metadata
+            self.file_metadata.pop(file_path, None)
 
     def find_exact_matches(self, code: str, language: str = "python") -> list[IndexEntry]:
         """Find entries with the same WL hash as the given code."""
@@ -653,10 +663,11 @@ class CodeStructureIndex:
         graph = plugin.source_to_graph(code) if plugin else ast_to_graph(code)
         wl_hash = weisfeiler_leman_hash(graph)
 
-        if wl_hash not in self.hash_buckets:
-            return []
+        with self._lock:
+            if wl_hash not in self.hash_buckets:
+                return []
 
-        return [self.entries[eid] for eid in self.hash_buckets[wl_hash] if eid in self.entries]
+            return [self.entries[eid] for eid in self.hash_buckets[wl_hash] if eid in self.entries]
 
     def find_similar(
         self, code: str, min_node_count: int = 5, language: str = "python"
@@ -666,6 +677,7 @@ class CodeStructureIndex:
 
         Returns results sorted by similarity (exact > high > partial).
         Uses fingerprint index for O(1) candidate lookup instead of O(n) linear scan.
+        Uses hot metadata for hierarchy comparison to avoid loading evicted entries.
         """
         plugin = LanguageRegistry.get().get_plugin(language)
         graph = plugin.source_to_graph(code) if plugin else ast_to_graph(code)
@@ -676,57 +688,65 @@ class CodeStructureIndex:
         fp = structural_fingerprint(graph)
         hierarchy = list(compute_hierarchy_hash(graph))
 
-        results: list[SimilarityResult] = []
-        seen_ids: set[str] = set()
+        with self._lock:
+            results: list[SimilarityResult] = []
+            seen_ids: set[str] = set()
 
-        # Check for exact matches first - O(1) bucket lookup
-        if wl_hash in self.hash_buckets:
-            for eid in self.hash_buckets[wl_hash]:
-                entry = self.entries.get(eid)
-                if entry:
-                    results.append(SimilarityResult(entry=entry, similarity_type="exact"))
-                    seen_ids.add(eid)
+            # Check for exact matches first - O(1) bucket lookup
+            if wl_hash in self.hash_buckets:
+                for eid in self.hash_buckets[wl_hash]:
+                    entry = self.entries.get(eid)
+                    if entry:
+                        results.append(SimilarityResult(entry=entry, similarity_type="exact"))
+                        seen_ids.add(eid)
 
-        # Check for high similarity using fingerprint index - O(1) lookup
-        # Fingerprints must have same n_nodes and n_edges to be compatible
-        fp_key = (fp["n_nodes"], fp["n_edges"])
-        if fp_key in self.fingerprint_index:
-            for eid in self.fingerprint_index[fp_key]:
+            # Check for high similarity using fingerprint index - O(1) lookup
+            fp_key = (fp["n_nodes"], fp["n_edges"])
+            if fp_key in self.fingerprint_index:
+                for eid in self.fingerprint_index[fp_key]:
+                    if eid in seen_ids:
+                        continue
+                    entry = self.entries.get(eid)
+                    if entry and fingerprints_compatible(fp, entry.fingerprint):
+                        results.append(SimilarityResult(entry=entry, similarity_type="high"))
+                        seen_ids.add(eid)
+
+            # Check for partial matches via hierarchy hashes using hot metadata
+            # to avoid loading evicted entries from SQLite
+            for eid in self.entries:
                 if eid in seen_ids:
                     continue
-                entry = self.entries.get(eid)
-                if entry and fingerprints_compatible(fp, entry.fingerprint):
-                    results.append(SimilarityResult(entry=entry, similarity_type="high"))
-                    seen_ids.add(eid)
 
-        # Check for partial matches via hierarchy hashes - still O(n) but only for
-        # entries not already matched. Consider hierarchy index for further optimization.
-        for entry in self.entries.values():
-            if entry.id in seen_ids:
-                continue
+                entry_hierarchy = self.entries.get_hierarchy_hashes(eid)
+                if entry_hierarchy is None:
+                    continue
 
-            # Check for partial matches via hierarchy hashes
-            matching_depth = 0
-            for i, (h1, h2) in enumerate(zip(hierarchy, entry.hierarchy_hashes, strict=False)):
-                if h1 == h2:
-                    matching_depth = i + 1
-                else:
-                    break
+                matching_depth = 0
+                for i, (h1, h2) in enumerate(zip(hierarchy, entry_hierarchy, strict=False)):
+                    if h1 == h2:
+                        matching_depth = i + 1
+                    else:
+                        break
 
-            if matching_depth >= 2:  # At least 2 levels of structural match
-                results.append(
-                    SimilarityResult(
-                        entry=entry, similarity_type="partial", matching_depth=matching_depth
-                    )
-                )
+                if matching_depth >= 2:
+                    # Only load full entry when we have a match
+                    entry = self.entries.get(eid)
+                    if entry:
+                        results.append(
+                            SimilarityResult(
+                                entry=entry,
+                                similarity_type="partial",
+                                matching_depth=matching_depth,
+                            )
+                        )
 
-        # Sort: exact first, then high, then partial (by depth)
-        def sort_key(r: SimilarityResult) -> tuple:
-            type_order = {"exact": 0, "high": 1, "partial": 2}
-            return (type_order[r.similarity_type], -(r.matching_depth or 0))
+            # Sort: exact first, then high, then partial (by depth)
+            def sort_key(r: SimilarityResult) -> tuple:
+                type_order = {"exact": 0, "high": 1, "partial": 2}
+                return (type_order[r.similarity_type], -(r.matching_depth or 0))
 
-        results.sort(key=sort_key)
-        return results
+            results.sort(key=sort_key)
+            return results
 
     def _find_duplicates_in_buckets(
         self,
@@ -747,42 +767,55 @@ class CodeStructureIndex:
 
         Complexity: O(b * k) where b = unique hashes, k = avg bucket size
         """
-        groups: list[DuplicateGroup] = []
+        with self._lock:
+            groups: list[DuplicateGroup] = []
 
-        for wl_hash, entry_ids in buckets.items():
-            # O(1) suppression check
-            if wl_hash in self.suppressed_hashes:
-                continue
-
-            if len(entry_ids) < 2:
-                continue
-
-            # Single-pass filtering: combine all filters into one iteration
-            entries: list[IndexEntry] = []
-            for eid in entry_ids:
-                entry = self.entries.get(eid)
-                if entry is None:
+            for wl_hash, entry_ids in buckets.items():
+                # O(1) suppression check
+                if wl_hash in self.suppressed_hashes:
                     continue
-                if entry.node_count < min_node_count:
-                    continue
-                if entry_filter and not entry_filter(entry):
-                    continue
-                entries.append(entry)
 
-            if len(entries) >= 2:
-                groups.append(DuplicateGroup(wl_hash=wl_hash, entries=entries))
+                if len(entry_ids) < 2:
+                    continue
 
-        groups.sort(key=lambda g: len(g.entries), reverse=True)
-        return groups
+                # Two-pass: first filter by hot metadata, then load full entries
+                candidate_ids: list[str] = []
+                for eid in entry_ids:
+                    node_count = self.entries.get_node_count(eid)
+                    if node_count is None:
+                        continue
+                    if node_count < min_node_count:
+                        continue
+                    candidate_ids.append(eid)
+
+                if len(candidate_ids) < 2:
+                    continue
+
+                # Load full entries only for candidates that passed node_count filter
+                entries: list[IndexEntry] = []
+                for eid in candidate_ids:
+                    entry = self.entries.get(eid)
+                    if entry is None:
+                        continue
+                    if entry_filter and not entry_filter(entry):
+                        continue
+                    entries.append(entry)
+
+                if len(entries) >= 2:
+                    groups.append(DuplicateGroup(wl_hash=wl_hash, entries=entries))
+
+            groups.sort(key=lambda g: len(g.entries), reverse=True)
+            return groups
 
     def _get_entries_for_hash(self, wl_hash: str) -> list[IndexEntry]:
         """Get all entries matching a hash from any bucket."""
-        entry_ids: set[str] = (
-            self.hash_buckets.get(wl_hash, set())
-            or self.pattern_buckets.get(wl_hash, set())
-            or self.block_buckets.get(wl_hash, set())
-        )
-        return [e for eid in entry_ids if (e := self.entries.get(eid)) is not None]
+        with self._lock:
+            entry_ids: set[str] = (
+                self.hash_buckets.get(wl_hash, set())
+                or self.pattern_buckets.get(wl_hash, set())
+                or self.block_buckets.get(wl_hash, set())
+            )
+            return [e for eid in entry_ids if (e := self.entries.get(eid)) is not None]
 
     def suppress(self, wl_hash: str, reason: str | None = None) -> bool:
         """
@@ -802,68 +835,72 @@ class CodeStructureIndex:
         Returns:
             True if the hash was found and suppressed, False if not found.
         """
-        entry_ids: set[str] = (
-            self.hash_buckets.get(wl_hash, set())
-            or self.pattern_buckets.get(wl_hash, set())
-            or self.block_buckets.get(wl_hash, set())
-        )
+        with self._lock:
+            entry_ids: set[str] = (
+                self.hash_buckets.get(wl_hash, set())
+                or self.pattern_buckets.get(wl_hash, set())
+                or self.block_buckets.get(wl_hash, set())
+            )
 
-        if not entry_ids:
-            return False
+            if not entry_ids:
+                return False
 
-        self.suppressed_hashes.add(wl_hash)
+            self.suppressed_hashes.add(wl_hash)
 
-        entries: list[IndexEntry] = [
-            e for eid in entry_ids if (e := self.entries.get(eid)) is not None
-        ]
+            entries: list[IndexEntry] = [
+                e for eid in entry_ids if (e := self.entries.get(eid)) is not None
+            ]
 
-        # Capture source files and their content hashes for structural change detection
-        source_files: list[str] = []
-        file_hashes: dict[str, str] = {}
-        for entry in entries:
-            fp = entry.code_unit.file_path
-            if fp not in file_hashes:
-                source_files.append(fp)
-                file_hashes[fp] = (
-                    self.file_metadata[fp].content_hash
-                    if fp in self.file_metadata
-                    else self._compute_file_hash(fp) or ""
-                )
+            # Capture source files and their content hashes for structural change detection
+            source_files: list[str] = []
+            file_hashes: dict[str, str] = {}
+            for entry in entries:
+                fp = entry.code_unit.file_path
+                if fp not in file_hashes:
+                    source_files.append(fp)
+                    file_hashes[fp] = (
+                        self.file_metadata[fp].content_hash
+                        if fp in self.file_metadata
+                        else self._compute_file_hash(fp) or ""
+                    )
 
-        # Capture display info from first entry
-        first_entry = entries[0] if entries else None
-        self.suppression_details[wl_hash] = SuppressionInfo(
-            wl_hash=wl_hash,
-            reason=reason,
-            created_at=time.time(),
-            source_name=first_entry.code_unit.name if first_entry else None,
-            code_preview=first_entry.code_unit.code[:200] if first_entry else None,
-            entry_count=len(entry_ids),
-            source_files=source_files,
-            file_hashes=file_hashes,
-        )
+            # Capture display info from first entry
+            first_entry = entries[0] if entries else None
+            self.suppression_details[wl_hash] = SuppressionInfo(
+                wl_hash=wl_hash,
+                reason=reason,
+                created_at=time.time(),
+                source_name=first_entry.code_unit.name if first_entry else None,
+                code_preview=first_entry.code_unit.code[:200] if first_entry else None,
+                entry_count=len(entry_ids),
+                source_files=source_files,
+                file_hashes=file_hashes,
+            )
 
-        self._auto_save()
-        return True
+            self._auto_save()
+            return True
 
     def unsuppress(self, wl_hash: str) -> bool:
         """Remove a hash from the suppressed set."""
-        if wl_hash in self.suppressed_hashes:
-            self.suppressed_hashes.remove(wl_hash)
-            self.suppression_details.pop(wl_hash, None)
-            self._auto_save()
-            return True
-        return False
+        with self._lock:
+            if wl_hash in self.suppressed_hashes:
+                self.suppressed_hashes.remove(wl_hash)
+                self.suppression_details.pop(wl_hash, None)
+                self._auto_save()
+                return True
+            return False
 
     def suppress_batch(
         self, wl_hashes: list[str], reason: str | None = None
     ) -> tuple[list[str], list[str]]:
         """Suppress multiple hashes. Returns (suppressed, not_found)."""
-        return batch_hash_operation(wl_hashes, lambda h: self.suppress(h, reason))
+        with self._lock:
+            return batch_hash_operation(wl_hashes, lambda h: self.suppress(h, reason))
 
     def unsuppress_batch(self, wl_hashes: list[str]) -> tuple[list[str], list[str]]:
         """Unsuppress multiple hashes. Returns (unsuppressed, not_found)."""
-        return batch_hash_operation(wl_hashes, self.unsuppress)
+        with self._lock:
+            return batch_hash_operation(wl_hashes, self.unsuppress)
 
     def get_suppressed(self) -> list[str]:
         """Get list of suppressed hashes."""
@@ -887,36 +924,37 @@ class CodeStructureIndex:
         Returns:
             List of (wl_hash, reason) tuples for invalidated suppressions.
         """
-        invalidated: list[tuple[str, str]] = []
+        with self._lock:
+            invalidated: list[tuple[str, str]] = []
 
-        for wl_hash in list(self.suppressed_hashes):
-            # Check 1: Orphaned suppression (hash not in any bucket)
-            hash_exists_in_buckets = (
-                wl_hash in self.hash_buckets
-                or wl_hash in self.pattern_buckets
-                or wl_hash in self.block_buckets
-            )
-            if not hash_exists_in_buckets:
-                self._remove_suppression(wl_hash)
-                invalidated.append((wl_hash, "hash no longer exists in index"))
-                continue
+            for wl_hash in list(self.suppressed_hashes):
+                # Check 1: Orphaned suppression (hash not in any bucket)
+                hash_exists_in_buckets = (
+                    wl_hash in self.hash_buckets
+                    or wl_hash in self.pattern_buckets
+                    or wl_hash in self.block_buckets
+                )
+                if not hash_exists_in_buckets:
+                    self._remove_suppression(wl_hash)
+                    invalidated.append((wl_hash, "hash no longer exists in index"))
+                    continue
 
-            # Check 2: Structural change in source files
-            info = self.suppression_details.get(wl_hash)
-            if not info or not info.file_hashes:
-                continue
+                # Check 2: Structural change in source files
+                info = self.suppression_details.get(wl_hash)
+                if not info or not info.file_hashes:
+                    continue
 
-            deleted_files, files_changed = self._detect_file_changes(info)
-            if not files_changed:
-                continue
+                deleted_files, files_changed = self._detect_file_changes(info)
+                if not files_changed:
+                    continue
 
-            if self._structure_still_exists(wl_hash, info, deleted_files):
-                self._update_suppression_tracking(info, deleted_files)
-            else:
-                self._remove_suppression(wl_hash)
-                invalidated.append((wl_hash, "suppressed code structure no longer exists"))
+                if self._structure_still_exists(wl_hash, info, deleted_files):
+                    self._update_suppression_tracking(info, deleted_files)
+                else:
+                    self._remove_suppression(wl_hash)
+                    invalidated.append((wl_hash, "suppressed code structure no longer exists"))
 
-        return invalidated
+            return invalidated
 
     def _remove_suppression(self, wl_hash: str) -> None:
         """Remove a suppression and its details."""
@@ -985,7 +1023,8 @@ class CodeStructureIndex:
 
     def find_all_duplicates(self, min_node_count: int = 5) -> list[DuplicateGroup]:
         """Find all groups of structurally equivalent code units."""
-        return self._find_duplicates_in_buckets(self.hash_buckets, min_node_count)
+        with self._lock:
+            return self._find_duplicates_in_buckets(self.hash_buckets, min_node_count)
 
     def find_pattern_duplicates(self, min_node_count: int = 5) -> list[DuplicateGroup]:
         """
@@ -1000,13 +1039,14 @@ class CodeStructureIndex:
         Excludes groups that are already exact duplicates.
         Respects suppressions (suppressed pattern hashes are excluded).
         """
-        # Get candidate groups using shared logic
-        groups = self._find_duplicates_in_buckets(self.pattern_buckets, min_node_count)
+        with self._lock:
+            # Get candidate groups using shared logic
+            groups = self._find_duplicates_in_buckets(self.pattern_buckets, min_node_count)
 
-        # Exclude groups where ALL entries are exact duplicates of each other
-        exact_hashes = {h for h, ids in self.hash_buckets.items() if len(ids) >= 2}
+            # Exclude groups where ALL entries are exact duplicates of each other
+            exact_hashes = {h for h, ids in self.hash_buckets.items() if len(ids) >= 2}
 
-        return [g for g in groups if not self._group_is_exact_duplicate(g, exact_hashes)]
+            return [g for g in groups if not self._group_is_exact_duplicate(g, exact_hashes)]
 
     def _group_is_exact_duplicate(self, group: DuplicateGroup, exact_hashes: set[str]) -> bool:
         """Check if all entries in a group share the same exact-duplicate wl_hash."""
@@ -1039,39 +1079,46 @@ class CodeStructureIndex:
 
             entry_filter = block_type_filter
 
-        return self._find_duplicates_in_buckets(self.block_buckets, min_node_count, entry_filter)
+        with self._lock:
+            return self._find_duplicates_in_buckets(
+                self.block_buckets, min_node_count, entry_filter
+            )
 
     def verify_isomorphism(self, entry1: IndexEntry, entry2: IndexEntry) -> bool:
         """Verify that two entries are truly isomorphic using full graph isomorphism."""
-        registry = LanguageRegistry.get()
-        plugin1 = registry.get_plugin(entry1.code_unit.language)
-        plugin2 = registry.get_plugin(entry2.code_unit.language)
+        with self._lock:
+            registry = LanguageRegistry.get()
+            plugin1 = registry.get_plugin(entry1.code_unit.language)
+            plugin2 = registry.get_plugin(entry2.code_unit.language)
 
-        g1 = (
-            plugin1.source_to_graph(entry1.code_unit.code)
-            if plugin1
-            else ast_to_graph(entry1.code_unit.code)
-        )
-        g2 = (
-            plugin2.source_to_graph(entry2.code_unit.code)
-            if plugin2
-            else ast_to_graph(entry2.code_unit.code)
-        )
+            g1 = (
+                plugin1.source_to_graph(entry1.code_unit.code)
+                if plugin1
+                else ast_to_graph(entry1.code_unit.code)
+            )
+            g2 = (
+                plugin2.source_to_graph(entry2.code_unit.code)
+                if plugin2
+                else ast_to_graph(entry2.code_unit.code)
+            )
 
-        return bool(nx.is_isomorphic(g1, g2, node_match=node_match))
+            return bool(nx.is_isomorphic(g1, g2, node_match=node_match))
 
     def get_stats(self) -> dict:
         """Get statistics about the index. O(1) using incremental counters."""
-        return {
-            "total_entries": len(self.entries),
-            "function_entries": self._function_entry_count,
-            "block_entries": self._block_entry_count,
-            "unique_hashes": len(self.hash_buckets),
-            "unique_patterns": len(self.pattern_buckets),
-            "unique_block_hashes": len(self.block_buckets),
-            "indexed_files": len(self.file_entries),
-            "suppressed_hashes": len(self.suppressed_hashes),
-        }
+        with self._lock:
+            return {
+                "total_entries": len(self.entries),
+                "entries_resident": self.entries.resident_count,
+                "entries_total": self.entries.total_count,
+                "function_entries": self._function_entry_count,
+                "block_entries": self._block_entry_count,
+                "unique_hashes": len(self.hash_buckets),
+                "unique_patterns": len(self.pattern_buckets),
+                "unique_block_hashes": len(self.block_buckets),
+                "indexed_files": len(self.file_entries),
+                "suppressed_hashes": len(self.suppressed_hashes),
+            }
 
     def save(self, path: str) -> None:
         """Save the index to a JSON file."""
@@ -1099,58 +1146,64 @@ class CodeStructureIndex:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
 
-        # version = data.get("version", 1)  # Reserved for future format migrations
+        with self._lock:
+            # version = data.get("version", 1)  # Reserved for future format migrations
 
-        self.entries = {eid: IndexEntry.from_dict(e) for eid, e in data["entries"].items()}
-        # Convert lists back to sets for O(1) operations
-        self.hash_buckets = {k: set(v) for k, v in data["hash_buckets"].items()}
-        self.pattern_buckets = {k: set(v) for k, v in data.get("pattern_buckets", {}).items()}
-        self.block_buckets = {k: set(v) for k, v in data.get("block_buckets", {}).items()}
-        self.block_type_index = {k: set(v) for k, v in data.get("block_type_index", {}).items()}
-        self.file_entries = data["file_entries"]
-        self.suppressed_hashes = set(data.get("suppressed_hashes", []))
-        self._entry_counter = data["entry_counter"]
+            self.entries.clear()
+            with self.entries.bulk_load():
+                for eid, e in data["entries"].items():
+                    self.entries[eid] = IndexEntry.from_dict(e)
 
-        # Load counters or rebuild them for backwards compatibility
-        if "block_entry_count" in data:
-            self._block_entry_count = data["block_entry_count"]
-            self._function_entry_count = data["function_entry_count"]
-        else:
-            # Rebuild counters from entries (backwards compatibility)
-            self._block_entry_count = sum(
-                1 for e in self.entries.values() if e.code_unit.unit_type == "block"
-            )
-            self._function_entry_count = len(self.entries) - self._block_entry_count
+            # Convert lists back to sets for O(1) operations
+            self.hash_buckets = {k: set(v) for k, v in data["hash_buckets"].items()}
+            self.pattern_buckets = {k: set(v) for k, v in data.get("pattern_buckets", {}).items()}
+            self.block_buckets = {k: set(v) for k, v in data.get("block_buckets", {}).items()}
+            self.block_type_index = {k: set(v) for k, v in data.get("block_type_index", {}).items()}
+            self.file_entries = data["file_entries"]
+            self.suppressed_hashes = set(data.get("suppressed_hashes", []))
+            self._entry_counter = data["entry_counter"]
 
-        # Rebuild fingerprint index from entries (skip empty graphs)
-        self.fingerprint_index = {}
-        for eid, entry in self.entries.items():
-            if "n_nodes" in entry.fingerprint:
-                fp_key = (entry.fingerprint["n_nodes"], entry.fingerprint["n_edges"])
-                self.fingerprint_index.setdefault(fp_key, set()).add(eid)
+            # Load counters or rebuild them for backwards compatibility
+            if "block_entry_count" in data:
+                self._block_entry_count = data["block_entry_count"]
+                self._function_entry_count = data["function_entry_count"]
+            else:
+                # Rebuild counters from entries (backwards compatibility)
+                self._block_entry_count = sum(
+                    1 for e in self.entries.values() if e.code_unit.unit_type == "block"
+                )
+                self._function_entry_count = len(self.entries) - self._block_entry_count
 
-        self.file_metadata = {
-            fp: FileMetadata.from_dict(fm) for fp, fm in data.get("file_metadata", {}).items()
-        }
-        self.suppression_details = {
-            h: SuppressionInfo.from_dict(si)
-            for h, si in data.get("suppression_details", {}).items()
-        }
+            # Rebuild fingerprint index from entries (skip empty graphs)
+            self.fingerprint_index = {}
+            for eid, entry in self.entries.items():
+                if "n_nodes" in entry.fingerprint:
+                    fp_key = (entry.fingerprint["n_nodes"], entry.fingerprint["n_edges"])
+                    self.fingerprint_index.setdefault(fp_key, set()).add(eid)
+
+            self.file_metadata = {
+                fp: FileMetadata.from_dict(fm) for fp, fm in data.get("file_metadata", {}).items()
+            }
+            self.suppression_details = {
+                h: SuppressionInfo.from_dict(si)
+                for h, si in data.get("suppression_details", {}).items()
+            }
 
     def clear(self) -> None:
         """Clear all entries from the index (preserves suppressions)."""
-        self.entries.clear()
-        self.hash_buckets.clear()
-        self.pattern_buckets.clear()
-        self.block_buckets.clear()
-        self.block_type_index.clear()
-        self.fingerprint_index.clear()
-        self.file_entries.clear()
-        self.file_metadata.clear()
-        self._entry_counter = 0
-        self._block_entry_count = 0
-        self._function_entry_count = 0
-        # Note: suppressed_hashes and suppression_details are preserved across clears
+        with self._lock:
+            self.entries.clear()
+            self.hash_buckets.clear()
+            self.pattern_buckets.clear()
+            self.block_buckets.clear()
+            self.block_type_index.clear()
+            self.fingerprint_index.clear()
+            self.file_entries.clear()
+            self.file_metadata.clear()
+            self._entry_counter = 0
+            self._block_entry_count = 0
+            self._function_entry_count = 0
+            # Note: suppressed_hashes and suppression_details are preserved across clears
 
     def clear_suppressions(self) -> None:
         """Clear all suppressed hashes and their details."""
@@ -1168,36 +1221,37 @@ class CodeStructureIndex:
         Returns:
             StalenessReport with lists of modified, deleted, and new files.
         """
-        modified_files: list[str] = []
-        deleted_files: list[str] = []
-        new_files: list[str] = []
-        stale_suppressions: list[str] = []
+        with self._lock:
+            modified_files: list[str] = []
+            deleted_files: list[str] = []
+            new_files: list[str] = []
+            stale_suppressions: list[str] = []
 
-        # Check tracked files for modifications and deletions
-        for file_path in self.file_metadata:
-            if not os.path.exists(file_path):
-                deleted_files.append(file_path)
-            elif self.check_file_changed(file_path):
-                modified_files.append(file_path)
+            # Check tracked files for modifications and deletions
+            for file_path in self.file_metadata:
+                if not os.path.exists(file_path):
+                    deleted_files.append(file_path)
+                elif self.check_file_changed(file_path):
+                    modified_files.append(file_path)
 
-        # Check for new files if root_path is provided
-        if root_path and os.path.isdir(root_path):
-            for py_file in _walk_python_files(root_path):
-                if py_file not in self.file_metadata:
-                    new_files.append(py_file)
+            # Check for new files if root_path is provided
+            if root_path and os.path.isdir(root_path):
+                for py_file in _walk_python_files(root_path):
+                    if py_file not in self.file_metadata:
+                        new_files.append(py_file)
 
-        # Check suppression staleness
-        stale_suppressions = self.check_suppression_staleness()
+            # Check suppression staleness
+            stale_suppressions = self.check_suppression_staleness()
 
-        is_stale = bool(modified_files or deleted_files or new_files or stale_suppressions)
+            is_stale = bool(modified_files or deleted_files or new_files or stale_suppressions)
 
-        return StalenessReport(
-            is_stale=is_stale,
-            modified_files=modified_files,
-            deleted_files=deleted_files,
-            new_files=new_files,
-            stale_suppressions=stale_suppressions,
-        )
+            return StalenessReport(
+                is_stale=is_stale,
+                modified_files=modified_files,
+                deleted_files=deleted_files,
+                new_files=new_files,
+                stale_suppressions=stale_suppressions,
+            )
 
     def check_suppression_staleness(self) -> list[str]:
         """
