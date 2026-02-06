@@ -59,14 +59,22 @@ def _resolve_docker_path(path: str) -> str:
 
     # Try to find a matching subpath under /workspace
     # For /Users/foo/project/src, try: /workspace/foo/project/src, /workspace/project/src, /workspace/src
-    parts = Path(path).parts
+    p = Path(path)
+    parts = p.parts
     for i in range(len(parts)):
         candidate = workspace.joinpath(*parts[i:])
         if candidate.exists():
             return str(candidate)
 
-    # Fallback to /workspace if nothing else matches
-    return str(workspace)
+    # For new files: resolve the parent directory and append the filename
+    parent_parts = p.parent.parts
+    for i in range(len(parent_parts)):
+        candidate = workspace.joinpath(*parent_parts[i:])
+        if candidate.is_dir():
+            return str(candidate / p.name)
+
+    # Fallback: assume file is directly under /workspace
+    return str(workspace / p.name)
 
 
 def _get_persistence_path(indexed_path: str) -> Path:

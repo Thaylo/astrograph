@@ -87,6 +87,50 @@ class TestResolveDockerPath:
             result = _resolve_docker_path("/Users/foo/bar/src")
             assert result == "/workspace/src"
 
+    def test_resolve_docker_path_new_file(self):
+        """Test Docker path resolution for a new file (parent exists, file doesn't)."""
+        original_exists = Path.exists
+        original_is_dir = Path.is_dir
+
+        def mock_exists(self):
+            path_str = str(self)
+            if path_str in ("/workspace", "/.dockerenv", "/workspace/src"):
+                return True
+            return original_exists(self)
+
+        def mock_is_dir(self):
+            path_str = str(self)
+            if path_str == "/workspace/src":
+                return True
+            return original_is_dir(self)
+
+        with patch.object(Path, "exists", mock_exists), patch.object(Path, "is_dir", mock_is_dir):
+            # New file: parent /workspace/src exists but new_file.py doesn't
+            result = _resolve_docker_path("/Users/foo/bar/src/new_file.py")
+            assert result == "/workspace/src/new_file.py"
+
+    def test_resolve_docker_path_new_file_at_root(self):
+        """Test Docker path resolution for a new file at workspace root."""
+        original_exists = Path.exists
+        original_is_dir = Path.is_dir
+
+        def mock_exists(self):
+            path_str = str(self)
+            if path_str in ("/workspace", "/.dockerenv"):
+                return True
+            return original_exists(self)
+
+        def mock_is_dir(self):
+            path_str = str(self)
+            if path_str == "/workspace":
+                return True
+            return original_is_dir(self)
+
+        with patch.object(Path, "exists", mock_exists), patch.object(Path, "is_dir", mock_is_dir):
+            # New file at workspace root
+            result = _resolve_docker_path("/Users/foo/bar/test.py")
+            assert result == "/workspace/test.py"
+
 
 def _get_analyze_details(tools, result):
     """Read full analyze details from report file if it exists, else inline text."""
