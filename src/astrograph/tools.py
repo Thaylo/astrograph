@@ -917,6 +917,8 @@ class CodeStructureTools:
         if error := self._require_index():
             return error
 
+        file_path = _resolve_docker_path(file_path)
+
         # Infer language from file extension
         plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
         language = plugin.language_id if plugin else "python"
@@ -975,6 +977,8 @@ class CodeStructureTools:
         """
         if error := self._require_index():
             return error
+
+        file_path = _resolve_docker_path(file_path)
 
         # Infer language from file extension
         plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
