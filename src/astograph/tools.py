@@ -377,6 +377,10 @@ class CodeStructureTools:
         self._classifier = PatternClassifier()
         self._last_indexed_path: str | None = None
 
+        # Auto-index /workspace at startup in event-driven mode (Docker)
+        if event_driven and os.path.isdir("/workspace"):
+            self.index_codebase("/workspace")
+
     def _require_index(self) -> ToolResult | None:
         """Return error result if index is empty, None if populated."""
         if not self.index.entries:
