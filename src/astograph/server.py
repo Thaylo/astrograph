@@ -55,7 +55,7 @@ def create_server() -> Server:
                     "Index a Python codebase for structural analysis. "
                     "Parses all .py files and builds a searchable index. "
                     "Currently supports Python only. "
-                    "Note: /workspace is auto-indexed at startup."
+                    "Note: The codebase is auto-indexed at startup."
                 ),
                 inputSchema={
                     "type": "object",
