@@ -84,9 +84,9 @@ Large codebases accumulate duplicate code because:
 
 | Tool | What It Does |
 |------|--------------|
-| `astrograph_analyze` | Lists all duplicates found |
-| `astrograph_write` | Writes files, blocks if duplicate exists |
-| `astrograph_edit` | Edits files, blocks if new code is a duplicate |
+| `astrograph_analyze` | Find duplicate Python code (verified via graph isomorphism) |
+| `astrograph_write` | Write Python file. Blocks if duplicate exists, warns on similarity |
+| `astrograph_edit` | Edit Python file. Blocks if new code duplicates existing, warns on similarity |
 
 [See all 8 tools →](#tool-reference)
 
@@ -106,36 +106,34 @@ Large codebases accumulate duplicate code because:
 
 ### astrograph_analyze
 
-Find duplicates in the indexed codebase.
+Find duplicate Python code (verified via graph isomorphism).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `auto_reindex` | boolean | No | `true` | If stale, automatically re-index before analyzing |
+| `auto_reindex` | boolean | No | `true` | Auto re-index if stale (default: true) |
 
 ### astrograph_write
 
-Write Python code to a file with automatic duplicate detection.
+Write Python file. Blocks if duplicate exists, warns on similarity.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `file_path` | string | Yes | - | Absolute path to the file to write |
-| `content` | string | Yes | - | The Python code content to write |
-
-Returns: `BLOCKED` if duplicate exists, `WARNING + Success` if similar, or `Success`
+| `file_path` | string | Yes | - | Absolute file path |
+| `content` | string | Yes | - | Python code to write |
 
 ### astrograph_edit
 
-Edit a Python file with automatic duplicate detection.
+Edit Python file. Blocks if new code duplicates existing, warns on similarity.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `file_path` | string | Yes | - | Absolute path to the file to edit |
-| `old_string` | string | Yes | - | The exact text to replace |
-| `new_string` | string | Yes | - | The replacement Python code |
+| `file_path` | string | Yes | - | Absolute file path |
+| `old_string` | string | Yes | - | Exact text to replace (must be unique) |
+| `new_string` | string | Yes | - | Replacement code |
 
 ### astrograph_suppress
 
-Suppress a duplicate group by its WL hash (shown in analyze output).
+Suppress a duplicate by WL hash (from analyze output).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -143,15 +141,15 @@ Suppress a duplicate group by its WL hash (shown in analyze output).
 
 ### astrograph_suppress_batch
 
-Suppress multiple duplicate groups at once.
+Suppress multiple duplicates by WL hash list.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `wl_hashes` | string[] | Yes | - | List of WL hashes from analyze output |
+| `wl_hashes` | string[] | Yes | - | WL hashes from analyze output |
 
 ### astrograph_unsuppress
 
-Remove suppression from a hash.
+Unsuppress a hash.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -159,15 +157,15 @@ Remove suppression from a hash.
 
 ### astrograph_unsuppress_batch
 
-Remove suppression from multiple hashes at once.
+Unsuppress multiple hashes.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `wl_hashes` | string[] | Yes | - | List of WL hashes to unsuppress |
+| `wl_hashes` | string[] | Yes | - | WL hashes to unsuppress |
 
 ### astrograph_list_suppressions
 
-List all currently suppressed hashes.
+List suppressed hashes.
 
 </details>
 
