@@ -1521,6 +1521,162 @@ class TestStatusTool:
         assert "ready" in result.text
 
 
+class TestMetadataErase:
+    """Tests for the astrograph_metadata_erase tool."""
+
+    def test_erase_no_metadata(self, tools):
+        """Erase when nothing has been indexed."""
+        result = tools.metadata_erase()
+        assert "idle" in result.text.lower()
+
+    def test_erase_clears_index_and_suppressions(self):
+        """Erase should clear the in-memory index, suppressions, and persistence."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            code = """
+def process_items(items):
+    results = []
+    for item in items:
+        if item > 0:
+            results.append(item * 2)
+    return results
+
+def transform_data(data):
+    output = []
+    for element in data:
+        if element > 0:
+            output.append(element * 2)
+    return output
+"""
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write(code)
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+
+            # Suppress a hash
+            import re
+
+            analyze_result = tools.analyze()
+            details = _get_analyze_details(tools, analyze_result)
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
+            if match:
+                tools.suppress(match.group(1))
+
+            # Verify persistence exists
+            persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
+            assert os.path.isdir(persistence_path)
+
+            # Erase
+            result = tools.metadata_erase()
+            assert "Erased" in result.text
+
+            # Verify persistence is gone
+            assert not os.path.exists(persistence_path)
+
+            # Verify server is idle
+            status = tools.status()
+            assert "idle" in status.text
+
+            # Verify suppressions are gone
+            assert len(tools.index.suppressed_hashes) == 0
+
+    def test_erase_then_reindex(self):
+        """After erase, re-indexing should work from scratch."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write("def foo(): pass")
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+            tools.metadata_erase()
+
+            # Re-index should work
+            result = tools.index_codebase(tmpdir)
+            assert "Indexed" in result.text
+            tools.close()
+
+    def test_call_tool_metadata_erase(self, tools, sample_python_file):
+        """Test call_tool dispatch for metadata_erase."""
+        tools.index_codebase(sample_python_file)
+        result = tools.call_tool("metadata_erase", {})
+        assert "Erased" in result.text or "idle" in result.text.lower()
+
+
+class TestMetadataRecomputeBaseline:
+    """Tests for the astrograph_metadata_recompute_baseline tool."""
+
+    def test_recompute_no_indexed_path(self, tools):
+        """Recompute when nothing has been indexed."""
+        result = tools.metadata_recompute_baseline()
+        assert "No codebase has been indexed" in result.text
+
+    def test_recompute_rebuilds_from_scratch(self):
+        """Recompute should erase and rebuild the full index."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            code = """
+def process_items(items):
+    results = []
+    for item in items:
+        if item > 0:
+            results.append(item * 2)
+    return results
+
+def transform_data(data):
+    output = []
+    for element in data:
+        if element > 0:
+            output.append(element * 2)
+    return output
+"""
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write(code)
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+
+            # Suppress a hash
+            import re
+
+            analyze_result = tools.analyze()
+            details = _get_analyze_details(tools, analyze_result)
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
+            if match:
+                tools.suppress(match.group(1))
+
+            # Recompute baseline
+            result = tools.metadata_recompute_baseline()
+            assert "Baseline recomputed" in result.text
+            assert "Indexed" in result.text
+
+            # Suppressions should be gone
+            assert len(tools.index.suppressed_hashes) == 0
+
+            # But index should be populated
+            status = tools.status()
+            assert "ready" in status.text
+
+            # Persistence should be recreated
+            persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
+            assert os.path.isdir(persistence_path)
+            tools.close()
+
+    def test_call_tool_metadata_recompute_baseline(self):
+        """Test call_tool dispatch for metadata_recompute_baseline."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            with open(file1, "w") as f:
+                f.write("def foo(): pass")
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+            result = tools.call_tool("metadata_recompute_baseline", {})
+            assert "Baseline recomputed" in result.text
+            tools.close()
+
+
 class TestNonBlockingDuringIndexing:
     """Tests that tools return immediately during background indexing."""
 

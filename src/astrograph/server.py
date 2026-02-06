@@ -3,7 +3,7 @@ MCP server for code structure analysis.
 
 Auto-indexes the codebase at startup and maintains the index via file watching.
 
-Provides 9 tools (all prefixed with astrograph_):
+Provides 11 tools (all prefixed with astrograph_):
 - astrograph_analyze: Find duplicates and similar patterns
 - astrograph_write: Write file with duplicate detection (blocks if duplicate exists)
 - astrograph_edit: Edit file with duplicate detection (blocks if duplicate exists)
@@ -13,6 +13,8 @@ Provides 9 tools (all prefixed with astrograph_):
 - astrograph_unsuppress_batch: Remove suppression from multiple hashes
 - astrograph_list_suppressions: List all suppressed hashes
 - astrograph_status: Check server readiness (returns instantly even during indexing)
+- astrograph_metadata_erase: Erase all persisted metadata
+- astrograph_metadata_recompute_baseline: Erase metadata and re-index from scratch
 """
 
 import asyncio
@@ -144,6 +146,22 @@ def create_server() -> Server:
                 },
             ),
             Tool(
+                name="astrograph_metadata_erase",
+                description="Erase all persisted metadata (.metadata_astrograph/). Resets server to idle.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="astrograph_metadata_recompute_baseline",
+                description="Erase metadata and re-index the codebase from scratch.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
                 name="astrograph_write",
                 description="Write file. Blocks if duplicate exists, warns on similarity.",
                 inputSchema={
@@ -196,6 +214,8 @@ def create_server() -> Server:
         "astrograph_unsuppress_batch": "unsuppress_batch",
         "astrograph_list_suppressions": "list_suppressions",
         "astrograph_status": "status",
+        "astrograph_metadata_erase": "metadata_erase",
+        "astrograph_metadata_recompute_baseline": "metadata_recompute_baseline",
     }
 
     @server.call_tool()

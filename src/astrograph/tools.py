@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -735,6 +736,62 @@ class CodeStructureTools:
             f"{stats['indexed_files']} files)"
         )
 
+    def metadata_erase(self) -> ToolResult:
+        """
+        Erase all persisted metadata (.metadata_astrograph/).
+
+        Deletes the SQLite database, suppressions, analysis reports,
+        and resets the in-memory index. Server returns to idle state.
+        """
+        self._wait_for_background_index()
+
+        # Close event-driven index (stops watcher, closes SQLite)
+        if self._event_driven_index is not None:
+            self._event_driven_index.close()
+            self._event_driven_index = None
+
+        # Clear in-memory index + suppressions
+        self.index.clear()
+        self.index.clear_suppressions()
+
+        # Delete persistence directory
+        erased = False
+        if self._last_indexed_path:
+            persistence_path = _get_persistence_path(self._last_indexed_path)
+            if persistence_path.exists():
+                shutil.rmtree(persistence_path, ignore_errors=True)
+                erased = True
+
+        # Create fresh event-driven index (no persistence until next index_codebase)
+        self._event_driven_index = EventDrivenIndex(
+            persistence_path=None,
+            watch_enabled=True,
+        )
+        self.index = self._event_driven_index.index
+
+        if erased:
+            return ToolResult("Erased all metadata. Server reset to idle state.")
+        return ToolResult("No metadata to erase. Server is idle.")
+
+    def metadata_recompute_baseline(self) -> ToolResult:
+        """
+        Erase metadata and re-index the codebase from scratch.
+
+        Equivalent to erasing all persisted data and running a fresh
+        full index. Suppressions are cleared.
+        """
+        if not self._last_indexed_path:
+            return ToolResult("No codebase has been indexed. Nothing to recompute.")
+
+        path = self._last_indexed_path
+
+        # Erase everything
+        self.metadata_erase()
+
+        # Re-index from scratch
+        result = self.index_codebase(path)
+        return ToolResult(f"Baseline recomputed from scratch.\n{result.text}")
+
     def _format_file_list(self, files: list[str], label: str, max_items: int = 10) -> list[str]:
         """Format a list of files for output, with truncation."""
         if not files:
@@ -998,6 +1055,10 @@ class CodeStructureTools:
             return self.list_suppressions()
         elif name == "status":
             return self.status()
+        elif name == "metadata_erase":
+            return self.metadata_erase()
+        elif name == "metadata_recompute_baseline":
+            return self.metadata_recompute_baseline()
         elif name == "check_staleness":
             return self.check_staleness(path=arguments.get("path"))
         elif name == "write":

@@ -83,7 +83,7 @@ Large codebases accumulate duplicate code because:
 | `astrograph_write` | Write file. Blocks if duplicate exists, warns on similarity |
 | `astrograph_edit` | Edit file. Blocks if new code duplicates existing, warns on similarity |
 
-[See all 9 tools →](#tool-reference)
+[See all 11 tools →](#tool-reference)
 
 ## Works With
 
@@ -165,6 +165,14 @@ List suppressed hashes.
 ### astrograph_status
 
 Check server readiness. Returns instantly even during indexing.
+
+### astrograph_metadata_erase
+
+Erase all persisted metadata (.metadata_astrograph/). Resets server to idle.
+
+### astrograph_metadata_recompute_baseline
+
+Erase metadata and re-index the codebase from scratch.
 
 </details>
 
