@@ -1,6 +1,6 @@
 [project]
 name = "astrograph"
-version = "0.5.19"
+version = "0.5.20"
 description = "Detect structural code duplication using AST graph isomorphism"
 readme = "README.md"
 requires-python = ">=3.10"

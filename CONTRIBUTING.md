@@ -24,6 +24,10 @@ astrograph-cli doctor
 astrograph-cli install-lsps --dry-run
 ```
 
+Current first-party plugin-backed languages:
+- `python` (`PythonLSPPlugin`)
+- `javascript_lsp` (`JavaScriptLSPPlugin`)
+
 ## Adding a New Language Plugin
 
 ASTrograph uses a plugin architecture for language support. Each language plugin tells the system how to parse source files into graphs that can be compared for structural equivalence.
@@ -233,6 +237,9 @@ pytest tests/ -q
 
 # Language plugin tests only
 pytest tests/languages/ -q
+
+# Docker E2E protocol + integration checks
+pytest tests/test_e2e_docker.py -q
 
 # A specific language
 pytest tests/languages/test_<language>_plugin.py -q

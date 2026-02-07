@@ -13,6 +13,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Hub-blue?logo=docker)](https://hub.docker.com/r/thaylo/astrograph)
 [![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue?logo=linux)](https://hub.docker.com/r/thaylo/astrograph)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
+[![JavaScript](https://img.shields.io/badge/JavaScript-LSP%20plugin-f7df1e?logo=javascript&logoColor=black)](https://hub.docker.com/r/thaylo/astrograph)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Server-purple)](https://modelcontextprotocol.io)
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤-ff69b4?logo=github)](https://github.com/sponsors/Thaylo)
@@ -20,6 +21,7 @@
 **Stop writing code that already exists in your codebase.**
 
 ASTrograph is an MCP server that detects when you're about to create duplicate code - and blocks it before it happens.
+Out of the box language support is plugin-based and LSP-backed: Python (`pylsp`) and JavaScript (`typescript-language-server`).
 
 ## See It In Action
 
@@ -94,7 +96,11 @@ Large codebases accumulate duplicate code because:
 - **Codex** - Tested. `stdio` framing + `resources/list` compatibility
 - **Any MCP client** - Should work (standard stdio protocol)
 
-> **Note:** Python runs through the `python` LSP plugin (`pylsp` by default), not a built-in parser path. More languages can be added via plugins — see [CONTRIBUTING.md](CONTRIBUTING.md).
+> **Language support (official):**
+> - `python` via `PythonLSPPlugin` (`pylsp` by default)
+> - `javascript_lsp` via `JavaScriptLSPPlugin` (`typescript-language-server --stdio` by default)
+>
+> More languages can be added via plugins — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -320,17 +326,23 @@ The server runs in **event-driven mode**:
 
 ## Language Support
 
-Python is provided by the `python` LSP plugin (default command: `pylsp`). The same plugin architecture supports adding new languages via tree-sitter or LSP-backed adapters — see [Adding a New Language](CONTRIBUTING.md#adding-a-new-language-plugin) for a step-by-step guide.
+Both first-party languages are plugin-based and enabled by default:
 
-Python LSP env overrides:
-- `ASTROGRAPH_PY_LSP_COMMAND`
-- `ASTROGRAPH_PY_LSP_TIMEOUT`
+| Language ID | Extensions | Default LSP command | Env overrides |
+|-------------|------------|---------------------|---------------|
+| `python` | `.py`, `.pyi` | `pylsp` | `ASTROGRAPH_PY_LSP_COMMAND`, `ASTROGRAPH_PY_LSP_TIMEOUT` |
+| `javascript_lsp` | `.js`, `.jsx`, `.mjs`, `.cjs` | `typescript-language-server --stdio` | `ASTROGRAPH_JS_LSP_COMMAND`, `ASTROGRAPH_JS_LSP_TIMEOUT` |
 
-A built-in `javascript_lsp` adapter is also available. By default it uses `typescript-language-server --stdio`; override with:
-- `ASTROGRAPH_JS_LSP_COMMAND`
-- `ASTROGRAPH_JS_LSP_TIMEOUT`
+Official Docker images bundle the required JavaScript runtime (`node`, `npm`, `typescript`, `typescript-language-server`), so Python + JavaScript support works out of the box in Docker.
 
-Official Docker images bundle the JS LSP runtime (`node`, `npm`, `typescript`, `typescript-language-server`) so plugin-based Python+JavaScript support works out of the box.
+For local (non-Docker) installs, verify and bootstrap prerequisites with:
+
+```bash
+astrograph-cli doctor
+astrograph-cli install-lsps
+```
+
+The same plugin architecture supports adding new languages via tree-sitter or LSP-backed adapters — see [Adding a New Language](CONTRIBUTING.md#adding-a-new-language-plugin).
 
 ## CLI
 

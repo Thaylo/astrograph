@@ -143,6 +143,36 @@ def transform_values(data):
         yield tmpdir
 
 
+@pytest.fixture
+def sample_javascript_workspace():
+    """Create a temporary workspace with JavaScript files containing duplicates."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        js_code = """
+function processItems(items) {
+  const results = [];
+  for (const item of items) {
+    if (item > 0) {
+      results.push(item * 2);
+    }
+  }
+  return results;
+}
+
+function transformItems(data) {
+  const results = [];
+  for (const item of data) {
+    if (item > 0) {
+      results.push(item * 2);
+    }
+  }
+  return results;
+}
+"""
+        file_path = Path(tmpdir) / "math_utils.js"
+        file_path.write_text(js_code)
+        yield tmpdir
+
+
 class TestDockerImageBasics:
     """Basic tests for the Docker image."""
 
@@ -240,8 +270,8 @@ class TestMCPProtocol:
         }
         assert expected_tools == tool_names
 
-    def test_tool_descriptions_mention_python(self):
-        """Test that relevant tools mention Python-only support."""
+    def test_tool_descriptions_include_core_actions(self):
+        """Test that relevant tools expose meaningful descriptions."""
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
@@ -282,6 +312,89 @@ class TestE2EWorkflow:
             or "No significant duplicates" in analyze_text
             or "No code indexed" in analyze_text
         )
+
+
+class TestJavaScriptE2EWorkflow:
+    """JavaScript end-to-end workflow tests against the Docker MCP server."""
+
+    def test_javascript_analyze_detects_duplicates(self, sample_javascript_workspace):
+        """Analyze should index JS files and report duplicate findings."""
+        responses = send_mcp_messages(
+            [
+                mcp_initialize(),
+                mcp_call_tool("astrograph_analyze", {}, 3),
+            ],
+            workspace_path=sample_javascript_workspace,
+        )
+
+        analyze_response = next((r for r in responses if r.get("id") == 3), None)
+        assert analyze_response is not None
+
+        analyze_text = analyze_response["result"]["content"][0]["text"]
+        assert "no code indexed" not in analyze_text.lower()
+        assert "duplicate" in analyze_text.lower()
+
+        report_path = (
+            Path(sample_javascript_workspace) / ".metadata_astrograph" / "analysis_report.txt"
+        )
+        assert report_path.exists()
+        report_text = report_path.read_text()
+        assert "math_utils.js" in report_text
+        assert "suppress(wl_hash=" in report_text
+
+    def test_javascript_write_blocks_identical_code(self, sample_javascript_workspace):
+        """Write should block exact duplicate JavaScript code in another file."""
+        duplicate_content = """function processItems(items) {
+  const results = [];
+  for (const item of items) {
+    if (item > 0) {
+      results.push(item * 2);
+    }
+  }
+  return results;
+}
+"""
+        responses = send_mcp_messages(
+            [
+                mcp_initialize(),
+                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool(
+                    "astrograph_write",
+                    {"file_path": "/workspace/new_utils.js", "content": duplicate_content},
+                    4,
+                ),
+            ],
+            workspace_path=sample_javascript_workspace,
+        )
+
+        write_response = next((r for r in responses if r.get("id") == 4), None)
+        assert write_response is not None
+        write_text = write_response["result"]["content"][0]["text"]
+        assert "BLOCKED" in write_text
+        assert ".js:" in write_text
+
+    def test_container_doctor_reports_javascript_lsp_ready(self):
+        """Container image should include JavaScript LSP server by default."""
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "astrograph-cli",
+                DOCKER_IMAGE,
+                "doctor",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+        js_server = next(s for s in payload["servers"] if s["language"] == "javascript_lsp")
+        assert js_server["available"] is True
+        assert js_server["executable"]
 
 
 class TestErrorHandling:
