@@ -129,19 +129,43 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
     """
     Base class for language plugins that extract units from LSP symbols.
 
-    Subclasses must define:
-    - language_id
-    - file_extensions
-    - skip_dirs
+    Subclasses can either override properties directly or provide class constants:
+    - LANGUAGE_ID
+    - FILE_EXTENSIONS
+    - SKIP_DIRS
+    - LSP_LANGUAGE_ID (optional; defaults to LANGUAGE_ID)
     """
+
+    LANGUAGE_ID: str = ""
+    LSP_LANGUAGE_ID: str = ""
+    FILE_EXTENSIONS: frozenset[str] = frozenset()
+    SKIP_DIRS: frozenset[str] = frozenset()
 
     def __init__(self, lsp_client: LSPClient | None = None) -> None:
         self._lsp_client: LSPClient = lsp_client if lsp_client is not None else NullLSPClient()
 
     @property
+    def language_id(self) -> str:
+        """Unique language identifier used by the registry."""
+        if self.LANGUAGE_ID:
+            return self.LANGUAGE_ID
+        raise NotImplementedError("LSP plugin must define LANGUAGE_ID or override language_id")
+
+    @property
+    def file_extensions(self) -> frozenset[str]:
+        """Extensions handled by this plugin."""
+        extensions = self.FILE_EXTENSIONS
+        return extensions
+
+    @property
+    def skip_dirs(self) -> frozenset[str]:
+        """Language-specific skip directories."""
+        return self.SKIP_DIRS or frozenset()
+
+    @property
     def lsp_language_id(self) -> str:
         """Language ID sent to the LSP backend."""
-        return self.language_id
+        return self.LSP_LANGUAGE_ID or self.language_id
 
     def _get_document_symbols(self, source: str, file_path: str) -> list[LSPSymbol]:
         return self._lsp_client.document_symbols(

@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import ast
-import os
-import shlex
 from collections.abc import Iterator
 
 import networkx as nx
 
 from ._lsp_base import LSPClient, LSPLanguagePluginBase
 from .base import CodeUnit
-from .lsp_client import SubprocessLSPClient
+from .lsp_client import create_subprocess_client_from_env
 from .python_plugin import PythonPlugin, ast_to_graph, extract_blocks_from_function
 
 _DEFAULT_PY_LSP_COMMAND = ("pylsp",)
@@ -19,42 +17,24 @@ _PY_LSP_COMMAND_ENV = "ASTROGRAPH_PY_LSP_COMMAND"
 _PY_LSP_TIMEOUT_ENV = "ASTROGRAPH_PY_LSP_TIMEOUT"
 
 
-def _default_python_lsp_client() -> LSPClient:
-    """Create a default LSP client for Python language servers."""
-    command_text = os.getenv(_PY_LSP_COMMAND_ENV, "")
-    command = shlex.split(command_text) if command_text.strip() else list(_DEFAULT_PY_LSP_COMMAND)
-
-    timeout_text = os.getenv(_PY_LSP_TIMEOUT_ENV, "5")
-    try:
-        timeout = float(timeout_text)
-    except ValueError:
-        timeout = 5.0
-
-    return SubprocessLSPClient(command, request_timeout=max(timeout, 0.1))
-
-
 class PythonLSPPlugin(LSPLanguagePluginBase):
     """Python support via LSP symbols + AST block extraction."""
 
+    LANGUAGE_ID = "python"
+    LSP_LANGUAGE_ID = "python"
+    FILE_EXTENSIONS = frozenset({".py", ".pyi"})
+    SKIP_DIRS = frozenset({"__pycache__", "venv", ".venv", ".tox", ".mypy_cache"})
+
     def __init__(self, lsp_client: LSPClient | None = None) -> None:
-        super().__init__(lsp_client=lsp_client or _default_python_lsp_client())
+        super().__init__(
+            lsp_client=lsp_client
+            or create_subprocess_client_from_env(
+                default_command=_DEFAULT_PY_LSP_COMMAND,
+                command_env_var=_PY_LSP_COMMAND_ENV,
+                timeout_env_var=_PY_LSP_TIMEOUT_ENV,
+            )
+        )
         self._graph_plugin = PythonPlugin()
-
-    @property
-    def language_id(self) -> str:
-        return "python"
-
-    @property
-    def lsp_language_id(self) -> str:
-        return "python"
-
-    @property
-    def file_extensions(self) -> frozenset[str]:
-        return frozenset({".py", ".pyi"})
-
-    @property
-    def skip_dirs(self) -> frozenset[str]:
-        return frozenset({"__pycache__", "venv", ".venv", ".tox", ".mypy_cache"})
 
     def source_to_graph(self, source: str, normalize_ops: bool = False) -> nx.DiGraph:
         """Use the Python AST graph builder for structural fidelity."""

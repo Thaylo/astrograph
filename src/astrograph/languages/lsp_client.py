@@ -369,3 +369,23 @@ class SubprocessLSPClient(LSPClient):
 
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
+
+
+def create_subprocess_client_from_env(
+    *,
+    default_command: Sequence[str],
+    command_env_var: str,
+    timeout_env_var: str,
+    default_timeout: float = 5.0,
+) -> SubprocessLSPClient:
+    """Create a subprocess LSP client with env-based command/timeout overrides."""
+    command_text = os.getenv(command_env_var, "")
+    command = shlex.split(command_text) if command_text.strip() else list(default_command)
+
+    timeout_text = os.getenv(timeout_env_var, str(default_timeout))
+    try:
+        timeout = float(timeout_text)
+    except ValueError:
+        timeout = default_timeout
+
+    return SubprocessLSPClient(command, request_timeout=max(timeout, 0.1))

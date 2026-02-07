@@ -183,13 +183,8 @@ function sum(x, y) {
 
     def test_registry_and_index_flow_for_lsp_plugin(self, tmp_path):
         class TestJavaScriptPlugin(JavaScriptLSPPlugin):
-            @property
-            def language_id(self) -> str:
-                return "javascript_lsp_test"
-
-            @property
-            def file_extensions(self) -> frozenset[str]:
-                return frozenset({".fjs"})
+            LANGUAGE_ID = "javascript_lsp_test"
+            FILE_EXTENSIONS = frozenset({".fjs"})
 
         plugin = TestJavaScriptPlugin(lsp_client=FakeJavaScriptLSPClient())
         registry = LanguageRegistry.get()

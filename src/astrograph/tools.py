@@ -18,9 +18,9 @@ import shutil
 import threading
 from collections.abc import Callable
 from datetime import datetime
-from functools import wraps
+from functools import partialmethod, wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import networkx as nx
 
@@ -768,11 +768,8 @@ class CodeStructureTools(CloseOnExitMixin):
 
         return ToolResult(prefix + (success_msg if success else failure_msg))
 
-    def suppress(self, wl_hash: str) -> ToolResult:
-        return self._toggle_suppression(wl_hash=wl_hash, suppress=True)
-
-    def unsuppress(self, wl_hash: str) -> ToolResult:
-        return self._toggle_suppression(wl_hash=wl_hash, suppress=False)
+    suppress = partialmethod(_toggle_suppression, suppress=True)
+    unsuppress = partialmethod(_toggle_suppression, suppress=False)
 
     @_requires_index
     def _batch_toggle_suppression(self, wl_hashes: list[str], suppress: bool) -> ToolResult:
@@ -795,11 +792,8 @@ class CodeStructureTools(CloseOnExitMixin):
             parts.append("Run analyze to refresh.")
         return ToolResult(prefix + " ".join(parts))
 
-    def suppress_batch(self, wl_hashes: list[str]) -> ToolResult:
-        return self._batch_toggle_suppression(wl_hashes=wl_hashes, suppress=True)
-
-    def unsuppress_batch(self, wl_hashes: list[str]) -> ToolResult:
-        return self._batch_toggle_suppression(wl_hashes=wl_hashes, suppress=False)
+    suppress_batch = partialmethod(_batch_toggle_suppression, suppress=True)
+    unsuppress_batch = partialmethod(_batch_toggle_suppression, suppress=False)
 
     def list_suppressions(self) -> ToolResult:
         """List all suppressed hashes."""
@@ -1155,13 +1149,13 @@ class CodeStructureTools(CloseOnExitMixin):
                 code2=arguments["code2"],
             )
         elif name == "suppress":
-            return self.suppress(wl_hash=arguments["wl_hash"])
+            return cast(ToolResult, self.suppress(wl_hash=arguments["wl_hash"]))
         elif name == "suppress_batch":
-            return self.suppress_batch(wl_hashes=arguments["wl_hashes"])
+            return cast(ToolResult, self.suppress_batch(wl_hashes=arguments["wl_hashes"]))
         elif name == "unsuppress":
-            return self.unsuppress(wl_hash=arguments["wl_hash"])
+            return cast(ToolResult, self.unsuppress(wl_hash=arguments["wl_hash"]))
         elif name == "unsuppress_batch":
-            return self.unsuppress_batch(wl_hashes=arguments["wl_hashes"])
+            return cast(ToolResult, self.unsuppress_batch(wl_hashes=arguments["wl_hashes"]))
         elif name == "list_suppressions":
             return self.list_suppressions()
         elif name == "status":

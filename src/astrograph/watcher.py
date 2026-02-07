@@ -13,16 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from watchdog.events import (
-    DirCreatedEvent,
-    DirDeletedEvent,
-    DirModifiedEvent,
-    FileCreatedEvent,
-    FileDeletedEvent,
-    FileModifiedEvent,
-    FileSystemEvent,
-    FileSystemEventHandler,
-)
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
@@ -129,14 +120,15 @@ class SourceFileHandler(FileSystemEventHandler):
                 logger.debug(f"File {event_type}: {src}")
                 handler(src)
 
-    def on_modified(self, event: DirModifiedEvent | FileModifiedEvent) -> None:
-        self._handle_event(event, "modified", self._on_modified)
-
-    def on_created(self, event: DirCreatedEvent | FileCreatedEvent) -> None:
-        self._handle_event(event, "created", self._on_created)
-
-    def on_deleted(self, event: DirDeletedEvent | FileDeletedEvent) -> None:
-        self._handle_event(event, "deleted", self._on_deleted)
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        """Route core watchdog events to the right callback."""
+        event_type = getattr(event, "event_type", "")
+        if event_type == "modified":
+            self._handle_event(event, "modified", self._on_modified)
+        elif event_type == "created":
+            self._handle_event(event, "created", self._on_created)
+        elif event_type == "deleted":
+            self._handle_event(event, "deleted", self._on_deleted)
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
