@@ -1809,6 +1809,54 @@ class TestWorkspaceEnvVar:
             assert "idle" in result.text
 
 
+class TestStartupWorkspaceDetection:
+    """Tests for startup workspace fallback logic (Codex/local compatibility)."""
+
+    def test_pwd_fallback_triggers_auto_index(self):
+        """Without ASTROGRAPH_WORKSPACE, PWD should be used when cwd is '/'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "mod.py")
+            with open(py_file, "w") as f:
+                f.write("def hello(): return 42\n")
+
+            with patch.dict(os.environ, {"PWD": tmpdir}, clear=False):
+                os.environ.pop("ASTROGRAPH_WORKSPACE", None)
+                with patch("os.getcwd", return_value="/"):
+                    tools = CodeStructureTools()
+                    tools._wait_for_background_index()
+                    assert tools._bg_index_progress == "done"
+                    assert len(tools.index.entries) > 0
+                    tools.close()
+
+    def test_cwd_fallback_triggers_auto_index(self):
+        """Without ASTROGRAPH_WORKSPACE/PWD, cwd should be used."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "mod.py")
+            with open(py_file, "w") as f:
+                f.write("def hello(): return 42\n")
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("ASTROGRAPH_WORKSPACE", None)
+                os.environ.pop("PWD", None)
+                with patch("os.getcwd", return_value=tmpdir):
+                    tools = CodeStructureTools()
+                    tools._wait_for_background_index()
+                    assert tools._bg_index_progress == "done"
+                    assert len(tools.index.entries) > 0
+                    tools.close()
+
+    def test_root_cwd_without_hints_stays_idle(self):
+        """With no startup hints and cwd='/', server should remain idle."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ASTROGRAPH_WORKSPACE", None)
+            os.environ.pop("PWD", None)
+            with patch("os.getcwd", return_value="/"):
+                tools = CodeStructureTools()
+                result = tools.status()
+                assert "idle" in result.text
+                tools.close()
+
+
 class TestBlockingDuringIndexing:
     """Tests that tools wait for background indexing then proceed."""
 

@@ -36,8 +36,8 @@ class _StdioReader:
                 raise EOFError("stdin closed")
             self._buf += chunk
 
-    async def _detect_mode(self) -> None:
-        """Detect framing mode from the first non-whitespace byte."""
+    async def _detect_mode(self) -> str:
+        """Detect framing mode for the next message in the buffer."""
         while True:
             await self._fill(1)
             # Skip leading whitespace
@@ -47,19 +47,18 @@ class _StdioReader:
                 continue
             # Update buffer to stripped version
             self._buf = stripped
-            first = chr(stripped[0])
-            if first == "C":
-                self.mode = "framed"
+            lower = stripped.lower()
+            if lower.startswith(b"content-length:"):
+                return "framed"
             else:
-                self.mode = "newline"
-            return
+                return "newline"
 
     async def read_message(self) -> bytes:
         """Read and return the next complete JSON-RPC message as bytes."""
-        if self.mode is None:
-            await self._detect_mode()
+        mode = await self._detect_mode()
+        self.mode = mode
 
-        if self.mode == "newline":
+        if mode == "newline":
             return await self._read_newline()
         else:
             return await self._read_framed()
@@ -83,19 +82,31 @@ class _StdioReader:
 
     async def _read_framed(self) -> bytes:
         """Read a Content-Length framed message."""
-        # Read headers until \r\n\r\n
-        while b"\r\n\r\n" not in self._buf:
+        # Read headers until blank line (CRLF or LF style).
+        header_end = -1
+        delim_len = 0
+        while True:
+            if b"\r\n\r\n" in self._buf:
+                header_end = self._buf.index(b"\r\n\r\n")
+                delim_len = 4
+                break
+            if b"\n\n" in self._buf:
+                header_end = self._buf.index(b"\n\n")
+                delim_len = 2
+                break
             await self._fill()
 
-        header_end = self._buf.index(b"\r\n\r\n")
         headers = self._buf[:header_end].decode("ascii")
-        self._buf = self._buf[header_end + 4 :]
+        self._buf = self._buf[header_end + delim_len :]
 
         # Parse Content-Length
         content_length = None
-        for header_line in headers.split("\r\n"):
-            if header_line.lower().startswith("content-length:"):
-                content_length = int(header_line.split(":", 1)[1].strip())
+        for header_line in headers.splitlines():
+            if ":" not in header_line:
+                continue
+            name, value = header_line.split(":", 1)
+            if name.strip().lower() == "content-length":
+                content_length = int(value.strip())
                 break
 
         if content_length is None:

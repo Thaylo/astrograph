@@ -117,13 +117,9 @@ class CodeStructureTools:
         self._bg_index_done.set()  # Initially "done" (no background work)
         self._bg_index_progress: str = ""
 
-        # Auto-index workspace at startup (Docker / Codex).
-        # ASTROGRAPH_WORKSPACE overrides the default /workspace detection,
-        # useful when cwd is unreliable (e.g. Codex launches with cwd=/).
+        # Auto-index workspace at startup (Docker / Codex / local MCP clients).
         # Run in background so the MCP handshake completes immediately.
-        workspace = os.environ.get("ASTROGRAPH_WORKSPACE") or (
-            "/workspace" if os.path.isdir("/workspace") else None
-        )
+        workspace = self._detect_startup_workspace()
         if workspace and os.path.isdir(workspace):
             self._bg_index_done.clear()
             self._bg_index_thread = threading.Thread(
@@ -132,6 +128,30 @@ class CodeStructureTools:
                 daemon=True,
             )
             self._bg_index_thread.start()
+
+    def _detect_startup_workspace(self) -> str | None:
+        """Pick a safe workspace path to auto-index at startup.
+
+        Detection order:
+        1) ``ASTROGRAPH_WORKSPACE`` (explicit override; empty disables auto-index)
+        2) ``/workspace`` (Docker convention used by Claude/Cursor setups)
+        3) ``PWD`` env var (Codex may preserve this even when cwd is ``/``)
+        4) ``os.getcwd()`` (local MCP clients launched in a project directory)
+        """
+        env_workspace = os.environ.get("ASTROGRAPH_WORKSPACE")
+        if env_workspace is not None:
+            if env_workspace and os.path.isdir(env_workspace):
+                return env_workspace
+            return None
+
+        if os.path.isdir("/workspace"):
+            return "/workspace"
+
+        for candidate in (os.environ.get("PWD"), os.getcwd()):
+            if candidate and candidate != "/" and os.path.isdir(candidate):
+                return candidate
+
+        return None
 
     def _background_index(self, path: str) -> None:
         """Index a codebase in the background."""

@@ -88,7 +88,8 @@ Large codebases accumulate duplicate code because:
 ## Works With
 
 - **Claude Code** - Tested. Project-level `.mcp.json`
-- **Any MCP client** - Should work (standard stdio protocol), but untested
+- **Codex** - Tested. `stdio` framing + `resources/list` compatibility
+- **Any MCP client** - Should work (standard stdio protocol)
 
 > **Note:** Python is built-in. More languages can be added via plugins — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -201,6 +202,27 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
   }
 }
 ```
+
+</details>
+
+<details>
+<summary><strong>Codex (~/.codex/config.toml)</strong></summary>
+
+```toml
+[mcp_servers.astrograph]
+command = "docker"
+args = [
+  "run", "--rm", "-i", "--pull", "always",
+  "-v", "/path/to/your/project:/workspace",
+  "-v", "/path/to/your/project/.metadata_astrograph:/workspace/.metadata_astrograph",
+  "thaylo/astrograph"
+]
+```
+
+ASTrograph auto-indexes at startup using:
+1. `ASTROGRAPH_WORKSPACE` (if set)
+2. `/workspace` (Docker)
+3. `PWD` / current working directory (local launches)
 
 </details>
 

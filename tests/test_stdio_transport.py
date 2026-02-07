@@ -69,6 +69,17 @@ class TestStdioReader:
         assert parsed["method"] == "initialize"
 
     @pytest.mark.asyncio
+    async def test_framed_mode_detection_lowercase_header(self):
+        """Lowercase content-length header should still trigger framed mode."""
+        body = json.dumps(_make_initialize_request()).encode("utf-8")
+        msg = f"content-length: {len(body)}\r\n\r\n".encode("ascii") + body
+        reader = _StdioReader(_FakeStream(msg))
+        data = await reader.read_message()
+        assert reader.mode == "framed"
+        parsed = json.loads(data)
+        assert parsed["method"] == "initialize"
+
+    @pytest.mark.asyncio
     async def test_auto_detect_with_leading_whitespace(self):
         """Whitespace before '{' should still detect newline mode."""
         msg = b"  \n  " + json.dumps(_make_initialize_request()).encode("utf-8") + b"\n"
@@ -96,6 +107,17 @@ class TestStdioReader:
         assert json.loads(d2)["id"] == 2
 
     @pytest.mark.asyncio
+    async def test_framed_mode_with_lf_header_delimiter(self):
+        """Framed mode should also accept LF-only header delimiter."""
+        body = json.dumps(_make_initialize_request()).encode("utf-8")
+        msg = f"Content-Length: {len(body)}\n\n".encode("ascii") + body
+        reader = _StdioReader(_FakeStream(msg))
+        data = await reader.read_message()
+        assert reader.mode == "framed"
+        parsed = json.loads(data)
+        assert parsed["method"] == "initialize"
+
+    @pytest.mark.asyncio
     async def test_newline_mode_multiple_messages(self):
         """Multiple newline messages should be read correctly."""
         msg1 = json.dumps(_make_initialize_request(1)).encode("utf-8")
@@ -108,13 +130,41 @@ class TestStdioReader:
         assert json.loads(d2)["id"] == 2
 
     @pytest.mark.asyncio
+    async def test_mixed_mode_newline_then_framed(self):
+        """Reader should handle mode switching between consecutive messages."""
+        msg1 = json.dumps(_make_initialize_request(1)).encode("utf-8")
+        msg2 = json.dumps(_make_initialize_request(2)).encode("utf-8")
+        data = msg1 + b"\n" + f"Content-Length: {len(msg2)}\r\n\r\n".encode("ascii") + msg2
+        reader = _StdioReader(_FakeStream(data))
+        d1 = await reader.read_message()
+        assert reader.mode == "newline"
+        d2 = await reader.read_message()
+        assert reader.mode == "framed"
+        assert json.loads(d1)["id"] == 1
+        assert json.loads(d2)["id"] == 2
+
+    @pytest.mark.asyncio
+    async def test_mixed_mode_framed_then_newline(self):
+        """Reader should handle framed request followed by newline request."""
+        msg1 = json.dumps(_make_initialize_request(1)).encode("utf-8")
+        msg2 = json.dumps(_make_initialize_request(2)).encode("utf-8")
+        data = f"Content-Length: {len(msg1)}\r\n\r\n".encode("ascii") + msg1 + b"\n" + msg2 + b"\n"
+        reader = _StdioReader(_FakeStream(data))
+        d1 = await reader.read_message()
+        assert reader.mode == "framed"
+        d2 = await reader.read_message()
+        assert reader.mode == "newline"
+        assert json.loads(d1)["id"] == 1
+        assert json.loads(d2)["id"] == 2
+
+    @pytest.mark.asyncio
     async def test_framed_missing_content_length(self):
         """Framed message without Content-Length should raise ValueError."""
-        # Start with 'C' but not a valid Content-Length header
+        # Force framed mode and provide headers without Content-Length.
         data = b"Custom-Header: foo\r\n\r\n{}"
         reader = _StdioReader(_FakeStream(data))
         with pytest.raises(ValueError, match="Missing Content-Length"):
-            await reader.read_message()
+            await reader._read_framed()
 
     @pytest.mark.asyncio
     async def test_newline_mode_no_trailing_newline(self):

@@ -147,13 +147,30 @@ class TestDockerImageBasics:
     """Basic tests for the Docker image."""
 
     def test_image_exists(self):
-        """Test that the Docker image can be pulled/exists."""
-        result = subprocess.run(
+        """Test that the Docker image exists locally (pulling if needed)."""
+        inspect_result = subprocess.run(
             ["docker", "image", "inspect", DOCKER_IMAGE],
             capture_output=True,
             timeout=30,
         )
-        assert result.returncode == 0, f"Docker image {DOCKER_IMAGE} not found"
+        if inspect_result.returncode != 0:
+            pull_result = subprocess.run(
+                ["docker", "pull", DOCKER_IMAGE],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            assert (
+                pull_result.returncode == 0
+            ), f"Docker image {DOCKER_IMAGE} not found and pull failed: {pull_result.stderr}"
+
+            inspect_result = subprocess.run(
+                ["docker", "image", "inspect", DOCKER_IMAGE],
+                capture_output=True,
+                timeout=30,
+            )
+
+        assert inspect_result.returncode == 0, f"Docker image {DOCKER_IMAGE} not found"
 
     def test_python_import(self):
         """Test that astrograph can be imported in the container."""
