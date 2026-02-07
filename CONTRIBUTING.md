@@ -17,6 +17,13 @@ Run the test suite:
 pytest tests/ -q
 ```
 
+Verify local LSP prerequisites (useful for plugin-backed languages):
+
+```bash
+astrograph-cli doctor
+astrograph-cli install-lsps --dry-run
+```
+
 ## Adding a New Language Plugin
 
 ASTrograph uses a plugin architecture for language support. Each language plugin tells the system how to parse source files into graphs that can be compared for structural equivalence.

@@ -10,6 +10,12 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 
+# Bundle JS LSP runtime for frictionless plugin-based adoption.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends nodejs npm && \
+    npm install -g typescript typescript-language-server && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy all required files
 COPY pyproject.toml README.md ./
 COPY src/ src/

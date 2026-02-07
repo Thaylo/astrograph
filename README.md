@@ -330,15 +330,32 @@ A built-in `javascript_lsp` adapter is also available. By default it uses `types
 - `ASTROGRAPH_JS_LSP_COMMAND`
 - `ASTROGRAPH_JS_LSP_TIMEOUT`
 
+Official Docker images bundle the JS LSP runtime (`node`, `npm`, `typescript`, `typescript-language-server`) so plugin-based Python+JavaScript support works out of the box.
+
 ## CLI
 
 ASTrograph also ships a standalone CLI for quick analysis outside of MCP:
 
 ```bash
 pip install .
-astrograph-cli duplicates /path/to/project     # Find duplicates
+
+# Verify local LSP prerequisites (python + javascript adapters)
+astrograph-cli doctor
+
+# Auto-install missing bundled LSP servers (best effort)
+astrograph-cli install-lsps
+
+# Core analysis commands
+astrograph-cli duplicates /path/to/project      # Find duplicates
 astrograph-cli check /path/to/project code.py   # Check for similar code
-astrograph-cli compare file1.py file2.py         # Compare two files
+astrograph-cli compare file1.py file2.py        # Compare two files
+```
+
+For scripting/CI:
+
+```bash
+astrograph-cli doctor --json
+astrograph-cli install-lsps --dry-run --json
 ```
 
 ## Development

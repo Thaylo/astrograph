@@ -9,6 +9,29 @@ import pytest
 from astrograph import cli
 
 
+def _status(
+    *,
+    language_id: str,
+    available: bool,
+    command: list[str],
+    command_source: str = "default",
+    executable: str | None = None,
+    installable: bool = False,
+    install_command: list[str] | None = None,
+    reason: str | None = None,
+) -> cli.LSPServerStatus:
+    return cli.LSPServerStatus(
+        language_id=language_id,
+        command=command,
+        command_source=command_source,
+        executable=executable,
+        available=available,
+        installable=installable,
+        install_command=install_command,
+        reason=reason,
+    )
+
+
 def _run_cli(argv: list[str]) -> None:
     with patch.object(sys, "argv", argv):
         cli.main()
@@ -160,6 +183,98 @@ class TestCompareCommand:
         _run_cli(["cli", "compare", str(file1), str(file2)])
         captured = capsys.readouterr()
         assert "Isomorphic" in captured.out
+
+
+class TestDoctorCommand:
+    """Tests for doctor output."""
+
+    def test_doctor_text(self, capsys):
+        statuses = [
+            _status(
+                language_id="python",
+                available=True,
+                command=["pylsp"],
+                executable="/usr/bin/pylsp",
+            ),
+            _status(
+                language_id="javascript_lsp",
+                available=False,
+                command=["typescript-language-server", "--stdio"],
+                installable=True,
+                install_command=[
+                    "npm",
+                    "install",
+                    "-g",
+                    "typescript",
+                    "typescript-language-server",
+                ],
+            ),
+        ]
+        with patch("astrograph.cli._collect_lsp_statuses", return_value=statuses):
+            _run_cli(["cli", "doctor"])
+
+        captured = capsys.readouterr()
+        assert "ASTrograph LSP doctor" in captured.out
+        assert "[OK] python" in captured.out
+        assert "[MISSING] javascript_lsp" in captured.out
+
+    def test_doctor_json(self, capsys):
+        statuses = [
+            _status(language_id="python", available=True, command=["pylsp"]),
+            _status(
+                language_id="javascript_lsp",
+                available=True,
+                command=["typescript-language-server", "--stdio"],
+            ),
+        ]
+        with patch("astrograph.cli._collect_lsp_statuses", return_value=statuses):
+            _run_cli(["cli", "doctor", "--json"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ready"] is True
+        assert len(payload["servers"]) == 2
+
+
+class TestInstallLSPsCommand:
+    """Tests for install-lsps command."""
+
+    def test_install_lsps_runs_selected_language(self, capsys):
+        statuses = [
+            _status(language_id="python", available=False, command=["pylsp"], installable=True),
+            _status(
+                language_id="javascript_lsp",
+                available=False,
+                command=["typescript-language-server", "--stdio"],
+                installable=True,
+            ),
+        ]
+
+        with (
+            patch("astrograph.cli._collect_lsp_statuses", return_value=statuses),
+            patch("astrograph.cli._run_install_lsp", return_value=("installed", "ok")) as install,
+        ):
+            _run_cli(["cli", "install-lsps", "--python"])
+
+        captured = capsys.readouterr()
+        assert "[INSTALLED] python: ok" in captured.out
+        install.assert_called_once()
+        called_status = install.call_args.args[0]
+        assert called_status.language_id == "python"
+
+    def test_install_lsps_json(self, capsys):
+        statuses = [
+            _status(language_id="python", available=False, command=["pylsp"], installable=True)
+        ]
+
+        with (
+            patch("astrograph.cli._collect_lsp_statuses", return_value=statuses),
+            patch("astrograph.cli._run_install_lsp", return_value=("failed", "boom")),
+        ):
+            _run_cli(["cli", "install-lsps", "--json"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert len(payload["results"]) == 1
+        assert len(payload["failed"]) == 1
 
 
 class TestHelpCommand:
