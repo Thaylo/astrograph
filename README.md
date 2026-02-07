@@ -94,7 +94,7 @@ Large codebases accumulate duplicate code because:
 - **Codex** - Tested. `stdio` framing + `resources/list` compatibility
 - **Any MCP client** - Should work (standard stdio protocol)
 
-> **Note:** Python is built-in. More languages can be added via plugins — see [CONTRIBUTING.md](CONTRIBUTING.md).
+> **Note:** Python runs through the `python` LSP plugin (`pylsp` by default), not a built-in parser path. More languages can be added via plugins — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -320,7 +320,15 @@ The server runs in **event-driven mode**:
 
 ## Language Support
 
-Python is supported out of the box. The plugin architecture allows adding new languages — see [Adding a New Language](CONTRIBUTING.md#adding-a-new-language-plugin) for a step-by-step guide.
+Python is provided by the `python` LSP plugin (default command: `pylsp`). The same plugin architecture supports adding new languages via tree-sitter or LSP-backed adapters — see [Adding a New Language](CONTRIBUTING.md#adding-a-new-language-plugin) for a step-by-step guide.
+
+Python LSP env overrides:
+- `ASTROGRAPH_PY_LSP_COMMAND`
+- `ASTROGRAPH_PY_LSP_TIMEOUT`
+
+A built-in `javascript_lsp` adapter is also available. By default it uses `typescript-language-server --stdio`; override with:
+- `ASTROGRAPH_JS_LSP_COMMAND`
+- `ASTROGRAPH_JS_LSP_TIMEOUT`
 
 ## CLI
 

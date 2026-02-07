@@ -14,21 +14,13 @@ from pathlib import Path
 
 import networkx as nx
 
-from .ast_to_graph import (
-    BLOCK_TYPE_NAMES,
-    ASTGraph,
-    CodeUnit,
-    ast_to_graph,
-    code_unit_to_ast_graph,
-    extract_code_units,
-    node_match,
-)
 from .canonical_hash import (
     compute_hierarchy_hash,
     fingerprints_compatible,
     structural_fingerprint,
     weisfeiler_leman_hash,
 )
+from .languages.base import ASTGraph, CodeUnit, LanguagePlugin, node_match
 from .languages.registry import LanguageRegistry
 
 # Prefixes that indicate virtual environment directories.
@@ -368,9 +360,25 @@ class CodeStructureIndex:
 
         return False  # mtime matches, assume unchanged
 
+    def _plugin_for_language(self, language: str) -> LanguagePlugin | None:
+        """Resolve a plugin by language ID."""
+        return LanguageRegistry.get().get_plugin(language)
+
+    def _graph_for_code(self, code: str, language: str) -> nx.DiGraph | None:
+        """Build a graph for code using the language plugin."""
+        plugin = self._plugin_for_language(language)
+        return plugin.source_to_graph(code) if plugin else None
+
+    def _ast_graph_for_code_unit(self, unit: CodeUnit) -> ASTGraph | None:
+        """Build an AST graph for a code unit using its language plugin."""
+        plugin = self._plugin_for_language(unit.language)
+        return plugin.code_unit_to_ast_graph(unit) if plugin else None
+
     def add_code_unit(self, unit: CodeUnit) -> IndexEntry:
         """Add a code unit to the index."""
-        ast_graph = code_unit_to_ast_graph(unit)
+        ast_graph = self._ast_graph_for_code_unit(unit)
+        if ast_graph is None:
+            raise ValueError(f"No plugin registered for language '{unit.language}'")
         return self.add_ast_graph(ast_graph)
 
     def add_ast_graph(self, ast_graph: ASTGraph) -> IndexEntry:
@@ -440,11 +448,11 @@ class CodeStructureIndex:
         max_block_depth: int = 3,
     ) -> list[IndexEntry]:
         """
-        Index all code units from a Python file.
+        Index all code units from a supported source file.
 
         Args:
-            file_path: Path to the Python file
-            include_blocks: If True, also extract code blocks (for, while, if, try, with)
+            file_path: Path to the source file
+            include_blocks: If True, include plugin-supported block extraction
             max_block_depth: Maximum nesting depth for block extraction (default 3)
         """
         path = Path(file_path)
@@ -463,9 +471,15 @@ class CodeStructureIndex:
             # Remove existing entries for this file
             self.remove_file(file_path)
 
-            entries = []
-            for unit in extract_code_units(source, file_path, include_blocks, max_block_depth):
-                entry = self.add_code_unit(unit)
+            entries: list[IndexEntry] = []
+            for unit in plugin.extract_code_units(
+                source,
+                file_path,
+                include_blocks,
+                max_block_depth,
+            ):
+                ast_graph = plugin.code_unit_to_ast_graph(unit)
+                entry = self.add_ast_graph(ast_graph)
                 entries.append(entry)
 
             # Record file metadata for staleness detection
@@ -489,12 +503,12 @@ class CodeStructureIndex:
         max_block_depth: int = 3,
     ) -> list[IndexEntry]:
         """
-        Index all Python files in a directory.
+        Index all supported source files in a directory.
 
         Args:
             dir_path: Path to the directory
             recursive: If True, search recursively (default True)
-            include_blocks: If True, also extract code blocks (for, while, if, try, with)
+            include_blocks: If True, include plugin-supported block extraction
             max_block_depth: Maximum nesting depth for block extraction (default 3)
         """
         path = Path(dir_path)
@@ -502,8 +516,8 @@ class CodeStructureIndex:
             all_entries = []
 
             with self._lock:
-                for py_file in _walk_python_files(str(path), recursive):
-                    entries = self.index_file(py_file, include_blocks, max_block_depth)
+                for source_file in _walk_python_files(str(path), recursive):
+                    entries = self.index_file(source_file, include_blocks, max_block_depth)
                     all_entries.extend(entries)
 
             return all_entries
@@ -519,7 +533,7 @@ class CodeStructureIndex:
         Index a file only if it has changed since last indexing.
 
         Args:
-            file_path: Path to the Python file
+            file_path: Path to the source file
             include_blocks: If True, also extract code blocks
             max_block_depth: Maximum nesting depth for block extraction
 
@@ -564,8 +578,8 @@ class CodeStructureIndex:
             seen_files: set[str] = set()
             changed_files: set[str] = set()
 
-            for py_file in _walk_python_files(str(path), recursive):
-                file_str = py_file
+            for source_file in _walk_python_files(str(path), recursive):
+                file_str = source_file
                 seen_files.add(file_str)
 
                 was_new = file_str not in self.file_metadata
@@ -659,8 +673,9 @@ class CodeStructureIndex:
 
     def find_exact_matches(self, code: str, language: str = "python") -> list[IndexEntry]:
         """Find entries with the same WL hash as the given code."""
-        plugin = LanguageRegistry.get().get_plugin(language)
-        graph = plugin.source_to_graph(code) if plugin else ast_to_graph(code)
+        graph = self._graph_for_code(code, language)
+        if graph is None:
+            return []
         wl_hash = weisfeiler_leman_hash(graph)
 
         with self._lock:
@@ -679,8 +694,9 @@ class CodeStructureIndex:
         Uses fingerprint index for O(1) candidate lookup instead of O(n) linear scan.
         Uses hot metadata for hierarchy comparison to avoid loading evicted entries.
         """
-        plugin = LanguageRegistry.get().get_plugin(language)
-        graph = plugin.source_to_graph(code) if plugin else ast_to_graph(code)
+        graph = self._graph_for_code(code, language)
+        if graph is None:
+            return []
         if graph.number_of_nodes() < min_node_count:
             return []
 
@@ -1070,8 +1086,9 @@ class CodeStructureIndex:
         """
         entry_filter = None
         if block_types:
-            valid_block_types = set(BLOCK_TYPE_NAMES.values())
-            block_types_set = set(block_types) & valid_block_types
+            block_types_set = set(block_types)
+            if not block_types_set:
+                return []
 
             def block_type_filter(e: IndexEntry) -> bool:
                 return e.code_unit.block_type in block_types_set
@@ -1109,20 +1126,10 @@ class CodeStructureIndex:
     def verify_isomorphism(self, entry1: IndexEntry, entry2: IndexEntry) -> bool:
         """Verify that two entries are truly isomorphic using full graph isomorphism."""
         with self._lock:
-            registry = LanguageRegistry.get()
-            plugin1 = registry.get_plugin(entry1.code_unit.language)
-            plugin2 = registry.get_plugin(entry2.code_unit.language)
-
-            g1 = (
-                plugin1.source_to_graph(entry1.code_unit.code)
-                if plugin1
-                else ast_to_graph(entry1.code_unit.code)
-            )
-            g2 = (
-                plugin2.source_to_graph(entry2.code_unit.code)
-                if plugin2
-                else ast_to_graph(entry2.code_unit.code)
-            )
+            g1 = self._graph_for_code(entry1.code_unit.code, entry1.code_unit.language)
+            g2 = self._graph_for_code(entry2.code_unit.code, entry2.code_unit.language)
+            if g1 is None or g2 is None:
+                return False
 
             return bool(nx.is_isomorphic(g1, g2, node_match=node_match))
 
@@ -1170,7 +1177,7 @@ class CodeStructureIndex:
 
         Args:
             root_path: Optional root path to also check for new files.
-                      If provided, scans for Python files not in the index.
+                      If provided, scans for supported source files not in the index.
 
         Returns:
             StalenessReport with lists of modified, deleted, and new files.
@@ -1190,9 +1197,9 @@ class CodeStructureIndex:
 
             # Check for new files if root_path is provided
             if root_path and os.path.isdir(root_path):
-                for py_file in _walk_python_files(root_path):
-                    if py_file not in self.file_metadata:
-                        new_files.append(py_file)
+                for source_file in _walk_python_files(root_path):
+                    if source_file not in self.file_metadata:
+                        new_files.append(source_file)
 
             # Check suppression staleness
             stale_suppressions = self.check_suppression_staleness()

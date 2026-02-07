@@ -5,6 +5,7 @@ Provides incremental updates, WAL mode for concurrent access,
 and crash safety for the code structure index.
 """
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -48,7 +49,16 @@ class SQLitePersistence:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._conn: sqlite3.Connection | None = None
-        self._ensure_schema()
+        try:
+            self._ensure_schema()
+        except sqlite3.DatabaseError as exc:
+            logger.warning(
+                "Persistence DB appears corrupted at %s (%s); recreating.",
+                self.db_path,
+                exc,
+            )
+            self._quarantine_corrupt_database()
+            self._ensure_schema()
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -65,6 +75,25 @@ class SQLitePersistence:
             self._conn.execute("PRAGMA temp_store=MEMORY")
             self._conn.row_factory = sqlite3.Row
         return self._conn
+
+    def _quarantine_corrupt_database(self) -> None:
+        """Move malformed DB/WAL artifacts aside so a clean DB can be created."""
+        if self._conn is not None:
+            with contextlib.suppress(sqlite3.DatabaseError, sqlite3.OperationalError):
+                self._conn.close()
+            self._conn = None
+
+        suffix = f".corrupt.{int(time.time())}"
+        for candidate in (
+            self.db_path,
+            Path(str(self.db_path) + "-wal"),
+            Path(str(self.db_path) + "-shm"),
+        ):
+            if not candidate.exists():
+                continue
+            backup = candidate.with_name(candidate.name + suffix)
+            with contextlib.suppress(OSError):
+                candidate.replace(backup)
 
     def _ensure_schema(self) -> None:
         """Create tables if they don't exist, resetting on version mismatch."""
@@ -142,11 +171,18 @@ class SQLitePersistence:
 
     def close(self) -> None:
         """Close the database connection."""
-        if self._conn is not None:
+        if self._conn is None:
+            return
+
+        with contextlib.suppress(sqlite3.DatabaseError, sqlite3.OperationalError):
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            self.vacuum()
+
+        # Best-effort maintenance; skip on malformed/corrupt files.
+        self.vacuum()
+
+        with contextlib.suppress(sqlite3.DatabaseError, sqlite3.OperationalError):
             self._conn.close()
-            self._conn = None
+        self._conn = None
 
     # =========================================================================
     # Entry Operations (incremental)
@@ -509,6 +545,6 @@ class SQLitePersistence:
         if self._conn is not None:
             try:
                 self._conn.execute("VACUUM")
-            except sqlite3.OperationalError:
-                # VACUUM can fail if a transaction is active
-                logger.debug("VACUUM skipped (transaction active)")
+            except sqlite3.DatabaseError:
+                # VACUUM can fail with corrupt files or active transactions.
+                logger.debug("VACUUM skipped")

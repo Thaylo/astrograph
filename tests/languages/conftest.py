@@ -2,7 +2,7 @@
 
 import pytest
 
-from astrograph.languages.python_plugin import PythonPlugin
+from astrograph.languages.python_lsp_plugin import PythonLSPPlugin
 from astrograph.languages.registry import LanguageRegistry
 
 
@@ -11,15 +11,19 @@ def python_plugin():
     """Get Python plugin through registry."""
     plugin = LanguageRegistry.get().get_plugin("python")
     assert plugin is not None
-    assert isinstance(plugin, PythonPlugin)
+    assert isinstance(plugin, PythonLSPPlugin)
     return plugin
 
 
-@pytest.fixture(params=["python"])
+def _registered_language_ids() -> list[str]:
+    return LanguageRegistry.get().registered_languages
+
+
+@pytest.fixture(params=_registered_language_ids())
 def language_plugin(request):
     """Parametrized fixture that yields each registered language plugin.
 
-    New language plugins should be added to the params list.
+    New language plugins are picked up from the language registry automatically.
     """
     registry = LanguageRegistry.get()
     plugin = registry.get_plugin(request.param)

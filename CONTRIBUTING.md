@@ -23,14 +23,16 @@ ASTrograph uses a plugin architecture for language support. Each language plugin
 
 ### Choose a Base Class
 
-There are two base classes in `src/astrograph/languages/`:
+There are three base classes in `src/astrograph/languages/`:
 
 | Base Class | When to Use |
 |------------|-------------|
 | `BaseLanguagePlugin` | You have a custom parser (like Python's built-in `ast` module) |
+| `LSPLanguagePluginBase` | You want code-unit extraction from Language Server Protocol document symbols |
 | `TreeSitterLanguagePlugin` | You want to use a [tree-sitter](https://tree-sitter.github.io/) grammar (recommended for most languages) |
 
 `TreeSitterLanguagePlugin` handles parsing, graph construction, and code unit extraction for you. You only need to implement ~5 small methods.
+`LSPLanguagePluginBase` handles symbol-to-`CodeUnit` mapping and lightweight structural graphing; you provide an LSP client implementation.
 
 ### Step-by-Step (Tree-Sitter)
 
@@ -106,36 +108,29 @@ Optional overrides:
 
 #### 3. Register the plugin
 
-In `src/astrograph/languages/registry.py`, add your plugin to `_ensure_builtins()`:
+Add your plugin class to the `astrograph.languages` entry point group in `pyproject.toml`:
 
-```python
-def _ensure_builtins(self) -> None:
-    if self._initialized:
-        return
-    self._initialized = True
-
-    from .python_plugin import PythonPlugin
-    from .<language>_plugin import <Language>Plugin
-
-    self.register(PythonPlugin())
-    self.register(<Language>Plugin())
+```toml
+[project.entry-points."astrograph.languages"]
+python = "astrograph.languages.python_lsp_plugin:PythonLSPPlugin"
+<language> = "astrograph.languages.<language>_plugin:<Language>Plugin"
 ```
 
-#### 4. Add to test fixtures
+For local experiments, you can also load plugin class paths without packaging:
 
-In `tests/languages/conftest.py`, add your language ID to the `language_plugin` fixture params:
-
-```python
-@pytest.fixture(params=["python", "<language>"])
-def language_plugin(request):
-    ...
+```bash
+export ASTROGRAPH_LANGUAGE_PLUGINS="astrograph.languages.<language>_plugin:<Language>Plugin"
 ```
 
-This ensures your plugin runs against the conformance test suite, which checks:
+#### 4. Verify plugin conformance tests
+
+The shared `language_plugin` fixture auto-discovers registered plugins from `LanguageRegistry`, so your plugin is included automatically once it is discoverable.
+
+Conformance checks include:
 - `extract_code_units()` returns valid `CodeUnit` objects
-- `source_to_graph()` produces non-empty graphs
-- `code_unit_to_ast_graph()` computes correct metadata
-- Structurally identical code produces isomorphic graphs
+- `source_to_graph()` returns a valid graph
+- `code_unit_to_ast_graph()` computes metadata
+- Structurally identical code produces equivalent graph hashes
 
 #### 5. Add language-specific tests
 

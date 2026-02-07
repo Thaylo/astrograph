@@ -2,13 +2,15 @@
 Language plugin registry.
 
 Singleton that routes files to their language plugin based on file extension.
-Automatically registers built-in plugins (Python) on first access.
+Plugins are discovered via the shared plugin loader.
 """
 
+import logging
 import threading
 from pathlib import Path
 
 from .base import LanguagePlugin
+from .plugin_loader import discover_language_plugins
 
 # Common directories to skip regardless of language
 _COMMON_SKIP_DIRS = frozenset(
@@ -41,6 +43,7 @@ class LanguageRegistry:
         self._plugins: dict[str, LanguagePlugin] = {}  # language_id -> plugin
         self._extension_map: dict[str, str] = {}  # extension -> language_id
         self._initialized = False
+        self._logger = logging.getLogger(__name__)
 
     @classmethod
     def get(cls) -> "LanguageRegistry":
@@ -49,7 +52,7 @@ class LanguageRegistry:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = cls()
-        cls._instance._ensure_builtins()
+        cls._instance._ensure_plugins()
         return cls._instance
 
     @classmethod
@@ -58,14 +61,23 @@ class LanguageRegistry:
         with cls._lock:
             cls._instance = None
 
-    def _ensure_builtins(self) -> None:
-        """Register built-in plugins on first access."""
-        if not self._initialized:
+    def _ensure_plugins(self) -> None:
+        """Discover and register plugins on first access."""
+        if self._initialized:
+            return
+
+        discovered = discover_language_plugins()
+        for plugin in discovered:
+            try:
+                self.register(plugin)
+            except ValueError as exc:
+                self._logger.warning("Skipping language plugin '%s': %s", plugin.language_id, exc)
+
+        if self._plugins:
             self._initialized = True
+            return
 
-            from .python_plugin import PythonPlugin
-
-            self.register(PythonPlugin())
+        self._logger.warning("No language plugins were discovered; will retry on next access")
 
     def register(self, plugin: LanguagePlugin) -> None:
         """

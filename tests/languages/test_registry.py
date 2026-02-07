@@ -3,7 +3,7 @@
 import pytest
 
 from astrograph.languages.base import BaseLanguagePlugin, LanguagePlugin
-from astrograph.languages.python_plugin import PythonPlugin
+from astrograph.languages.python_lsp_plugin import PythonLSPPlugin
 from astrograph.languages.registry import LanguageRegistry
 
 
@@ -114,8 +114,8 @@ class TestLanguagePluginProtocol:
     """Tests for the LanguagePlugin protocol."""
 
     def test_python_plugin_satisfies_protocol(self):
-        """PythonPlugin satisfies the LanguagePlugin protocol."""
-        plugin = PythonPlugin()
+        """PythonLSPPlugin satisfies the LanguagePlugin protocol."""
+        plugin = PythonLSPPlugin()
         assert isinstance(plugin, LanguagePlugin)
 
     def test_base_plugin_not_protocol(self):

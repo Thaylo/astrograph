@@ -2,7 +2,7 @@
 Tool implementations for code structure analysis.
 
 Simplified API with 4 core tools:
-- index_codebase: Index Python files
+- index_codebase: Index source files
 - analyze: Find duplicates and similar patterns
 - check: Check if code exists before creating
 - compare: Compare two code snippets
@@ -24,7 +24,6 @@ from typing import Any
 
 import networkx as nx
 
-from .ast_to_graph import ast_to_graph, node_match
 from .canonical_hash import (
     fingerprints_compatible,
     structural_fingerprint,
@@ -33,6 +32,7 @@ from .canonical_hash import (
 from .context import CloseOnExitMixin
 from .event_driven import EventDrivenIndex
 from .index import CodeStructureIndex, DuplicateGroup, IndexEntry
+from .languages.base import node_match
 from .languages.registry import LanguageRegistry
 
 logger = logging.getLogger(__name__)
@@ -718,8 +718,11 @@ class CodeStructureTools(CloseOnExitMixin):
     def compare(self, code1: str, code2: str, language: str = "python") -> ToolResult:
         """Compare two code snippets for structural equivalence."""
         plugin = LanguageRegistry.get().get_plugin(language)
-        g1 = plugin.source_to_graph(code1) if plugin else ast_to_graph(code1)
-        g2 = plugin.source_to_graph(code2) if plugin else ast_to_graph(code2)
+        if plugin is None:
+            return ToolResult(f"Unsupported language '{language}': no registered language plugin.")
+
+        g1 = plugin.source_to_graph(code1)
+        g2 = plugin.source_to_graph(code2)
 
         h1 = weisfeiler_leman_hash(g1)
         h2 = weisfeiler_leman_hash(g2)
@@ -987,36 +990,42 @@ class CodeStructureTools(CloseOnExitMixin):
         """
         file_path = self._resolve_path(file_path)
 
+        warning = ""
         # Infer language from file extension
         plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
-        language = plugin.language_id if plugin else "python"
-
-        # Check for duplicates in the content
-        results = self.index.find_similar(
-            content, min_node_count=self._CHECK_MIN_STATEMENTS, language=language
-        )
-
-        exact = [r for r in results if r.similarity_type == "exact"]
-        high = [r for r in results if r.similarity_type == "high"]
-
-        if exact:
-            entry = exact[0].entry
-            rel = self._relative_path(entry.code_unit.file_path)
-            return ToolResult(
-                f"BLOCKED: Cannot write - identical code exists at "
-                f"{rel}:{entry.code_unit.name} "
-                f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
-                f"Reuse the existing implementation instead."
-            )
-
-        warning = ""
-        if high:
-            entry = high[0].entry
-            rel = self._relative_path(entry.code_unit.file_path)
+        if plugin is None:
             warning = (
-                f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
-                f"Consider reusing. Proceeding with write.\n\n"
+                "NOTE: No language plugin is registered for this file extension. "
+                "Skipping structural duplicate checks.\n\n"
             )
+        else:
+            # Check for duplicates in the content
+            results = self.index.find_similar(
+                content,
+                min_node_count=self._CHECK_MIN_STATEMENTS,
+                language=plugin.language_id,
+            )
+
+            exact = [r for r in results if r.similarity_type == "exact"]
+            high = [r for r in results if r.similarity_type == "high"]
+
+            if exact:
+                entry = exact[0].entry
+                rel = self._relative_path(entry.code_unit.file_path)
+                return ToolResult(
+                    f"BLOCKED: Cannot write - identical code exists at "
+                    f"{rel}:{entry.code_unit.name} "
+                    f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
+                    f"Reuse the existing implementation instead."
+                )
+
+            if high:
+                entry = high[0].entry
+                rel = self._relative_path(entry.code_unit.file_path)
+                warning = (
+                    f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
+                    f"Consider reusing. Proceeding with write.\n\n"
+                )
 
         import os.path
 
@@ -1050,45 +1059,51 @@ class CodeStructureTools(CloseOnExitMixin):
         file_path = self._resolve_path(file_path)
         display_path = self._relative_path(file_path)
 
+        warning = ""
         # Infer language from file extension
         plugin = LanguageRegistry.get().get_plugin_for_file(file_path)
-        language = plugin.language_id if plugin else "python"
+        if plugin is None:
+            warning = (
+                "NOTE: No language plugin is registered for this file extension. "
+                "Skipping structural duplicate checks.\n\n"
+            )
+        else:
+            # Check for duplicates in the new code being introduced
+            results = self.index.find_similar(
+                new_string,
+                min_node_count=self._CHECK_MIN_STATEMENTS,
+                language=plugin.language_id,
+            )
 
-        # Check for duplicates in the new code being introduced
-        results = self.index.find_similar(
-            new_string, min_node_count=self._CHECK_MIN_STATEMENTS, language=language
-        )
+            exact = [r for r in results if r.similarity_type == "exact"]
+            high = [r for r in results if r.similarity_type == "high"]
 
-        exact = [r for r in results if r.similarity_type == "exact"]
-        high = [r for r in results if r.similarity_type == "high"]
-
-        warning = ""
-        if exact:
-            entry = exact[0].entry
-            # Compare resolved paths to handle symlinks (e.g., /var -> /private/var on macOS)
-            if str(Path(entry.code_unit.file_path).resolve()) != str(Path(file_path).resolve()):
-                # Cross-file duplicate: block
+            if exact:
+                entry = exact[0].entry
+                # Compare resolved paths to handle symlinks (e.g., /var -> /private/var on macOS)
+                if str(Path(entry.code_unit.file_path).resolve()) != str(Path(file_path).resolve()):
+                    # Cross-file duplicate: block
+                    rel = self._relative_path(entry.code_unit.file_path)
+                    return ToolResult(
+                        f"BLOCKED: Cannot edit - identical code exists at "
+                        f"{rel}:{entry.code_unit.name} "
+                        f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
+                        f"Reuse the existing implementation instead."
+                    )
+                else:
+                    # Same-file duplicate: warn
+                    warning = (
+                        f"WARNING: Identical code exists in same file at {entry.code_unit.name} "
+                        f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
+                        f"Consider reusing. Proceeding with edit.\n\n"
+                    )
+            elif high:
+                entry = high[0].entry
                 rel = self._relative_path(entry.code_unit.file_path)
-                return ToolResult(
-                    f"BLOCKED: Cannot edit - identical code exists at "
-                    f"{rel}:{entry.code_unit.name} "
-                    f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
-                    f"Reuse the existing implementation instead."
-                )
-            else:
-                # Same-file duplicate: warn
                 warning = (
-                    f"WARNING: Identical code exists in same file at {entry.code_unit.name} "
-                    f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). "
+                    f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
                     f"Consider reusing. Proceeding with edit.\n\n"
                 )
-        elif high:
-            entry = high[0].entry
-            rel = self._relative_path(entry.code_unit.file_path)
-            warning = (
-                f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
-                f"Consider reusing. Proceeding with edit.\n\n"
-            )
 
         # Read the file
         try:

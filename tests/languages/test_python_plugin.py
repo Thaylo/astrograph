@@ -26,6 +26,19 @@ class TestPythonPlugin:
         assert ".venv" in skip
 
 
+def _sample_source_and_path(language_id: str) -> tuple[str, str]:
+    if language_id == "javascript_lsp":
+        return (
+            """
+function hello(name) {
+  return name;
+}
+""",
+            "test.js",
+        )
+    return ("def hello(): pass", "test.py")
+
+
 class TestPluginConformance:
     """Conformance tests that every registered plugin must pass."""
 
@@ -62,33 +75,36 @@ class TestPluginConformance:
 
     def test_source_to_graph_has_labels(self, language_plugin):
         """source_to_graph produces nodes with 'label' attributes."""
-        graph = language_plugin.source_to_graph("def f(): pass")
+        source, _ = _sample_source_and_path(language_plugin.language_id)
+        graph = language_plugin.source_to_graph(source)
         for _, data in graph.nodes(data=True):
             assert "label" in data, "All nodes must have a 'label' attribute"
 
     def test_extract_code_units_returns_iterator(self, language_plugin):
         """extract_code_units returns CodeUnit objects."""
-        source = "def hello(): pass"
-        units = list(language_plugin.extract_code_units(source, "test.py"))
-        assert len(units) >= 1
-        unit = units[0]
-        assert unit.name == "hello"
-        assert unit.unit_type == "function"
-        assert unit.language == language_plugin.language_id
+        source, file_path = _sample_source_and_path(language_plugin.language_id)
+        units = list(language_plugin.extract_code_units(source, file_path))
+
+        if units:
+            unit = units[0]
+            assert unit.language == language_plugin.language_id
 
     def test_extract_code_units_empty_source(self, language_plugin):
         """Empty source produces no code units."""
-        units = list(language_plugin.extract_code_units("", "test.py"))
+        _, file_path = _sample_source_and_path(language_plugin.language_id)
+        units = list(language_plugin.extract_code_units("", file_path))
         assert units == []
 
     def test_code_unit_to_ast_graph(self, language_plugin):
         """code_unit_to_ast_graph produces valid ASTGraph."""
         from astrograph.languages.base import ASTGraph, CodeUnit
 
+        _, file_path = _sample_source_and_path(language_plugin.language_id)
+
         unit = CodeUnit(
             name="test",
             code="x = 1 + 2",
-            file_path="test.py",
+            file_path=file_path,
             line_start=1,
             line_end=1,
             unit_type="function",

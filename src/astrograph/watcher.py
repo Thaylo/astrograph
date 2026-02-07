@@ -13,12 +13,22 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.events import (
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirModifiedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileSystemEvent,
+    FileSystemEventHandler,
+)
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
 from .context import CloseOnExitMixin, StartCloseOnExitMixin
 from .index import _is_skip_dir
+from .languages.registry import LanguageRegistry
 
 HAS_WATCHDOG = True
 
@@ -43,17 +53,6 @@ def _apply_and_clear_locked(
     """Apply action to all values and clear mapping while holding lock."""
     with lock:
         _apply_and_clear(items, action)
-
-
-def _make_event_handler(
-    event_type: str, callback_attr: str
-) -> Callable[[PythonFileHandler, FileSystemEvent], None]:
-    """Build a thin watchdog event method bound to a callback attribute."""
-
-    def _handler(self: PythonFileHandler, event: FileSystemEvent) -> None:
-        self._handle_event(event, event_type, getattr(self, callback_attr))
-
-    return _handler
 
 
 class DebouncedCallback:
@@ -98,11 +97,11 @@ class DebouncedCallback:
         _apply_and_clear_locked(self._lock, self._pending, lambda timer: timer.cancel())
 
 
-class PythonFileHandler(FileSystemEventHandler):
+class SourceFileHandler(FileSystemEventHandler):
     """
-    Handles file system events for Python files.
+    Handles file system events for supported source files.
 
-    Filters for .py files and dispatches to appropriate callbacks.
+    Filters by registered plugin extensions and dispatches to callbacks.
     """
 
     def __init__(
@@ -117,33 +116,38 @@ class PythonFileHandler(FileSystemEventHandler):
         self._on_created = DebouncedCallback(on_created, debounce_delay)
         self._on_deleted = on_deleted  # No debounce for deletes
 
-    def _is_python_file(self, path: str) -> bool:
-        """Check if path is a Python file we should track."""
+    def _is_supported_source_file(self, path: str) -> bool:
+        """Check if path is a supported source file we should track."""
         p = Path(path)
-        return p.suffix == ".py" and not _should_skip_path(p)
+        return p.suffix in LanguageRegistry.get().supported_extensions and not _should_skip_path(p)
 
     def _handle_event(self, event: FileSystemEvent, event_type: str, handler: Callable) -> None:
         """Generic event handler to reduce duplication."""
         if not event.is_directory:
             src = str(event.src_path)
-            if self._is_python_file(src):
+            if self._is_supported_source_file(src):
                 logger.debug(f"File {event_type}: {src}")
                 handler(src)
 
-    on_modified = _make_event_handler("modified", "_on_modified")
-    on_created = _make_event_handler("created", "_on_created")
-    on_deleted = _make_event_handler("deleted", "_on_deleted")
+    def on_modified(self, event: DirModifiedEvent | FileModifiedEvent) -> None:
+        self._handle_event(event, "modified", self._on_modified)
+
+    def on_created(self, event: DirCreatedEvent | FileCreatedEvent) -> None:
+        self._handle_event(event, "created", self._on_created)
+
+    def on_deleted(self, event: DirDeletedEvent | FileDeletedEvent) -> None:
+        self._handle_event(event, "deleted", self._on_deleted)
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
             # Handle as delete + create
             src = str(event.src_path)
-            if self._is_python_file(src):
+            if self._is_supported_source_file(src):
                 logger.debug(f"File moved from: {src}")
                 self._on_deleted(src)
 
             dest = str(getattr(event, "dest_path", ""))
-            if dest and self._is_python_file(dest):
+            if dest and self._is_supported_source_file(dest):
                 logger.debug(f"File moved to: {dest}")
                 self._on_created(dest)
 
@@ -155,7 +159,7 @@ class PythonFileHandler(FileSystemEventHandler):
 
 class FileWatcher(StartCloseOnExitMixin):
     """
-    Watches a directory for Python file changes.
+    Watches a directory for source file changes.
 
     Provides a simple interface to start/stop watching and
     register callbacks for file events.
@@ -174,13 +178,13 @@ class FileWatcher(StartCloseOnExitMixin):
 
         Args:
             root_path: Directory to watch
-            on_file_changed: Callback when a Python file is modified
-            on_file_created: Callback when a Python file is created
-            on_file_deleted: Callback when a Python file is deleted
+            on_file_changed: Callback when a source file is modified
+            on_file_created: Callback when a source file is created
+            on_file_deleted: Callback when a source file is deleted
             debounce_delay: Seconds to wait before processing rapid events
         """
         self.root_path = Path(root_path).resolve()
-        self._handler = PythonFileHandler(
+        self._handler = SourceFileHandler(
             on_modified=on_file_changed,
             on_created=on_file_created,
             on_deleted=on_file_deleted,
@@ -281,3 +285,7 @@ class FileWatcherPool(CloseOnExitMixin):
             self._watchers.clear()
 
     close = stop_all
+
+
+# Backward compatibility alias (historically watcher was Python-only).
+PythonFileHandler = SourceFileHandler

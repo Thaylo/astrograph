@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0",
     "networkx>=3.0",
+    "python-lsp-server>=1.11",
     "xxhash>=3.0.0",
     "watchdog>=4.0",
 ]
@@ -34,6 +35,10 @@ Issues = "https://github.com/Thaylo/astrograph/issues"
 [project.scripts]
 astrograph = "astrograph.server:main"
 astrograph-cli = "astrograph.cli:main"
+
+[project.entry-points."astrograph.languages"]
+python = "astrograph.languages.python_lsp_plugin:PythonLSPPlugin"
+javascript_lsp = "astrograph.languages.javascript_lsp_plugin:JavaScriptLSPPlugin"
 
 [build-system]
 requires = ["hatchling"]

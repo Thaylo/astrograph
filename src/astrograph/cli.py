@@ -5,7 +5,12 @@ import argparse
 import json
 from pathlib import Path
 
+import networkx as nx
+
+from .canonical_hash import weisfeiler_leman_hash
 from .index import CodeStructureIndex
+from .languages.base import node_match
+from .languages.registry import LanguageRegistry
 
 
 def main() -> None:
@@ -40,6 +45,10 @@ def main() -> None:
     compare_parser = subparsers.add_parser("compare", help="Compare two code files")
     compare_parser.add_argument("file1", help="First file")
     compare_parser.add_argument("file2", help="Second file")
+    compare_parser.add_argument(
+        "--language",
+        help="Language ID override (otherwise inferred from file extensions)",
+    )
 
     args = parser.parse_args()
 
@@ -111,7 +120,15 @@ def main() -> None:
             index.index_directory(str(check_path))
 
         code = Path(args.code_file).read_text()
-        results = index.find_similar(code, min_node_count=3)
+        plugin = LanguageRegistry.get().get_plugin_for_file(args.code_file)
+        if plugin is None:
+            print(
+                "No language plugin registered for "
+                f"{Path(args.code_file).suffix or '<no extension>'} files."
+            )
+            return
+
+        results = index.find_similar(code, min_node_count=3, language=plugin.language_id)
 
         if args.json:
             output = {
@@ -136,16 +153,35 @@ def main() -> None:
                     print(f"  [{r.similarity_type}] {loc} ({r.entry.code_unit.name})")
 
     elif args.command == "compare":
-        import networkx as nx
-
-        from .ast_to_graph import ast_to_graph, node_match
-        from .canonical_hash import weisfeiler_leman_hash
-
         code1 = Path(args.file1).read_text()
         code2 = Path(args.file2).read_text()
 
-        g1 = ast_to_graph(code1)
-        g2 = ast_to_graph(code2)
+        registry = LanguageRegistry.get()
+        if args.language:
+            plugin = registry.get_plugin(args.language)
+            if plugin is None:
+                print(f"No language plugin registered for '{args.language}'.")
+                return
+        else:
+            plugin1 = registry.get_plugin_for_file(args.file1)
+            plugin2 = registry.get_plugin_for_file(args.file2)
+            if plugin1 is None or plugin2 is None:
+                missing = args.file1 if plugin1 is None else args.file2
+                print(
+                    "No language plugin registered for "
+                    f"{Path(missing).suffix or '<no extension>'} files."
+                )
+                return
+            if plugin1.language_id != plugin2.language_id:
+                print(
+                    f"Cannot compare different languages: "
+                    f"{plugin1.language_id} vs {plugin2.language_id}"
+                )
+                return
+            plugin = plugin1
+
+        g1 = plugin.source_to_graph(code1)
+        g2 = plugin.source_to_graph(code2)
 
         h1 = weisfeiler_leman_hash(g1)
         h2 = weisfeiler_leman_hash(g2)
