@@ -154,6 +154,18 @@ If `auto_bind` happened after startup indexing, follow the recommended action an
 2. `astrograph_lsp_setup(mode="auto_bind", language="cpp_lsp", observations=[{"language":"cpp_lsp","command":"tcp://host.docker.internal:2088"}])`
 3. `astrograph_lsp_setup(mode="inspect", language="cpp_lsp")`
 
+### Production Guardrails for `cpp_lsp`
+
+ASTrograph now validates C++ attach endpoints beyond raw TCP reachability.
+
+- `verification_state="verified"`: endpoint passed LSP initialize + semantic probe, and a valid `compile_commands.json` is visible.
+- `verification_state="reachable_only"`: endpoint accepted TCP but failed protocol/semantic/compile-db checks.
+- In production mode (default), `reachable_only` is treated as unavailable for `cpp_lsp` (fail-closed nudges).
+
+Validation mode:
+- `ASTROGRAPH_LSP_VALIDATION_MODE=production` (default): strict for `cpp_lsp`
+- `ASTROGRAPH_LSP_VALIDATION_MODE=relaxed`: allows reachable-only endpoints (not recommended for production)
+
 ### 5) Start normal duplicate-prevention workflow
 
 1. `astrograph_analyze()`

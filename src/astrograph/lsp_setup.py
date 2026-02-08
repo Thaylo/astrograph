@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -18,6 +20,26 @@ from urllib.parse import unquote, urlparse
 PERSISTENCE_DIR = ".metadata_astrograph"
 LSP_BINDINGS_FILENAME = "lsp_bindings.json"
 _SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+_VALIDATION_MODES = frozenset({"production", "relaxed"})
+_DEFAULT_VALIDATION_MODE = "production"
+_COMPILE_COMMANDS_FILENAME = "compile_commands.json"
+_COMPILE_COMMANDS_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".metadata_astrograph",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "node_modules",
+        "dist",
+        "build-cache",
+    }
+)
+
+logger = logging.getLogger(__name__)
 
 _LANGUAGE_VARIANT_POLICY: dict[str, dict[str, Any]] = {
     "python": {
@@ -123,6 +145,350 @@ def language_variant_policy(language_id: str | None = None) -> dict[str, dict[st
         policy = _LANGUAGE_VARIANT_POLICY.get(language_id)
         return {language_id: dict(policy)} if isinstance(policy, dict) else {}
     return {key: dict(value) for key, value in _LANGUAGE_VARIANT_POLICY.items()}
+
+
+def _normalized_validation_mode() -> str:
+    """Resolve runtime validation mode for attach-based endpoints."""
+    mode = os.getenv("ASTROGRAPH_LSP_VALIDATION_MODE", "").strip().lower()
+    if mode in _VALIDATION_MODES:
+        return mode
+
+    legacy_flag = os.getenv("ASTROGRAPH_LSP_PRODUCTION")
+    if legacy_flag is not None:
+        normalized = legacy_flag.strip().lower()
+        if normalized in {"0", "false", "no", "off"}:
+            return "relaxed"
+        if normalized in {"1", "true", "yes", "on"}:
+            return "production"
+
+    return _DEFAULT_VALIDATION_MODE
+
+
+def _is_production_validation_mode() -> bool:
+    """Whether attach validation should fail closed for strict languages."""
+    return _normalized_validation_mode() == "production"
+
+
+def _probe_document(language_id: str) -> dict[str, str]:
+    """Return a tiny probe document per language for semantic verification."""
+    if language_id == "cpp_lsp":
+        return {
+            "lsp_language_id": "cpp",
+            "suffix": "_probe.cpp",
+            "source": (
+                "class Greeter {\n"
+                "public:\n"
+                "  int greet(int value) { return value + 1; }\n"
+                "};\n"
+                "int helper(int value) { return value + 1; }\n"
+            ),
+        }
+    if language_id == "c_lsp":
+        return {
+            "lsp_language_id": "c",
+            "suffix": "_probe.c",
+            "source": "int helper(int value) { return value + 1; }\n",
+        }
+    if language_id == "java_lsp":
+        return {
+            "lsp_language_id": "java",
+            "suffix": "_probe.java",
+            "source": ("class Greeter {\n" "  int greet(int value) { return value + 1; }\n" "}\n"),
+        }
+    return {
+        "lsp_language_id": language_id,
+        "suffix": "_probe.txt",
+        "source": "int helper(int value) { return value + 1; }\n",
+    }
+
+
+def _probe_attach_lsp_semantics(
+    *,
+    language_id: str,
+    command: Sequence[str],
+    workspace: str | Path | None,
+    timeout: float = 1.5,
+) -> dict[str, Any]:
+    """Run lightweight LSP initialize + documentSymbol probe over attach endpoints."""
+    parsed = parse_command(command)
+    endpoint = parse_attach_endpoint(parsed)
+    if endpoint is None:
+        return {
+            "executed": False,
+            "handshake_ok": False,
+            "semantic_ok": False,
+            "symbol_count": 0,
+            "reason": "Command is not an attach endpoint.",
+        }
+
+    if endpoint["transport"] not in {"tcp", "unix"}:
+        return {
+            "executed": False,
+            "handshake_ok": False,
+            "semantic_ok": False,
+            "symbol_count": 0,
+            "reason": f"Unsupported attach transport '{endpoint['transport']}'.",
+        }
+
+    # Local import avoids module-load cycles (lsp_client imports lsp_setup helpers).
+    from .languages.lsp_client import SocketLSPClient
+
+    probe = _probe_document(language_id)
+    workspace_root = _normalize_workspace_root(workspace)
+    probe_path = workspace_root / PERSISTENCE_DIR / probe["suffix"]
+    probe_path.parent.mkdir(parents=True, exist_ok=True)
+
+    client = SocketLSPClient(parsed[0], request_timeout=timeout)
+    symbols: list[Any] = []
+    handshake_ok = False
+    try:
+        symbols = client.document_symbols(
+            source=probe["source"],
+            file_path=str(probe_path),
+            language_id=probe["lsp_language_id"],
+        )
+        handshake_ok = bool(getattr(client, "_initialized", False))
+    except Exception as exc:  # pragma: no cover - defensive logging path
+        logger.debug("Attach LSP probe failed for %s: %s", parsed[0], exc)
+    finally:
+        # Avoid sending shutdown/exit to long-lived shared host servers.
+        with contextlib.suppress(Exception):
+            client.close(force=True)
+
+    symbol_count = len(symbols)
+    semantic_ok = handshake_ok and symbol_count > 0
+    if semantic_ok:
+        reason = "LSP initialize + documentSymbol probe succeeded."
+    elif handshake_ok:
+        reason = "LSP initialize succeeded but semantic probe returned no symbols."
+    else:
+        reason = "LSP initialize handshake failed."
+
+    return {
+        "executed": True,
+        "handshake_ok": handshake_ok,
+        "semantic_ok": semantic_ok,
+        "symbol_count": symbol_count,
+        "reason": reason,
+    }
+
+
+def _compile_commands_paths(workspace: Path, *, max_depth: int = 4) -> list[Path]:
+    """Discover candidate compile_commands.json files under the workspace."""
+    roots: list[Path] = []
+    priority = [
+        workspace / _COMPILE_COMMANDS_FILENAME,
+        workspace / "build" / _COMPILE_COMMANDS_FILENAME,
+    ]
+    for candidate in priority:
+        if candidate.exists():
+            roots.append(candidate)
+
+    try:
+        workspace_resolved = workspace.resolve()
+    except OSError:
+        workspace_resolved = workspace
+
+    for current_root, dirnames, filenames in os.walk(workspace_resolved):
+        current = Path(current_root)
+        try:
+            depth = len(current.relative_to(workspace_resolved).parts)
+        except ValueError:
+            continue
+
+        if depth > max_depth:
+            dirnames[:] = []
+            continue
+
+        dirnames[:] = [name for name in dirnames if name not in _COMPILE_COMMANDS_SKIP_DIRS]
+        if _COMPILE_COMMANDS_FILENAME in filenames:
+            roots.append(current / _COMPILE_COMMANDS_FILENAME)
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in roots:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(path)
+    return deduped
+
+
+def _is_compile_commands_entry(entry: Any) -> bool:
+    """Validate one compilation database entry shape."""
+    if not isinstance(entry, dict):
+        return False
+    if "file" not in entry or "directory" not in entry:
+        return False
+    return not ("command" not in entry and "arguments" not in entry)
+
+
+def _compile_commands_status(
+    *,
+    language_id: str,
+    workspace: str | Path | None,
+) -> dict[str, Any] | None:
+    """Collect compile_commands.json visibility/validity for C/C++ adapters."""
+    if language_id not in {"c_lsp", "cpp_lsp"}:
+        return None
+
+    workspace_root = _normalize_workspace_root(workspace)
+    required = language_id == "cpp_lsp"
+    candidates = _compile_commands_paths(workspace_root)
+    existing = [path for path in candidates if path.exists()]
+
+    result: dict[str, Any] = {
+        "required": required,
+        "present": bool(existing),
+        "readable": False,
+        "valid": False,
+        "entry_count": 0,
+        "selected_path": None,
+        "paths": [],
+        "reason": None,
+    }
+
+    for path in existing:
+        try:
+            rel = path.resolve().relative_to(workspace_root.resolve())
+            rendered = str(rel)
+        except (OSError, ValueError):
+            rendered = str(path)
+        result["paths"].append(rendered)
+
+    if not existing:
+        result["reason"] = (
+            "No compile_commands.json found. Generate one via your build system "
+            "(e.g. CMake with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)."
+        )
+        return result
+
+    for path in existing:
+        try:
+            payload = json.loads(path.read_text())
+            result["readable"] = True
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+
+        if isinstance(payload, list):
+            valid_entries = [entry for entry in payload if _is_compile_commands_entry(entry)]
+            if valid_entries:
+                result["valid"] = True
+                result["entry_count"] = len(valid_entries)
+                result["selected_path"] = str(path)
+                result["reason"] = None
+                return result
+
+    if not result["readable"]:
+        result["reason"] = "compile_commands.json exists but is unreadable."
+    else:
+        result["reason"] = (
+            "compile_commands.json was found but has no valid entries with "
+            "'directory', 'file', and 'command'/'arguments'."
+        )
+
+    return result
+
+
+def _availability_validation(
+    *,
+    language_id: str,
+    command: Sequence[str],
+    probe: dict[str, Any],
+    workspace: str | Path | None,
+) -> dict[str, Any]:
+    """Evaluate whether a discovered command should count as usable."""
+    validation_mode = _normalized_validation_mode()
+    transport = str(probe.get("transport", "subprocess"))
+    endpoint_reachable = bool(probe.get("available", False))
+    compile_status = _compile_commands_status(language_id=language_id, workspace=workspace)
+
+    verification: dict[str, Any] = {
+        "mode": validation_mode,
+        "state": "unavailable",
+        "reason": "Command/endpoint is not reachable.",
+        "endpoint_reachable": endpoint_reachable,
+        "lsp_handshake": {
+            "executed": False,
+            "ok": False,
+        },
+        "semantic_probe": {
+            "executed": False,
+            "ok": False,
+            "symbol_count": 0,
+        },
+        "compile_commands": compile_status,
+    }
+
+    if not endpoint_reachable:
+        return {
+            "available": False,
+            "verification": verification,
+        }
+
+    # Subprocess checks are still executable-based; attach checks need protocol validation.
+    if transport == "subprocess":
+        verification.update(
+            {
+                "state": "verified",
+                "reason": "Executable is available.",
+                "endpoint_reachable": True,
+            }
+        )
+        return {
+            "available": True,
+            "verification": verification,
+        }
+
+    attach_probe = _probe_attach_lsp_semantics(
+        language_id=language_id,
+        command=command,
+        workspace=workspace,
+    )
+    handshake_ok = bool(attach_probe.get("handshake_ok"))
+    semantic_ok = bool(attach_probe.get("semantic_ok"))
+    verification["lsp_handshake"] = {
+        "executed": bool(attach_probe.get("executed")),
+        "ok": handshake_ok,
+        "reason": attach_probe.get("reason"),
+    }
+    verification["semantic_probe"] = {
+        "executed": bool(attach_probe.get("executed")),
+        "ok": semantic_ok,
+        "symbol_count": int(attach_probe.get("symbol_count", 0)),
+    }
+
+    compile_ok = True
+    if language_id in {"c_lsp", "cpp_lsp"} and isinstance(compile_status, dict):
+        compile_ok = bool(compile_status.get("valid", False))
+
+    verified = handshake_ok and semantic_ok and compile_ok
+    if verified:
+        verification["state"] = "verified"
+        verification["reason"] = "Endpoint passed handshake, semantic probe, and compile-db checks."
+        return {"available": True, "verification": verification}
+
+    reason_parts: list[str] = []
+    if not handshake_ok:
+        reason_parts.append("LSP handshake failed")
+    elif not semantic_ok:
+        reason_parts.append("semantic probe failed")
+    if language_id in {"c_lsp", "cpp_lsp"} and not compile_ok:
+        reason_parts.append("compile_commands.json missing or invalid")
+
+    verification["state"] = "reachable_only"
+    verification["reason"] = (
+        "; ".join(reason_parts) if reason_parts else "Endpoint is reachable only."
+    )
+
+    if language_id == "cpp_lsp" and _is_production_validation_mode():
+        return {"available": False, "verification": verification}
+
+    return {"available": True, "verification": verification}
 
 
 def _parse_semver(text: str | None) -> tuple[int, int, int | None] | None:
@@ -578,6 +944,13 @@ def collect_lsp_statuses(workspace: str | Path | None = None) -> list[dict[str, 
             workspace=workspace,
         )
         probe = probe_command(effective_command)
+        validation = _availability_validation(
+            language_id=spec.language_id,
+            command=effective_command,
+            probe=probe,
+            workspace=workspace,
+        )
+        verification = validation["verification"]
         version_probe = _run_version_probe(spec.language_id, effective_command)
         version_status = _evaluate_version_status(
             language_id=spec.language_id,
@@ -590,7 +963,8 @@ def collect_lsp_statuses(workspace: str | Path | None = None) -> list[dict[str, 
             {
                 "language": spec.language_id,
                 "required": spec.required,
-                "available": probe["available"],
+                "available": bool(validation["available"]),
+                "probe_available": bool(probe["available"]),
                 "executable": probe["executable"],
                 "transport": probe.get("transport", "subprocess"),
                 "endpoint": probe.get("endpoint"),
@@ -601,6 +975,10 @@ def collect_lsp_statuses(workspace: str | Path | None = None) -> list[dict[str, 
                 "default_command": list(spec.default_command),
                 "version_status": version_status,
                 "language_variant_policy": dict(_LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})),
+                "verification": verification,
+                "verification_state": verification.get("state", "unknown"),
+                "validation_mode": verification.get("mode", _DEFAULT_VALIDATION_MODE),
+                "compile_commands": verification.get("compile_commands"),
             }
         )
 
@@ -649,14 +1027,26 @@ def probe_candidates(
             return
         seen.add(key)
         probe = probe_command(parsed)
+        validation = _availability_validation(
+            language_id=spec.language_id,
+            command=parsed,
+            probe=probe,
+            workspace=workspace,
+        )
+        verification = validation["verification"]
         candidates.append(
             {
                 "source": source,
                 "command": parsed,
-                "available": probe["available"],
+                "available": bool(validation["available"]),
+                "probe_available": bool(probe["available"]),
                 "executable": probe["executable"],
                 "transport": probe.get("transport", "subprocess"),
                 "endpoint": probe.get("endpoint"),
+                "verification": verification,
+                "verification_state": verification.get("state", "unknown"),
+                "validation_mode": verification.get("mode", _DEFAULT_VALIDATION_MODE),
+                "compile_commands": verification.get("compile_commands"),
             }
         )
 
@@ -702,16 +1092,28 @@ def auto_bind_missing_servers(
             workspace=root,
         )
         effective_probe = probe_command(effective_command)
-        if effective_probe["available"]:
+        effective_validation = _availability_validation(
+            language_id=spec.language_id,
+            command=effective_command,
+            probe=effective_probe,
+            workspace=root,
+        )
+        if effective_validation["available"]:
+            verification = effective_validation["verification"]
             probes[spec.language_id] = [
                 {
                     "source": "effective",
                     "required": spec.required,
                     "command": effective_command,
                     "available": True,
+                    "probe_available": bool(effective_probe["available"]),
                     "executable": effective_probe["executable"],
                     "transport": effective_probe.get("transport", "subprocess"),
                     "endpoint": effective_probe.get("endpoint"),
+                    "verification": verification,
+                    "verification_state": verification.get("state", "unknown"),
+                    "validation_mode": verification.get("mode", _DEFAULT_VALIDATION_MODE),
+                    "compile_commands": verification.get("compile_commands"),
                 }
             ]
             continue
@@ -723,11 +1125,29 @@ def auto_bind_missing_servers(
         )
 
         if selected is None:
+            reachable_only = next(
+                (
+                    candidate
+                    for candidate in language_candidates
+                    if candidate.get("probe_available") and not candidate.get("available")
+                ),
+                None,
+            )
+            unresolved_reason = (
+                str(reachable_only.get("verification", {}).get("reason") or "").strip()
+                if isinstance(reachable_only, dict)
+                else ""
+            )
+            if not unresolved_reason:
+                unresolved_reason = (
+                    "No reachable command/endpoint discovered. "
+                    "Provide observations from host search."
+                )
             unresolved.append(
                 {
                     "language": spec.language_id,
                     "required": spec.required,
-                    "reason": "No reachable command/endpoint discovered. Provide observations from host search.",
+                    "reason": unresolved_reason,
                 }
             )
             continue

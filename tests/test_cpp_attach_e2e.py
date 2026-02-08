@@ -85,6 +85,20 @@ int helper(int value) {
 """.strip()
             + "\n"
         )
+        build_dir = tmp_path / "build"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        (build_dir / "compile_commands.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "directory": str(tmp_path),
+                        "command": "clang++ -std=c++20 -I. -c sample.cpp",
+                        "file": "sample.cpp",
+                    }
+                ]
+            )
+            + "\n"
+        )
 
         # Disable startup auto-index to avoid races; then point lsp_setup workspace explicitly.
         monkeypatch.setenv("ASTROGRAPH_WORKSPACE", "")

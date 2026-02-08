@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+import astrograph.lsp_setup as lsp_setup
 from astrograph.lsp_setup import (
     auto_bind_missing_servers,
     collect_lsp_statuses,
@@ -214,3 +215,180 @@ def test_language_variant_policy_scoped():
     scoped = language_variant_policy("cpp_lsp")
     assert set(scoped) == {"cpp_lsp"}
     assert "supported" in scoped["cpp_lsp"]
+
+
+def test_collect_lsp_statuses_cpp_fail_closed_when_reachable_only_in_production(
+    tmp_path, monkeypatch
+):
+    endpoint = "tcp://127.0.0.1:2088"
+    save_lsp_bindings({"cpp_lsp": [endpoint]}, workspace=tmp_path)
+
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "production")
+
+    def _fake_probe(command):
+        parsed = lsp_setup.parse_command(command)
+        if parsed == [endpoint]:
+            return {
+                "command": parsed,
+                "available": True,
+                "executable": "127.0.0.1:2088",
+                "transport": "tcp",
+                "endpoint": "127.0.0.1:2088",
+            }
+        return {
+            "command": parsed,
+            "available": False,
+            "executable": None,
+            "transport": "subprocess",
+            "endpoint": None,
+        }
+
+    monkeypatch.setattr(lsp_setup, "probe_command", _fake_probe)
+    monkeypatch.setattr(
+        lsp_setup,
+        "_probe_attach_lsp_semantics",
+        lambda **_kwargs: {
+            "executed": True,
+            "handshake_ok": False,
+            "semantic_ok": False,
+            "symbol_count": 0,
+            "reason": "LSP initialize handshake failed.",
+        },
+    )
+    monkeypatch.setattr(
+        lsp_setup,
+        "_compile_commands_status",
+        lambda **_kwargs: {
+            "required": True,
+            "present": True,
+            "readable": True,
+            "valid": True,
+            "entry_count": 1,
+            "selected_path": "build/compile_commands.json",
+            "paths": ["build/compile_commands.json"],
+            "reason": None,
+        },
+    )
+
+    statuses = collect_lsp_statuses(tmp_path)
+    cpp = next(status for status in statuses if status["language"] == "cpp_lsp")
+    assert cpp["probe_available"] is True
+    assert cpp["available"] is False
+    assert cpp["verification_state"] == "reachable_only"
+    assert cpp["validation_mode"] == "production"
+
+
+def test_collect_lsp_statuses_cpp_reachable_only_allowed_in_relaxed_mode(tmp_path, monkeypatch):
+    endpoint = "tcp://127.0.0.1:2088"
+    save_lsp_bindings({"cpp_lsp": [endpoint]}, workspace=tmp_path)
+
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "relaxed")
+
+    def _fake_probe(command):
+        parsed = lsp_setup.parse_command(command)
+        if parsed == [endpoint]:
+            return {
+                "command": parsed,
+                "available": True,
+                "executable": "127.0.0.1:2088",
+                "transport": "tcp",
+                "endpoint": "127.0.0.1:2088",
+            }
+        return {
+            "command": parsed,
+            "available": False,
+            "executable": None,
+            "transport": "subprocess",
+            "endpoint": None,
+        }
+
+    monkeypatch.setattr(lsp_setup, "probe_command", _fake_probe)
+    monkeypatch.setattr(
+        lsp_setup,
+        "_probe_attach_lsp_semantics",
+        lambda **_kwargs: {
+            "executed": True,
+            "handshake_ok": False,
+            "semantic_ok": False,
+            "symbol_count": 0,
+            "reason": "LSP initialize handshake failed.",
+        },
+    )
+    monkeypatch.setattr(
+        lsp_setup,
+        "_compile_commands_status",
+        lambda **_kwargs: {
+            "required": True,
+            "present": False,
+            "readable": False,
+            "valid": False,
+            "entry_count": 0,
+            "selected_path": None,
+            "paths": [],
+            "reason": "No compile_commands.json found.",
+        },
+    )
+
+    statuses = collect_lsp_statuses(tmp_path)
+    cpp = next(status for status in statuses if status["language"] == "cpp_lsp")
+    assert cpp["probe_available"] is True
+    assert cpp["available"] is True
+    assert cpp["verification_state"] == "reachable_only"
+    assert cpp["validation_mode"] == "relaxed"
+
+
+def test_auto_bind_cpp_reports_validation_reason_when_reachable_only(tmp_path, monkeypatch):
+    endpoint = "tcp://127.0.0.1:2088"
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "production")
+
+    monkeypatch.setattr(
+        lsp_setup,
+        "probe_command",
+        lambda _command: {
+            "command": [endpoint],
+            "available": True,
+            "executable": "127.0.0.1:2088",
+            "transport": "tcp",
+            "endpoint": "127.0.0.1:2088",
+        },
+    )
+    monkeypatch.setattr(
+        lsp_setup,
+        "_probe_attach_lsp_semantics",
+        lambda **_kwargs: {
+            "executed": True,
+            "handshake_ok": True,
+            "semantic_ok": False,
+            "symbol_count": 0,
+            "reason": "semantic probe failed",
+        },
+    )
+    monkeypatch.setattr(
+        lsp_setup,
+        "_compile_commands_status",
+        lambda **_kwargs: {
+            "required": True,
+            "present": False,
+            "readable": False,
+            "valid": False,
+            "entry_count": 0,
+            "selected_path": None,
+            "paths": [],
+            "reason": "compile_commands.json missing or invalid",
+        },
+    )
+
+    result = auto_bind_missing_servers(
+        workspace=tmp_path,
+        languages=["cpp_lsp"],
+        observations=[
+            {
+                "language": "cpp_lsp",
+                "command": endpoint,
+            }
+        ],
+    )
+
+    assert result["changes"] == []
+    unresolved = next(item for item in result["unresolved"] if item["language"] == "cpp_lsp")
+    assert "compile_commands.json" in unresolved["reason"]

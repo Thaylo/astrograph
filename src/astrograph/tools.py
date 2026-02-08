@@ -1256,6 +1256,17 @@ class CodeStructureTools(CloseOnExitMixin):
             required = bool(status.get("required", True))
             priority = "high" if required else "medium"
             transport = str(status.get("transport", "subprocess"))
+            verification = status.get("verification", {})
+            if not isinstance(verification, dict):
+                verification = {}
+            verification_state = str(
+                status.get("verification_state") or verification.get("state") or "unknown"
+            )
+            compile_commands = status.get("compile_commands")
+            if not isinstance(compile_commands, dict):
+                compile_commands = verification.get("compile_commands")
+            if not isinstance(compile_commands, dict):
+                compile_commands = None
 
             if transport == "subprocess":
                 effective_command = parse_command(status.get("effective_command"))
@@ -1313,6 +1324,59 @@ class CodeStructureTools(CloseOnExitMixin):
                             }
                         )
                 continue
+
+            if verification_state == "reachable_only":
+                actions.append(
+                    {
+                        "id": f"verify_{language}_protocol",
+                        "priority": "high" if language == "cpp_lsp" else priority,
+                        "title": f"Replace non-verified endpoint for {language}",
+                        "language": language,
+                        "note": (
+                            verification.get("reason")
+                            or "Endpoint accepts TCP connections but did not pass LSP verification."
+                        ),
+                        "host_search_commands": [
+                            "which clangd",
+                            "clangd --version",
+                        ]
+                        if language in {"c_lsp", "cpp_lsp"}
+                        else [],
+                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
+                    }
+                )
+
+            if (
+                language in {"c_lsp", "cpp_lsp"}
+                and compile_commands is not None
+                and not bool(compile_commands.get("valid"))
+            ):
+                paths = compile_commands.get("paths")
+                known_paths = [str(path) for path in paths] if isinstance(paths, list) else []
+                actions.append(
+                    {
+                        "id": f"ensure_compile_commands_{language}",
+                        "priority": "high" if language == "cpp_lsp" else priority,
+                        "title": f"Generate a valid compile_commands.json for {language}",
+                        "language": language,
+                        "why": (
+                            compile_commands.get("reason")
+                            or "clangd requires compile_commands.json for production-grade type "
+                            "and operator resolution."
+                        ),
+                        "host_search_commands": [
+                            "find . -maxdepth 4 -name compile_commands.json",
+                        ],
+                        "shell_commands": [
+                            "cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                            "ln -sf build/compile_commands.json compile_commands.json",
+                        ],
+                        "known_paths": known_paths,
+                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
+                    }
+                )
 
             if self._is_docker_runtime() and not host_alias_action_added:
                 actions.append(
@@ -1408,6 +1472,11 @@ class CodeStructureTools(CloseOnExitMixin):
             statuses=statuses,
             scope_language=scope_language,
         )
+        cpp_reachable_only = any(
+            str(status.get("language")) == "cpp_lsp"
+            and str(status.get("verification_state") or "") == "reachable_only"
+            for status in statuses
+        )
         scope_status = (
             next((status for status in statuses if status.get("language") == scope_language), None)
             if scope_language
@@ -1480,6 +1549,12 @@ class CodeStructureTools(CloseOnExitMixin):
             payload["agent_directive"] = (
                 "Do not stop at diagnostics. Execute recommended_actions until "
                 "missing_required_languages is empty."
+            )
+        elif cpp_reachable_only:
+            payload["agent_directive"] = (
+                "cpp_lsp endpoint is reachable but not production-verified. "
+                "Treat it as unavailable and execute recommended_actions "
+                "(real clangd endpoint + valid compile_commands.json)."
             )
         elif missing:
             payload["agent_directive"] = (
@@ -1564,6 +1639,11 @@ class CodeStructureTools(CloseOnExitMixin):
                 for status in statuses
                 if status.get("required", True) and not status["available"]
             ]
+            cpp_reachable_only = any(
+                str(status.get("language")) == "cpp_lsp"
+                and str(status.get("verification_state") or "") == "reachable_only"
+                for status in statuses
+            )
             payload: dict[str, Any] = {
                 "ok": True,
                 "mode": normalized_mode,
@@ -1592,6 +1672,12 @@ class CodeStructureTools(CloseOnExitMixin):
                         "Call astrograph_lsp_setup with mode='auto_bind'. "
                         "If still missing, provide observations with language + command."
                     )
+            elif cpp_reachable_only:
+                payload["next_step"] = (
+                    "cpp_lsp is reachable but not production-verified. "
+                    "Use a real clangd endpoint and a valid compile_commands.json, "
+                    "then re-run auto_bind and inspect."
+                )
             elif missing:
                 if not language and "cpp_lsp" in missing:
                     payload["next_step"] = (
@@ -1626,6 +1712,15 @@ class CodeStructureTools(CloseOnExitMixin):
                         "To reduce setup noise, inspect one language at a time: "
                         "astrograph_lsp_setup(mode='inspect', language='cpp_lsp')."
                     )
+            if cpp_reachable_only:
+                payload["production_gate"] = {
+                    "language": "cpp_lsp",
+                    "state": "reachable_only",
+                    "requirement": (
+                        "In production mode, cpp_lsp is treated as unavailable until endpoint "
+                        "handshake, semantic probe, and compile_commands.json checks pass."
+                    ),
+                }
             self._inject_lsp_setup_guidance(payload, workspace=workspace)
             return self._lsp_setup_result(payload)
 

@@ -766,6 +766,38 @@ class TestLSPSetupTool:
         assert search_python["follow_up_arguments"]["language"] == "python"
         assert install_python["follow_up_arguments"]["language"] == "python"
 
+    def test_lsp_setup_recommended_actions_include_cpp_validation_fixes(self, tools):
+        missing_cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "probe_available": True,
+            "transport": "tcp",
+            "effective_command": ["tcp://host.docker.internal:2088"],
+            "effective_source": "binding",
+            "default_command": ["tcp://127.0.0.1:2088"],
+            "verification_state": "reachable_only",
+            "verification": {
+                "state": "reachable_only",
+                "reason": "LSP handshake failed; compile_commands.json missing or invalid",
+            },
+            "compile_commands": {
+                "required": True,
+                "present": False,
+                "readable": False,
+                "valid": False,
+                "entry_count": 0,
+                "selected_path": None,
+                "paths": [],
+                "reason": "compile_commands.json missing or invalid",
+            },
+        }
+
+        actions = tools._build_lsp_recommended_actions(statuses=[missing_cpp_status])
+        action_ids = [action["id"] for action in actions]
+        assert "verify_cpp_lsp_protocol" in action_ids
+        assert "ensure_compile_commands_cpp_lsp" in action_ids
+
     def test_lsp_setup_guidance_adds_attach_ready_verification_actions(self, tools):
         payload = {
             "mode": "inspect",
