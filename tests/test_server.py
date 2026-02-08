@@ -23,6 +23,24 @@ from astrograph.tools import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_lsp_env(monkeypatch):
+    """Keep LSP command env vars isolated across tests/modules."""
+    LanguageRegistry.reset()
+    for key in (
+        "ASTROGRAPH_PY_LSP_COMMAND",
+        "ASTROGRAPH_JS_LSP_COMMAND",
+        "ASTROGRAPH_C_LSP_COMMAND",
+        "ASTROGRAPH_CPP_LSP_COMMAND",
+        "ASTROGRAPH_JAVA_LSP_COMMAND",
+        "ASTROGRAPH_COMPILE_COMMANDS_PATH",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("ASTROGRAPH_PY_LSP_COMMAND", f"{sys.executable} -m pylsp")
+    # Disable startup auto-indexing in tests; fixtures call index_codebase explicitly.
+    monkeypatch.setenv("ASTROGRAPH_WORKSPACE", "")
+
+
 class TestResolveDockerPath:
     """Tests for Docker path resolution via CodeStructureTools._resolve_path."""
 
@@ -1638,7 +1656,11 @@ def calculate_sum(a, b):
     return result
 """
                 )
-            tools.index_codebase(tmpdir)
+            index_result = tools.index_codebase(existing_file)
+            assert "Indexed" in index_result.text
+            # Freeze watcher side-effects for deterministic test behavior.
+            tools._close_event_driven_index()
+            assert len(tools.index.entries) > 0, index_result.text
             yield tools, tmpdir
 
     def test_write_requires_index(self, tools):
@@ -1853,7 +1875,10 @@ def placeholder():
     pass
 """
                 )
-            tools.index_codebase(tmpdir)
+            index_result = tools.index_codebase(existing_file)
+            assert "Indexed" in index_result.text
+            tools._close_event_driven_index()
+            assert len(tools.index.entries) > 0, index_result.text
             yield tools, tmpdir, existing_file
 
     def test_edit_requires_index(self, tools):
