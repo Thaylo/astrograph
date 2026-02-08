@@ -11,6 +11,8 @@ import pytest
 
 from astrograph.lsp_setup import (
     auto_bind_missing_servers,
+    collect_lsp_statuses,
+    language_variant_policy,
     load_lsp_bindings,
     parse_attach_endpoint,
     probe_command,
@@ -197,3 +199,18 @@ def test_auto_bind_missing_servers_scopes_languages(tmp_path):
     assert result["scope_languages"] == ["cpp_lsp"]
     assert all(status["language"] == "cpp_lsp" for status in result["statuses"])
     assert set(result["probes"]) == {"cpp_lsp"}
+
+
+def test_collect_lsp_statuses_include_version_and_variant_metadata(tmp_path):
+    statuses = collect_lsp_statuses(tmp_path)
+    assert statuses
+    for status in statuses:
+        assert "version_status" in status
+        assert "state" in status["version_status"]
+        assert "language_variant_policy" in status
+
+
+def test_language_variant_policy_scoped():
+    scoped = language_variant_policy("cpp_lsp")
+    assert set(scoped) == {"cpp_lsp"}
+    assert "supported" in scoped["cpp_lsp"]

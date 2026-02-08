@@ -6,6 +6,8 @@ from .base import (
     BaseLanguagePlugin,
     CodeUnit,
     LanguagePlugin,
+    SemanticProfile,
+    SemanticSignal,
     compute_label_histogram,
     node_match,
 )
@@ -23,6 +25,8 @@ __all__ = [
     "LSPRange",
     "LSPSymbol",
     "LanguagePlugin",
+    "SemanticProfile",
+    "SemanticSignal",
     "SocketLSPClient",
     "SubprocessLSPClient",
     "LanguageRegistry",

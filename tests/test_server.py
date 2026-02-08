@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+from astrograph.index import IndexEntry, SimilarityResult
+from astrograph.languages.base import CodeUnit
 from astrograph.server import create_server, get_tools, set_tools
 from astrograph.tools import (
     PERSISTENCE_DIR,
@@ -207,6 +209,36 @@ def _index_temp_code_file(tools: CodeStructureTools, code: str) -> None:
     os.unlink(f.name)
 
 
+def _similarity_result(
+    *,
+    language: str,
+    similarity_type: str,
+    file_path: str,
+    name: str,
+    code: str,
+) -> SimilarityResult:
+    code_unit = CodeUnit(
+        name=name,
+        code=code,
+        file_path=file_path,
+        line_start=1,
+        line_end=max(1, code.count("\n") + 1),
+        unit_type="function",
+        language=language,
+    )
+    entry = IndexEntry(
+        id=f"{language}:{name}:{file_path}",
+        wl_hash="wl_hash",
+        pattern_hash="pattern_hash",
+        fingerprint={"n_nodes": 8, "n_edges": 7},
+        hierarchy_hashes=["root", "body"],
+        code_unit=code_unit,
+        node_count=8,
+        depth=2,
+    )
+    return SimilarityResult(entry=entry, similarity_type=similarity_type)
+
+
 def _overwrite_file(path: str, content: str) -> None:
     Path(path).write_text(content)
 
@@ -369,6 +401,21 @@ class TestCheck:
         result = tools.check(code)
         assert result.text, f"Expected response for: {description}"
 
+    def test_check_cross_language_matches_are_assist_only(self, tools, sample_python_file):
+        tools.index_codebase(sample_python_file)
+        cross_language = _similarity_result(
+            language="javascript_lsp",
+            similarity_type="exact",
+            file_path="utils.js",
+            name="sum",
+            code="function sum(a, b) { return a + b; }",
+        )
+        with patch.object(tools.index, "find_similar", return_value=[cross_language]):
+            result = tools.check("def sum(a, b):\n    return a + b", language="python")
+
+        assert "Safe to proceed" in result.text
+        assert "Cross-language structural matches found" in result.text
+
 
 class TestCompare:
     """Tests for compare tool."""
@@ -389,6 +436,45 @@ class TestCompare:
         """Test compare tool with various code pairs."""
         result = tools.compare(code1, code2)
         assert any(exp in result.text for exp in expected)
+
+    def test_compare_invalid_semantic_mode(self, tools):
+        result = tools.compare(
+            "def add(a, b): return a + b",
+            "def sum(x, y): return x + y",
+            semantic_mode="unsupported",
+        )
+        assert "Invalid semantic_mode" in result.text
+
+    def test_compare_strict_semantic_mode_inconclusive_without_signals(self, tools):
+        result = tools.compare(
+            "def one(): return 1",
+            "def two(): return 2",
+            semantic_mode="strict",
+        )
+        assert "INCONCLUSIVE" in result.text
+
+    def test_compare_cpp_semantic_mismatch_assist(self, tools):
+        builtin_plus = "int add(int a, int b) { return a + b; }"
+        custom_plus = "Vec add(Vec a, Vec b) { return a + b; }"
+        result = tools.compare(
+            builtin_plus,
+            custom_plus,
+            language="cpp_lsp",
+            semantic_mode="assist",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "operator.plus.binding" in result.text
+
+    def test_compare_cpp_semantic_mismatch_strict(self, tools):
+        builtin_plus = "int add(int a, int b) { return a + b; }"
+        custom_plus = "Vec add(Vec a, Vec b) { return a + b; }"
+        result = tools.compare(
+            builtin_plus,
+            custom_plus,
+            language="cpp_lsp",
+            semantic_mode="strict",
+        )
+        assert "DIFFERENT" in result.text
 
 
 class TestCallTool:
@@ -422,6 +508,73 @@ class TestCallTool:
         )
         assert result.text
 
+    def test_dispatch_compare_with_language_and_semantic_mode(self, tools):
+        result = tools.call_tool(
+            "compare",
+            {
+                "code1": "int add(int a, int b) { return a + b; }",
+                "code2": "Vec add(Vec a, Vec b) { return a + b; }",
+                "language": "cpp_lsp",
+                "semantic_mode": "strict",
+            },
+        )
+        assert "DIFFERENT" in result.text
+
+    def test_mutating_tool_detection(self, tools):
+        assert tools._is_mutating_tool_call("status", {}) is False
+        assert tools._is_mutating_tool_call("metadata_erase", {}) is True
+        assert tools._is_mutating_tool_call("write", {}) is True
+        assert tools._is_mutating_tool_call("lsp_setup", {"mode": "inspect"}) is False
+        assert tools._is_mutating_tool_call("lsp_setup", {"mode": "auto_bind"}) is True
+        assert tools._is_mutating_tool_call("lsp_setup", {"mode": "bind"}) is True
+        assert tools._is_mutating_tool_call("lsp_setup", {"mode": "unbind"}) is True
+
+    def test_call_tool_uses_mutation_lock_for_mutating_calls(self, tools):
+        class RecordingLock:
+            def __init__(self):
+                self.events = []
+
+            def __enter__(self):
+                self.events.append("enter")
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                self.events.append("exit")
+                return False
+
+        lock = RecordingLock()
+        with patch.object(tools, "_mutation_lock", lock), patch.object(
+            tools, "_call_tool_unlocked", return_value=ToolResult("ok")
+        ) as dispatch:
+            result = tools.call_tool("metadata_erase", {})
+
+        assert result.text == "ok"
+        assert lock.events == ["enter", "exit"]
+        dispatch.assert_called_once_with("metadata_erase", {})
+
+    def test_call_tool_skips_mutation_lock_for_read_only_calls(self, tools):
+        class RecordingLock:
+            def __init__(self):
+                self.events = []
+
+            def __enter__(self):
+                self.events.append("enter")
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                self.events.append("exit")
+                return False
+
+        lock = RecordingLock()
+        with patch.object(tools, "_mutation_lock", lock), patch.object(
+            tools, "_call_tool_unlocked", return_value=ToolResult("ok")
+        ) as dispatch:
+            result = tools.call_tool("status", {})
+
+        assert result.text == "ok"
+        assert lock.events == []
+        dispatch.assert_called_once_with("status", {})
+
 
 class TestLSPSetupTool:
     """Tests for deterministic LSP setup tool flow."""
@@ -437,6 +590,8 @@ class TestLSPSetupTool:
         assert "agent_directive" in payload
         assert "recommended_actions" in payload
         assert isinstance(payload["recommended_actions"], list)
+        assert "language_variant_policy" in payload
+        assert "version_status" in payload["servers"][0]
 
     def test_lsp_setup_inspect_scoped_language(self, tools):
         payload = json.loads(tools.lsp_setup(mode="inspect", language="cpp_lsp").text)
@@ -451,6 +606,7 @@ class TestLSPSetupTool:
         assert all(
             action.get("language") in (None, "cpp_lsp") for action in payload["recommended_actions"]
         )
+        assert set(payload["language_variant_policy"]) == {"cpp_lsp"}
 
     def test_lsp_setup_inspect_rejects_unknown_language(self, tools):
         payload = json.loads(tools.lsp_setup(mode="inspect", language="go_lsp").text)
@@ -557,6 +713,84 @@ class TestLSPSetupTool:
             actions = tools._build_lsp_recommended_actions(statuses=[missing_cpp_status])
 
         assert any(action["id"] == "ensure_docker_host_alias" for action in actions)
+
+    def test_lsp_setup_recommended_actions_focus_cpp_when_optional(self, tools):
+        missing_cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2088"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2088"],
+        }
+
+        actions = tools._build_lsp_recommended_actions(statuses=[missing_cpp_status])
+
+        assert actions[0]["id"] == "focus_cpp_lsp"
+        assert actions[0]["arguments"] == {"mode": "inspect", "language": "cpp_lsp"}
+
+    def test_lsp_setup_recommended_actions_follow_up_scopes_each_language(self, tools):
+        missing_cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2088"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2088"],
+        }
+        missing_python_status = {
+            "language": "python",
+            "required": True,
+            "available": False,
+            "transport": "subprocess",
+            "effective_command": ["pylsp"],
+            "effective_source": "default",
+            "default_command": ["pylsp"],
+        }
+
+        with patch.object(CodeStructureTools, "_is_docker_runtime", return_value=False):
+            actions = tools._build_lsp_recommended_actions(
+                statuses=[missing_cpp_status, missing_python_status]
+            )
+
+        discover_cpp = next(
+            action for action in actions if action["id"] == "discover_cpp_lsp_endpoint"
+        )
+        search_python = next(action for action in actions if action["id"] == "search_python")
+        install_python = next(action for action in actions if action["id"] == "install_python")
+
+        assert discover_cpp["follow_up_arguments"]["language"] == "cpp_lsp"
+        assert discover_cpp["follow_up_arguments"]["mode"] == "auto_bind"
+        assert search_python["follow_up_arguments"]["language"] == "python"
+        assert install_python["follow_up_arguments"]["language"] == "python"
+
+    def test_lsp_setup_guidance_adds_attach_ready_verification_actions(self, tools):
+        payload = {
+            "mode": "inspect",
+            "scope_language": "cpp_lsp",
+            "servers": [
+                {
+                    "language": "cpp_lsp",
+                    "required": False,
+                    "available": True,
+                    "transport": "tcp",
+                    "effective_command": ["tcp://host.docker.internal:2088"],
+                    "effective_source": "binding",
+                    "binding_command": ["tcp://host.docker.internal:2088"],
+                    "default_command": ["tcp://127.0.0.1:2088"],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tools._inject_lsp_setup_guidance(payload, workspace=Path(tmpdir))
+
+        action_ids = [action["id"] for action in payload["recommended_actions"]]
+        assert "verify_cpp_lsp_analysis" in action_ids
+        assert "rebaseline_after_cpp_lsp_binding" in action_ids
+        assert "re-run auto_bind" in payload["agent_directive"]
 
 
 class TestToolResult:
@@ -1421,6 +1655,51 @@ def compute_total(x, y):
         # Should either succeed or block (depending on exact vs high similarity)
         assert ("Created" in result.text or "Wrote" in result.text) or "BLOCKED" in result.text
 
+    def test_write_cross_language_exact_match_is_assist_only(self, indexed_tools):
+        tools, tmpdir = indexed_tools
+        cross_language = _similarity_result(
+            language="javascript_lsp",
+            similarity_type="exact",
+            file_path="src/math.js",
+            name="sum",
+            code="function sum(a, b) { return a + b; }",
+        )
+        with patch.object(tools.index, "find_similar", return_value=[cross_language]):
+            new_file = os.path.join(tmpdir, "cross_lang.py")
+            result = tools.write(new_file, "def sum(a, b):\n    return a + b\n")
+
+        assert "BLOCKED" not in result.text
+        assert "Created" in result.text or "Wrote" in result.text
+        assert "Cross-language structural matches found" in result.text
+        assert os.path.exists(new_file)
+
+    def test_write_blocks_same_language_even_when_cross_language_matches_exist(self, indexed_tools):
+        tools, tmpdir = indexed_tools
+        same_language = _similarity_result(
+            language="python",
+            similarity_type="exact",
+            file_path="existing.py",
+            name="calculate_sum",
+            code="def calculate_sum(a, b):\n    result = a + b\n    return result\n",
+        )
+        cross_language = _similarity_result(
+            language="javascript_lsp",
+            similarity_type="exact",
+            file_path="src/math.js",
+            name="sum",
+            code="function sum(a, b) { return a + b; }",
+        )
+        with patch.object(
+            tools.index, "find_similar", return_value=[cross_language, same_language]
+        ):
+            new_file = os.path.join(tmpdir, "blocked.py")
+            result = tools.write(
+                new_file, "def sum(a, b):\n    result = a + b\n    return result\n"
+            )
+
+        assert "BLOCKED" in result.text
+        assert not os.path.exists(new_file)
+
     def test_write_handles_io_error(self, indexed_tools):
         """Test that write handles IO errors gracefully."""
         tools, tmpdir = indexed_tools
@@ -1539,6 +1818,26 @@ def placeholder():
         assert "WARNING" in result.text
         assert "same file" in result.text
         assert "Edited" in result.text
+
+    def test_edit_cross_language_exact_match_is_assist_only(self, indexed_tools_with_file):
+        tools, tmpdir, existing_file = indexed_tools_with_file
+        cross_language = _similarity_result(
+            language="javascript_lsp",
+            similarity_type="exact",
+            file_path="src/math.js",
+            name="sum",
+            code="function sum(a, b) { return a + b; }",
+        )
+        with patch.object(tools.index, "find_similar", return_value=[cross_language]):
+            result = tools.edit(
+                existing_file,
+                "def placeholder():\n    # TODO: implement\n    pass",
+                "def sum(a, b):\n    return a + b",
+            )
+
+        assert "BLOCKED" not in result.text
+        assert "Edited" in result.text
+        assert "Cross-language structural matches found" in result.text
 
     def test_call_tool_edit(self, indexed_tools_with_file):
         """Test call_tool dispatch for edit."""
@@ -1854,6 +2153,24 @@ def transform_data(data):
         result = tools.call_tool("metadata_erase", {})
         assert "Erased" in result.text or "idle" in result.text.lower()
 
+    def test_erase_reports_removed_lsp_bindings(self):
+        """Erase should nudge users when lsp_bindings.json is removed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+
+            bindings_path = _get_persistence_path(tmpdir) / "lsp_bindings.json"
+            bindings_path.write_text(
+                json.dumps({"cpp_lsp": ["tcp://host.docker.internal:2088"]}, indent=2)
+            )
+
+            result = tools.metadata_erase()
+            assert "LSP bindings were removed" in result.text
+            tools.close()
+
 
 class TestMetadataRecomputeBaseline:
     """Tests for the astrograph_metadata_recompute_baseline tool."""
@@ -1912,6 +2229,24 @@ def transform_data(data):
             tools.index_codebase(tmpdir)
             result = tools.call_tool("metadata_recompute_baseline", {})
             assert "Baseline recomputed" in result.text
+            tools.close()
+
+    def test_recompute_reports_removed_lsp_bindings(self):
+        """Recompute should nudge users that bindings are reset and need rebind."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+
+            bindings_path = _get_persistence_path(tmpdir) / "lsp_bindings.json"
+            bindings_path.write_text(
+                json.dumps({"cpp_lsp": ["tcp://host.docker.internal:2088"]}, indent=2)
+            )
+
+            result = tools.metadata_recompute_baseline()
+            assert "LSP bindings were reset during recompute" in result.text
             tools.close()
 
 

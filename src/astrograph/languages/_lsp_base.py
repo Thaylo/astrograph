@@ -16,7 +16,7 @@ from typing import Protocol
 
 import networkx as nx
 
-from .base import BaseLanguagePlugin, CodeUnit
+from .base import BaseLanguagePlugin, CodeUnit, SemanticProfile, SemanticSignal
 
 _KEYWORD_LABELS = {
     "class": "ClassDecl",
@@ -38,6 +38,12 @@ _KEYWORD_LABELS = {
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _STRING_RE = re.compile(r"'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\"")
 _NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
+_ANNOTATED_NAME_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*[A-Za-z_][A-Za-z0-9_:.<>,[\]\s|]*")
+_C_LIKE_TYPED_TOKEN_RE = re.compile(
+    r"\b(?:const\s+)?[A-Za-z_][A-Za-z0-9_:<>]*\s+[*&\s]*[A-Za-z_][A-Za-z0-9_]*\s*(?:[,);=])"
+)
+_PLUS_EXPR_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\+\s*[A-Za-z_][A-Za-z0-9_]*\b")
+_OPERATOR_PLUS_DECL_RE = re.compile(r"\boperator\s*\+\s*\(")
 _EXACT_OPS = (
     "===",
     "!==",
@@ -356,3 +362,61 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
                 parent_stack.append(node_id)
 
         return graph
+
+    def _has_type_hints(self, source: str) -> bool:
+        return bool(_ANNOTATED_NAME_RE.search(source) or _C_LIKE_TYPED_TOKEN_RE.search(source))
+
+    def extract_semantic_profile(
+        self,
+        source: str,
+        file_path: str = "<unknown>",
+    ) -> SemanticProfile:
+        """Extract lightweight semantic hints from source text.
+
+        This intentionally does not require a live LSP backend; it provides a
+        deterministic baseline that language-specific plugins can enrich.
+        """
+        del file_path
+
+        signals: list[SemanticSignal] = []
+        notes: list[str] = []
+
+        if self._has_type_hints(source):
+            signals.append(
+                SemanticSignal(
+                    key="typing.channel",
+                    value="annotated",
+                    confidence=0.65,
+                    origin="syntax",
+                )
+            )
+
+        if _PLUS_EXPR_RE.search(source):
+            signals.append(
+                SemanticSignal(
+                    key="operator.plus.present",
+                    value="yes",
+                    confidence=0.8,
+                    origin="syntax",
+                )
+            )
+
+        if _OPERATOR_PLUS_DECL_RE.search(source):
+            signals.append(
+                SemanticSignal(
+                    key="operator.plus.declared",
+                    value="yes",
+                    confidence=0.95,
+                    origin="syntax",
+                )
+            )
+
+        if not signals:
+            notes.append("No stable semantic hints found in source.")
+
+        return SemanticProfile(
+            signals=tuple(signals),
+            coverage=min(1.0, 0.3 * len(signals)),
+            notes=tuple(notes),
+            extractor=f"{self.language_id}:syntax",
+        )

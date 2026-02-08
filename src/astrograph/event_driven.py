@@ -223,6 +223,9 @@ class EventDrivenIndex(CloseOnExitMixin):
         self, path: str, event_type: str, handler: Callable[[str], None]
     ) -> None:
         """Generic file event handler to reduce duplication."""
+        if self._shutdown.is_set():
+            logger.debug(f"Ignoring file {event_type} during shutdown: {path}")
+            return
         logger.debug(f"Processing file {event_type}: {path}")
         handler(path)
         self._file_events_processed += 1
@@ -233,6 +236,8 @@ class EventDrivenIndex(CloseOnExitMixin):
 
     def _reindex_file(self, path: str) -> None:
         """Re-index a single file and persist incrementally."""
+        if self._shutdown.is_set():
+            return
         if not os.path.exists(path):
             return
 
@@ -248,6 +253,8 @@ class EventDrivenIndex(CloseOnExitMixin):
 
     def _remove_file(self, path: str) -> None:
         """Remove a file from the index and persistence."""
+        if self._shutdown.is_set():
+            return
         # Update in-memory index
         self.index.remove_file(path)
 

@@ -32,8 +32,8 @@ from .canonical_hash import (
 )
 from .context import CloseOnExitMixin
 from .event_driven import EventDrivenIndex
-from .index import CodeStructureIndex, DuplicateGroup, IndexEntry
-from .languages.base import node_match
+from .index import CodeStructureIndex, DuplicateGroup, IndexEntry, SimilarityResult
+from .languages.base import SemanticProfile, node_match
 from .languages.registry import LanguageRegistry
 from .lsp_setup import (
     auto_bind_missing_servers,
@@ -41,6 +41,7 @@ from .lsp_setup import (
     collect_lsp_statuses,
     format_command,
     get_lsp_spec,
+    language_variant_policy,
     load_lsp_bindings,
     lsp_bindings_path,
     parse_attach_endpoint,
@@ -56,6 +57,21 @@ logger = logging.getLogger(__name__)
 # Persistence directory name for cached index
 PERSISTENCE_DIR = ".metadata_astrograph"
 LEGACY_ANALYSIS_REPORT = "analysis_report.txt"
+_SEMANTIC_MODES = frozenset({"off", "assist", "strict"})
+_MUTATING_TOOL_NAMES = frozenset(
+    {
+        "edit",
+        "index_codebase",
+        "metadata_erase",
+        "metadata_recompute_baseline",
+        "suppress",
+        "suppress_batch",
+        "unsuppress",
+        "unsuppress_batch",
+        "write",
+    }
+)
+_MUTATING_LSP_SETUP_MODES = frozenset({"auto_bind", "bind", "unbind"})
 
 
 def _requires_index(func: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
@@ -150,6 +166,8 @@ class CodeStructureTools(CloseOnExitMixin):
         self._bg_index_done = threading.Event()
         self._bg_index_done.set()  # Initially "done" (no background work)
         self._bg_index_progress: str = ""
+        # Serialize mutating tool calls for shared-agent/container deployments.
+        self._mutation_lock = threading.RLock()
 
         # Auto-index workspace at startup (Docker / Codex / local MCP clients).
         # Run in background so the MCP handshake completes immediately.
@@ -687,7 +705,7 @@ class CodeStructureTools(CloseOnExitMixin):
         return ToolResult(invalidation_warning + staleness_warning + full_output)
 
     @_requires_index
-    def check(self, code: str) -> ToolResult:
+    def check(self, code: str, language: str = "python") -> ToolResult:
         """
         Check if code similar to the provided snippet exists.
 
@@ -695,62 +713,310 @@ class CodeStructureTools(CloseOnExitMixin):
         """
         # Proactive notification of invalidated suppressions
         prefix = self._check_invalidated_suppressions()
+        plugin = LanguageRegistry.get().get_plugin(language)
+        if plugin is None:
+            return ToolResult(
+                prefix + f"Unsupported language '{language}': no registered language plugin."
+            )
 
-        results = self.index.find_similar(code, min_node_count=self._CHECK_MIN_STATEMENTS)
+        results = self.index.find_similar(
+            code,
+            min_node_count=self._CHECK_MIN_STATEMENTS,
+            language=language,
+        )
+        same_language, cross_language = self._split_similarity_results_by_language(
+            results, language
+        )
+        assist = self._cross_language_assist_text(
+            source_code=code,
+            source_language=language,
+            results=cross_language,
+        )
 
-        if not results:
-            return ToolResult(prefix + "No similar code found. Safe to proceed.")
+        if not same_language:
+            base = "No same-language similar code found. Safe to proceed."
+            if assist:
+                base += "\n\n" + assist
+            return ToolResult(prefix + base)
 
-        exact = [r for r in results if r.similarity_type == "exact"]
-        high = [r for r in results if r.similarity_type == "high"]
-        partial = [r for r in results if r.similarity_type == "partial"]
+        exact = [r for r in same_language if r.similarity_type == "exact"]
+        high = [r for r in same_language if r.similarity_type == "high"]
+        partial = [r for r in same_language if r.similarity_type == "partial"]
 
         if exact:
             entry = exact[0].entry
             rel = self._relative_path(entry.code_unit.file_path)
-            return ToolResult(
-                prefix + f"STOP: Identical code exists at {rel}:{entry.code_unit.name} "
+            message = (
+                f"STOP: Identical {language} code exists at {rel}:{entry.code_unit.name} "
                 f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). Reuse it."
             )
-        elif high:
+            if assist:
+                message += "\n\n" + assist
+            return ToolResult(prefix + message)
+        if high:
             entry = high[0].entry
             rel = self._relative_path(entry.code_unit.file_path)
-            return ToolResult(
-                prefix + f"CAUTION: Very similar code at {rel}:{entry.code_unit.name}. "
+            message = (
+                f"CAUTION: Very similar {language} code at {rel}:{entry.code_unit.name}. "
                 f"Consider reusing or extending."
             )
-        elif partial:
+            if assist:
+                message += "\n\n" + assist
+            return ToolResult(prefix + message)
+        if partial:
             entry = partial[0].entry
             rel = self._relative_path(entry.code_unit.file_path)
-            return ToolResult(
-                prefix + f"NOTE: Partially similar code at {rel}:{entry.code_unit.name}. "
+            message = (
+                f"NOTE: Partially similar {language} code at {rel}:{entry.code_unit.name}. "
                 f"Review for potential reuse."
             )
+            if assist:
+                message += "\n\n" + assist
+            return ToolResult(prefix + message)
 
-        return ToolResult(prefix + "No similar code found. Safe to proceed.")
+        message = "No same-language similar code found. Safe to proceed."
+        if assist:
+            message += "\n\n" + assist
+        return ToolResult(prefix + message)
 
-    def compare(self, code1: str, code2: str, language: str = "python") -> ToolResult:
-        """Compare two code snippets for structural equivalence."""
+    @staticmethod
+    def _split_similarity_results_by_language(
+        results: list[SimilarityResult],
+        language_id: str,
+    ) -> tuple[list[SimilarityResult], list[SimilarityResult]]:
+        """Split similarity results into same-language vs cross-language buckets."""
+        same_language = [
+            result for result in results if result.entry.code_unit.language == language_id
+        ]
+        cross_language = [
+            result for result in results if result.entry.code_unit.language != language_id
+        ]
+        return same_language, cross_language
+
+    def _semantic_alignment_hint(
+        self,
+        *,
+        source_profile: SemanticProfile,
+        candidate: SimilarityResult,
+    ) -> tuple[float, str]:
+        """Score and describe semantic alignment for a cross-language candidate."""
+        language = candidate.entry.code_unit.language
+        plugin = LanguageRegistry.get().get_plugin(language)
+        if plugin is None:
+            return 0.1, "semantic=unknown (no language plugin)"
+
+        try:
+            candidate_profile = plugin.extract_semantic_profile(
+                candidate.entry.code_unit.code,
+                file_path=candidate.entry.code_unit.file_path,
+            )
+            available, compatible, mismatches, matched, reason = self._semantic_compare_result(
+                source_profile,
+                candidate_profile,
+            )
+        except Exception:
+            logger.debug(
+                "Failed semantic assist profile extraction for %s",
+                language,
+                exc_info=True,
+            )
+            return 0.1, "semantic=unknown (profile extraction failed)"
+
+        if not available:
+            detail = reason if reason else "insufficient overlap"
+            return 0.2, f"semantic=inconclusive ({detail})"
+        if compatible:
+            if matched:
+                return 0.9, f"semantic=aligned ({', '.join(matched[:2])})"
+            return 0.8, "semantic=aligned"
+        mismatch = "; ".join(mismatches[:1]) if mismatches else "signal mismatch"
+        return 0.35, f"semantic=mismatch ({mismatch})"
+
+    def _cross_language_assist_text(
+        self,
+        *,
+        source_code: str,
+        source_language: str,
+        results: list[SimilarityResult],
+        max_items: int = 3,
+    ) -> str:
+        """Build non-blocking cross-language assist guidance."""
+        if not results:
+            return ""
+
+        source_plugin = LanguageRegistry.get().get_plugin(source_language)
+        if source_plugin is None:
+            return ""
+
+        source_profile = source_plugin.extract_semantic_profile(source_code)
+        similarity_rank = {"exact": 0, "high": 1, "partial": 2}
+        ranked: list[tuple[int, float, SimilarityResult, str]] = []
+
+        seen_entries: set[str] = set()
+        for result in results:
+            entry = result.entry
+            if entry.id in seen_entries:
+                continue
+            seen_entries.add(entry.id)
+            semantic_score, semantic_hint = self._semantic_alignment_hint(
+                source_profile=source_profile,
+                candidate=result,
+            )
+            ranked.append(
+                (
+                    similarity_rank.get(result.similarity_type, 99),
+                    -semantic_score,
+                    result,
+                    semantic_hint,
+                )
+            )
+
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        selected = ranked[:max_items]
+        if not selected:
+            return ""
+
+        lines = ["ASSIST: Cross-language structural matches found (non-blocking):"]
+        for _priority, _score, result, semantic_hint in selected:
+            entry = result.entry
+            rel = self._relative_path(entry.code_unit.file_path)
+            lines.append(
+                f"  - [{entry.code_unit.language}] {rel}:{entry.code_unit.name} "
+                f"({result.similarity_type}; {semantic_hint})"
+            )
+        lines.append("These hints never block writes/edits; use them only for reuse guidance.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _structural_compare_result(g1: nx.DiGraph, g2: nx.DiGraph) -> tuple[str, str]:
+        """Return structural comparison kind and user-facing message."""
+        h1 = weisfeiler_leman_hash(g1)
+        h2 = weisfeiler_leman_hash(g2)
+
+        is_isomorphic = nx.is_isomorphic(g1, g2, node_match=node_match)
+        if is_isomorphic:
+            return "equivalent", "EQUIVALENT: The code snippets are structurally identical."
+        if h1 == h2:
+            return "similar", "SIMILAR: Same hash but not fully isomorphic (rare edge case)."
+        if fingerprints_compatible(structural_fingerprint(g1), structural_fingerprint(g2)):
+            return "similar", "SIMILAR: Compatible structure but not identical."
+        return "different", "DIFFERENT: The code snippets are structurally different."
+
+    @staticmethod
+    def _semantic_compare_result(
+        profile1: SemanticProfile,
+        profile2: SemanticProfile,
+    ) -> tuple[bool, bool, list[str], list[str], str]:
+        """Compare semantic profiles.
+
+        Returns:
+            available: whether enough overlapping signals were found
+            compatible: whether overlapping signals agree
+            mismatches: mismatch descriptions
+            matched: matched signal keys
+            reason: context for inconclusive results
+        """
+        map1 = profile1.signal_map()
+        map2 = profile2.signal_map()
+        shared_keys = sorted(set(map1) & set(map2))
+
+        mismatches: list[str] = []
+        matched: list[str] = []
+        compared_any = False
+
+        for key in shared_keys:
+            signal1 = map1[key]
+            signal2 = map2[key]
+            confidence = min(signal1.confidence, signal2.confidence)
+            if confidence < 0.4:
+                continue
+            compared_any = True
+            if signal1.value == signal2.value:
+                matched.append(key)
+            else:
+                mismatches.append(f"{key} ({signal1.value} vs {signal2.value})")
+
+        if compared_any:
+            return True, not mismatches, mismatches, matched, ""
+
+        combined_notes = [*profile1.notes, *profile2.notes]
+        note_suffix = f" ({combined_notes[0]})" if combined_notes else ""
+        return (
+            False,
+            False,
+            [],
+            [],
+            "insufficient overlapping semantic signals" f"{note_suffix}",
+        )
+
+    def compare(
+        self,
+        code1: str,
+        code2: str,
+        language: str = "python",
+        semantic_mode: str = "off",
+    ) -> ToolResult:
+        """Compare two code snippets with structural and optional semantic checks."""
+        mode = semantic_mode.strip().lower()
+        if mode not in _SEMANTIC_MODES:
+            return ToolResult("Invalid semantic_mode. Supported values: off, assist, strict.")
+
         plugin = LanguageRegistry.get().get_plugin(language)
         if plugin is None:
             return ToolResult(f"Unsupported language '{language}': no registered language plugin.")
 
         g1 = plugin.source_to_graph(code1)
         g2 = plugin.source_to_graph(code2)
+        structural_kind, structural_message = self._structural_compare_result(g1, g2)
 
-        h1 = weisfeiler_leman_hash(g1)
-        h2 = weisfeiler_leman_hash(g2)
+        if mode == "off":
+            return ToolResult(structural_message)
 
-        is_isomorphic = nx.is_isomorphic(g1, g2, node_match=node_match)
+        profile1 = plugin.extract_semantic_profile(code1)
+        profile2 = plugin.extract_semantic_profile(code2)
+        available, compatible, mismatches, matched, reason = self._semantic_compare_result(
+            profile1, profile2
+        )
 
-        if is_isomorphic:
-            return ToolResult("EQUIVALENT: The code snippets are structurally identical.")
-        elif h1 == h2:
-            return ToolResult("SIMILAR: Same hash but not fully isomorphic (rare edge case).")
-        elif fingerprints_compatible(structural_fingerprint(g1), structural_fingerprint(g2)):
-            return ToolResult("SIMILAR: Compatible structure but not identical.")
-        else:
-            return ToolResult("DIFFERENT: The code snippets are structurally different.")
+        if not available:
+            guidance = (
+                "For stronger compile-time differentiation, run "
+                "astrograph_lsp_setup(mode='inspect', language='"
+                f"{language}')."
+            )
+            if mode == "assist":
+                return ToolResult(
+                    f"{structural_message} SEMANTIC_INCONCLUSIVE: {reason}. {guidance}"
+                )
+            return ToolResult(
+                "INCONCLUSIVE: strict semantic mode could not reach high-confidence overlap. "
+                f"{reason}. {guidance}"
+            )
+
+        if compatible:
+            semantic_match_text = (
+                f"SEMANTIC_MATCH: compared {', '.join(matched)}." if matched else "SEMANTIC_MATCH."
+            )
+            if mode == "assist":
+                return ToolResult(f"{structural_message} {semantic_match_text}")
+            if structural_kind == "equivalent":
+                return ToolResult(
+                    "EQUIVALENT: The code snippets are structurally identical and semantically aligned."
+                )
+            return ToolResult(f"{structural_message} {semantic_match_text}")
+
+        mismatch_text = "; ".join(mismatches[:3])
+        if structural_kind == "equivalent":
+            if mode == "assist":
+                return ToolResult(
+                    "EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: " f"{mismatch_text}."
+                )
+            return ToolResult(
+                "DIFFERENT: Structurally equivalent snippets diverge semantically "
+                f"({mismatch_text})."
+            )
+
+        return ToolResult(f"{structural_message} SEMANTIC_MISMATCH: {mismatch_text}.")
 
     @_requires_index
     def _toggle_suppression(self, wl_hash: str, suppress: bool) -> ToolResult:
@@ -930,11 +1196,18 @@ class CodeStructureTools(CloseOnExitMixin):
         missing = [status for status in statuses if not status.get("available")]
         missing_required = [status for status in missing if status.get("required", True)]
         scoped = bool(scope_language)
+        all_missing_optional = bool(missing) and not missing_required
+        has_missing_cpp = any(str(status.get("language")) == "cpp_lsp" for status in missing)
 
         def _with_scope(arguments: dict[str, Any]) -> dict[str, Any]:
             if not scoped:
                 return arguments
             return {**arguments, "language": scope_language}
+
+        def _follow_up_auto_bind_arguments(language_id: str) -> dict[str, Any]:
+            if scoped:
+                return _with_scope({"mode": "auto_bind"})
+            return {"mode": "auto_bind", "language": language_id}
 
         if not missing:
             return [
@@ -947,7 +1220,22 @@ class CodeStructureTools(CloseOnExitMixin):
                 }
             ]
 
-        actions: list[dict[str, Any]] = [
+        actions: list[dict[str, Any]] = []
+        if not scoped and all_missing_optional and has_missing_cpp:
+            actions.append(
+                {
+                    "id": "focus_cpp_lsp",
+                    "priority": "high",
+                    "title": "Start with cpp_lsp only",
+                    "why": (
+                        "Attach languages are optional; focusing setup on C++ first keeps "
+                        "the first-run journey clean and deterministic."
+                    ),
+                    "tool": "astrograph_lsp_setup",
+                    "arguments": {"mode": "inspect", "language": "cpp_lsp"},
+                }
+            )
+        actions.append(
             {
                 "id": "auto_bind_missing",
                 "priority": "high" if missing_required else "medium",
@@ -959,7 +1247,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 "tool": "astrograph_lsp_setup",
                 "arguments": _with_scope({"mode": "auto_bind"}),
             }
-        ]
+        )
         host_alias_action_added = False
 
         spec_by_language = {spec.language_id: spec for spec in bundled_lsp_specs()}
@@ -991,7 +1279,7 @@ class CodeStructureTools(CloseOnExitMixin):
                         "language": language,
                         "host_search_commands": search_commands,
                         "follow_up_tool": "astrograph_lsp_setup",
-                        "follow_up_arguments": {"mode": "auto_bind"},
+                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
                     }
                 )
 
@@ -1004,7 +1292,7 @@ class CodeStructureTools(CloseOnExitMixin):
                             "language": language,
                             "shell_command": format_command(install_command),
                             "follow_up_tool": "astrograph_lsp_setup",
-                            "follow_up_arguments": {"mode": "auto_bind"},
+                            "follow_up_arguments": _follow_up_auto_bind_arguments(language),
                         }
                     )
 
@@ -1068,10 +1356,9 @@ class CodeStructureTools(CloseOnExitMixin):
             }
             if candidates:
                 follow_up_arguments = {
-                    "mode": "auto_bind",
+                    **_follow_up_auto_bind_arguments(language),
                     "observations": [{"language": language, "command": candidates[0]}],
                 }
-                follow_up_arguments = _with_scope(follow_up_arguments)
 
                 action["follow_up_tool"] = "astrograph_lsp_setup"
                 action["follow_up_arguments"] = follow_up_arguments
@@ -1117,10 +1404,66 @@ class CodeStructureTools(CloseOnExitMixin):
         if not isinstance(scope_language, str):
             scope_language = None
 
-        payload["recommended_actions"] = self._build_lsp_recommended_actions(
+        recommended_actions = self._build_lsp_recommended_actions(
             statuses=statuses,
             scope_language=scope_language,
         )
+        scope_status = (
+            next((status for status in statuses if status.get("language") == scope_language), None)
+            if scope_language
+            else None
+        )
+        attach_scope_ready = bool(
+            scope_status
+            and not missing
+            and str(scope_status.get("transport", "subprocess")) in {"tcp", "unix"}
+        )
+        if attach_scope_ready and scope_language:
+            recommended_actions.extend(
+                [
+                    {
+                        "id": f"verify_{scope_language}_analysis",
+                        "priority": "medium",
+                        "title": f"Run duplicate analysis after enabling {scope_language}",
+                        "why": (
+                            "Confirms the active index is healthy after LSP setup changes "
+                            "and generates a current duplicate report."
+                        ),
+                        "tool": "astrograph_analyze",
+                        "arguments": {"auto_reindex": True},
+                    },
+                    {
+                        "id": f"rebaseline_after_{scope_language}_binding",
+                        "priority": "medium",
+                        "title": "If this language was bound after startup, rebuild baseline",
+                        "why": (
+                            "Binding changes do not retroactively update already-indexed files. "
+                            "Recompute to apply extraction across the full workspace."
+                        ),
+                        "tool": "astrograph_metadata_recompute_baseline",
+                        "arguments": {},
+                        "note": (
+                            "metadata_recompute_baseline clears lsp_bindings.json. "
+                            "Run follow_up_steps immediately after recompute."
+                        ),
+                        "follow_up_steps": [
+                            {
+                                "tool": "astrograph_lsp_setup",
+                                "arguments": {"mode": "inspect", "language": scope_language},
+                            },
+                            {
+                                "tool": "astrograph_lsp_setup",
+                                "arguments": {"mode": "auto_bind", "language": scope_language},
+                            },
+                            {
+                                "tool": "astrograph_lsp_setup",
+                                "arguments": {"mode": "inspect", "language": scope_language},
+                            },
+                        ],
+                    },
+                ]
+            )
+        payload["recommended_actions"] = recommended_actions
 
         inspect_arguments: dict[str, Any] = {"mode": "inspect"}
         auto_bind_arguments: dict[str, Any] = {"mode": "auto_bind"}
@@ -1142,6 +1485,12 @@ class CodeStructureTools(CloseOnExitMixin):
             payload["agent_directive"] = (
                 "Optional attach languages are currently unavailable. "
                 "Run recommended_actions when you need those languages."
+            )
+        elif attach_scope_ready and scope_language:
+            payload["agent_directive"] = (
+                f"{scope_language} endpoint is reachable. "
+                "Run recommended_actions to verify analysis coverage. "
+                "If you recompute baseline, re-run auto_bind for this language afterward."
             )
         else:
             payload["agent_directive"] = (
@@ -1225,6 +1574,9 @@ class CodeStructureTools(CloseOnExitMixin):
                 "missing_languages": missing,
                 "missing_required_languages": missing_required,
                 "supported_languages": known_languages,
+                "language_variant_policy": (
+                    language_variant_policy(language) if language else language_variant_policy()
+                ),
             }
             if language:
                 payload["scope_language"] = language
@@ -1241,10 +1593,18 @@ class CodeStructureTools(CloseOnExitMixin):
                         "If still missing, provide observations with language + command."
                     )
             elif missing:
-                payload["next_step"] = (
-                    "Optional attach endpoints are currently unavailable. "
-                    "Call astrograph_lsp_setup with mode='auto_bind' to configure them."
-                )
+                if not language and "cpp_lsp" in missing:
+                    payload["next_step"] = (
+                        "Optional attach endpoints are currently unavailable. "
+                        "For a clean first-run C++ flow, call astrograph_lsp_setup with "
+                        "mode='inspect', language='cpp_lsp', then run mode='auto_bind' "
+                        "for that same language."
+                    )
+                else:
+                    payload["next_step"] = (
+                        "Optional attach endpoints are currently unavailable. "
+                        "Call astrograph_lsp_setup with mode='auto_bind' to configure them."
+                    )
 
             if missing:
                 payload["observation_format"] = {
@@ -1261,7 +1621,7 @@ class CodeStructureTools(CloseOnExitMixin):
                         "command": "tcp://127.0.0.1:2089",
                     },
                 ]
-                if not language and len(missing) > 1:
+                if not language and "cpp_lsp" in missing:
                     payload["focus_hint"] = (
                         "To reduce setup noise, inspect one language at a time: "
                         "astrograph_lsp_setup(mode='inspect', language='cpp_lsp')."
@@ -1379,8 +1739,10 @@ class CodeStructureTools(CloseOnExitMixin):
 
         # Delete persistence directory
         erased = False
+        bindings_removed = False
         if self._last_indexed_path:
             persistence_path = _get_persistence_path(self._last_indexed_path)
+            bindings_removed = (persistence_path / "lsp_bindings.json").exists()
             if persistence_path.exists():
                 shutil.rmtree(persistence_path, ignore_errors=True)
                 erased = True
@@ -1393,7 +1755,13 @@ class CodeStructureTools(CloseOnExitMixin):
         self.index = self._event_driven_index.index
 
         if erased:
-            return ToolResult("Erased all metadata. Server reset to idle state.")
+            message = "Erased all metadata. Server reset to idle state."
+            if bindings_removed:
+                message += (
+                    " LSP bindings were removed. Next: call astrograph_lsp_setup(mode='inspect') "
+                    "and re-run auto_bind for required languages."
+                )
+            return ToolResult(message)
         return ToolResult("No metadata to erase. Server is idle.")
 
     def metadata_recompute_baseline(self) -> ToolResult:
@@ -1407,13 +1775,20 @@ class CodeStructureTools(CloseOnExitMixin):
             return ToolResult("No codebase has been indexed. Nothing to recompute.")
 
         path = self._last_indexed_path
+        bindings_removed = (_get_persistence_path(path) / "lsp_bindings.json").exists()
 
         # Erase everything
         self.metadata_erase()
 
         # Re-index from scratch
         result = self.index_codebase(path)
-        return ToolResult(f"Baseline recomputed from scratch.\n{result.text}")
+        message = f"Baseline recomputed from scratch.\n{result.text}"
+        if bindings_removed:
+            message += (
+                "\nLSP bindings were reset during recompute. Next: call "
+                "astrograph_lsp_setup(mode='inspect') and re-run auto_bind for required languages."
+            )
+        return ToolResult(message)
 
     def _format_file_list(self, files: list[str], label: str, max_items: int = 10) -> list[str]:
         """Format a list of files for output, with truncation."""
@@ -1539,9 +1914,18 @@ class CodeStructureTools(CloseOnExitMixin):
                 min_node_count=self._CHECK_MIN_STATEMENTS,
                 language=plugin.language_id,
             )
+            same_language, cross_language = self._split_similarity_results_by_language(
+                results,
+                plugin.language_id,
+            )
+            assist = self._cross_language_assist_text(
+                source_code=content,
+                source_language=plugin.language_id,
+                results=cross_language,
+            )
 
-            exact = [r for r in results if r.similarity_type == "exact"]
-            high = [r for r in results if r.similarity_type == "high"]
+            exact = [r for r in same_language if r.similarity_type == "exact"]
+            high = [r for r in same_language if r.similarity_type == "high"]
 
             if exact:
                 entry = exact[0].entry
@@ -1560,6 +1944,8 @@ class CodeStructureTools(CloseOnExitMixin):
                     f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
                     f"Consider reusing. Proceeding with write.\n\n"
                 )
+            if assist:
+                warning += assist + "\n\n"
 
         import os.path
 
@@ -1608,9 +1994,18 @@ class CodeStructureTools(CloseOnExitMixin):
                 min_node_count=self._CHECK_MIN_STATEMENTS,
                 language=plugin.language_id,
             )
+            same_language, cross_language = self._split_similarity_results_by_language(
+                results,
+                plugin.language_id,
+            )
+            assist = self._cross_language_assist_text(
+                source_code=new_string,
+                source_language=plugin.language_id,
+                results=cross_language,
+            )
 
-            exact = [r for r in results if r.similarity_type == "exact"]
-            high = [r for r in results if r.similarity_type == "high"]
+            exact = [r for r in same_language if r.similarity_type == "exact"]
+            high = [r for r in same_language if r.similarity_type == "high"]
 
             if exact:
                 entry = exact[0].entry
@@ -1638,6 +2033,8 @@ class CodeStructureTools(CloseOnExitMixin):
                     f"WARNING: Similar code exists at {rel}:{entry.code_unit.name}. "
                     f"Consider reusing. Proceeding with edit.\n\n"
                 )
+            if assist:
+                warning += assist + "\n\n"
 
         # Read the file
         try:
@@ -1670,8 +2067,19 @@ class CodeStructureTools(CloseOnExitMixin):
             file_path, new_content, summary=warning + diff, display_path=display_path
         )
 
-    def call_tool(self, name: str, arguments: dict) -> ToolResult:
-        """Dispatch a tool call by name."""
+    @staticmethod
+    def _is_mutating_tool_call(name: str, arguments: dict[str, Any]) -> bool:
+        """Return whether a tool call changes shared server state."""
+        if name in _MUTATING_TOOL_NAMES:
+            return True
+        if name != "lsp_setup":
+            return False
+
+        mode = str(arguments.get("mode", "inspect")).strip().lower()
+        return mode in _MUTATING_LSP_SETUP_MODES
+
+    def _call_tool_unlocked(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """Dispatch a tool call by name without synchronization."""
         if name == "index_codebase":
             return self.index_codebase(
                 path=arguments["path"],
@@ -1682,11 +2090,16 @@ class CodeStructureTools(CloseOnExitMixin):
                 auto_reindex=arguments.get("auto_reindex", True),
             )
         elif name == "check":
-            return self.check(code=arguments["code"])
+            return self.check(
+                code=arguments["code"],
+                language=arguments.get("language", "python"),
+            )
         elif name == "compare":
             return self.compare(
                 code1=arguments["code1"],
                 code2=arguments["code2"],
+                language=arguments.get("language", "python"),
+                semantic_mode=arguments.get("semantic_mode", "off"),
             )
         elif name == "suppress":
             return cast(ToolResult, self.suppress(wl_hash=arguments["wl_hash"]))
@@ -1726,6 +2139,14 @@ class CodeStructureTools(CloseOnExitMixin):
             )
         else:
             return ToolResult(f"Unknown tool: {name}")
+
+    def call_tool(self, name: str, arguments: dict) -> ToolResult:
+        """Dispatch a tool call by name."""
+        safe_arguments: dict[str, Any] = arguments if arguments is not None else {}
+        if self._is_mutating_tool_call(name, safe_arguments):
+            with self._mutation_lock:
+                return self._call_tool_unlocked(name, safe_arguments)
+        return self._call_tool_unlocked(name, safe_arguments)
 
     def close(self) -> None:
         """Clean up resources (file watchers, database connections)."""

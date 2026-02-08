@@ -41,6 +41,33 @@ class ASTGraph:
     label_histogram: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SemanticSignal:
+    """Single semantic fact extracted from code."""
+
+    key: str
+    value: str
+    confidence: float = 1.0
+    origin: str = "syntax"
+
+
+@dataclass(frozen=True)
+class SemanticProfile:
+    """Best-effort semantic profile for a source snippet."""
+
+    signals: tuple[SemanticSignal, ...] = ()
+    coverage: float = 0.0
+    notes: tuple[str, ...] = ()
+    extractor: str = "none"
+
+    def signal_map(self) -> dict[str, SemanticSignal]:
+        """Return signals keyed by name (last writer wins)."""
+        mapped: dict[str, SemanticSignal] = {}
+        for signal in self.signals:
+            mapped[signal.key] = signal
+        return mapped
+
+
 def compute_label_histogram(graph: nx.DiGraph) -> dict[str, int]:
     """Compute histogram of node labels in a graph."""
     histogram: dict[str, int] = {}
@@ -137,6 +164,14 @@ class LanguagePlugin(Protocol):
         """
         ...
 
+    def extract_semantic_profile(
+        self,
+        source: str,
+        file_path: str = "<unknown>",
+    ) -> SemanticProfile:
+        """Extract a best-effort semantic profile (types/operators/etc)."""
+        ...
+
 
 class BaseLanguagePlugin:
     """
@@ -187,3 +222,12 @@ class BaseLanguagePlugin:
     def normalize_graph_for_pattern(self, graph: nx.DiGraph) -> nx.DiGraph:
         """Normalize node labels for pattern matching. Default: return unchanged."""
         return graph
+
+    def extract_semantic_profile(
+        self,
+        source: str,
+        file_path: str = "<unknown>",
+    ) -> SemanticProfile:
+        """Extract semantic facts from source. Default: no semantic signal."""
+        del source, file_path
+        return SemanticProfile()
