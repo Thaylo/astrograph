@@ -76,14 +76,36 @@ The codebase is auto-indexed at startup and re-indexed on file changes. Then:
 1. `astrograph_analyze()` - Find existing duplicates
 2. Use `astrograph_write` / `astrograph_edit` - They'll block duplicates automatically
 
-## C++ Journey (Docker)
+## First C++ Project (Docker + Host `clangd`)
 
-Use this when ASTrograph runs in Docker and `clangd` runs on the host.
+Use this exact flow for a first-time C++ setup where ASTrograph runs in Docker and `clangd` runs on the host (MacOS/Unix).
 
-1. Start clean:
-   - `astrograph_metadata_erase()`
-   - `astrograph_lsp_setup(mode="unbind", language="cpp_lsp")`
-2. Start host bridge (`socat` + `clangd`) on a dedicated port (default `2088`):
+### 1) Prepare a tiny C++ workspace with `compile_commands.json`
+
+```bash
+mkdir -p sandbox_cpp_journey/build
+cd sandbox_cpp_journey
+
+cat > main.cpp <<'CPP'
+int add(int a, int b) { return a + b; }
+CPP
+
+cat > build/compile_commands.json <<'JSON'
+[
+  {
+    "directory": "__PROJECT_ROOT__",
+    "command": "clang++ -std=c++20 -I. -c main.cpp",
+    "file": "main.cpp"
+  }
+]
+JSON
+
+# Replace placeholder with absolute path
+PROJECT="$(pwd)"
+sed -i.bak "s|__PROJECT_ROOT__|${PROJECT}|g" build/compile_commands.json && rm -f build/compile_commands.json.bak
+```
+
+### 2) Start a host TCP bridge for `clangd` on port `2088`
 
 ```bash
 PORT=2088
@@ -93,16 +115,52 @@ socat "TCP-LISTEN:${PORT},bind=0.0.0.0,reuseaddr,fork" \
   "EXEC:clangd --background-index --log=error --compile-commands-dir=${PROJECT}/build --path-mappings=/workspace=${PROJECT},stderr"
 ```
 
-3. Focus setup on C++ only:
-   - `astrograph_lsp_setup(mode="inspect", language="cpp_lsp")`
-   - `astrograph_lsp_setup(mode="auto_bind", language="cpp_lsp", observations=[{"language":"cpp_lsp","command":"tcp://host.docker.internal:2088"}])`
-4. Verify C++ is reachable:
-   - `astrograph_lsp_setup(mode="inspect", language="cpp_lsp")` and confirm `available=true`
-5. Run duplicate prevention on C++ code:
-   - `astrograph_analyze()`
-   - `astrograph_write(...)` / `astrograph_edit(...)`
+Keep this terminal open while testing.
 
-Each attach port is full-duplex LSP traffic (query + update). Keep one stable port per language (`2087` C, `2088` C++, `2089` Java).
+### 3) Configure MCP to run ASTrograph in Docker
+
+Project `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "astrograph": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i", "--pull", "always",
+        "--add-host", "host.docker.internal:host-gateway",
+        "-v", ".:/workspace",
+        "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
+        "thaylo/astrograph:latest"
+      ]
+    }
+  }
+}
+```
+
+`--add-host` is required on Linux hosts and safe on Docker Desktop (MacOS).
+
+### 4) Run the C++ setup loop inside your MCP client
+
+1. `astrograph_metadata_erase()`
+2. `astrograph_lsp_setup(mode="inspect", language="cpp_lsp")`
+3. `astrograph_lsp_setup(mode="auto_bind", language="cpp_lsp", observations=[{"language":"cpp_lsp","command":"tcp://host.docker.internal:2088"}])`
+4. `astrograph_lsp_setup(mode="inspect", language="cpp_lsp")`
+
+You want `servers[].available=true` for `cpp_lsp`.
+
+If `auto_bind` happened after startup indexing, follow the recommended action and run:
+1. `astrograph_metadata_recompute_baseline()`
+2. `astrograph_lsp_setup(mode="auto_bind", language="cpp_lsp", observations=[{"language":"cpp_lsp","command":"tcp://host.docker.internal:2088"}])`
+3. `astrograph_lsp_setup(mode="inspect", language="cpp_lsp")`
+
+### 5) Start normal duplicate-prevention workflow
+
+1. `astrograph_analyze()`
+2. Use `astrograph_write(...)` and `astrograph_edit(...)`
+3. Follow `recommended_actions` in tool output when present
+
+Attach ports are full-duplex LSP channels (query + update). Keep one stable port per language: `2087` (C), `2088` (C++), `2089` (Java).
 
 ## The Problem
 
