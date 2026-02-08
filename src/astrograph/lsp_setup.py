@@ -20,7 +20,8 @@ from urllib.parse import unquote, urlparse
 PERSISTENCE_DIR = ".metadata_astrograph"
 LSP_BINDINGS_FILENAME = "lsp_bindings.json"
 _SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
-_VALIDATION_MODES = frozenset({"production", "relaxed"})
+_VALIDATION_MODES = frozenset({"production", "bootstrap"})
+_VALIDATION_MODE_ALIASES = {"relaxed": "bootstrap"}
 _DEFAULT_VALIDATION_MODE = "production"
 _COMPILE_COMMANDS_FILENAME = "compile_commands.json"
 _COMPILE_COMMANDS_PATH_ENV = "ASTROGRAPH_COMPILE_COMMANDS_PATH"
@@ -151,7 +152,31 @@ def language_variant_policy(language_id: str | None = None) -> dict[str, dict[st
 
 def _normalized_validation_mode() -> str:
     """Resolve runtime validation mode for attach-based endpoints."""
-    mode = os.getenv("ASTROGRAPH_LSP_VALIDATION_MODE", "").strip().lower()
+    return _normalized_validation_mode_with_override(None)
+
+
+def _normalize_validation_mode(value: str | None) -> str | None:
+    """Normalize validation mode value and legacy aliases."""
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if normalized in _VALIDATION_MODES:
+        return normalized
+    alias = _VALIDATION_MODE_ALIASES.get(normalized)
+    if alias in _VALIDATION_MODES:
+        return alias
+    return None
+
+
+def _normalized_validation_mode_with_override(mode_override: str | None) -> str:
+    """Resolve validation mode from explicit override, env, and defaults."""
+    override = _normalize_validation_mode(mode_override)
+    if override in _VALIDATION_MODES:
+        return override
+
+    mode = _normalize_validation_mode(os.getenv("ASTROGRAPH_LSP_VALIDATION_MODE"))
     if mode in _VALIDATION_MODES:
         return mode
 
@@ -159,16 +184,16 @@ def _normalized_validation_mode() -> str:
     if legacy_flag is not None:
         normalized = legacy_flag.strip().lower()
         if normalized in {"0", "false", "no", "off"}:
-            return "relaxed"
+            return "bootstrap"
         if normalized in {"1", "true", "yes", "on"}:
             return "production"
 
     return _DEFAULT_VALIDATION_MODE
 
 
-def _is_production_validation_mode() -> bool:
+def _is_production_validation_mode(mode_override: str | None = None) -> bool:
     """Whether attach validation should fail closed for strict languages."""
-    return _normalized_validation_mode() == "production"
+    return _normalized_validation_mode_with_override(mode_override) == "production"
 
 
 def _probe_document(language_id: str) -> dict[str, str]:
@@ -389,21 +414,30 @@ def _compile_commands_status(
     *,
     language_id: str,
     workspace: str | Path | None,
+    compile_db_path: str | Path | None = None,
+    project_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Collect compile_commands.json visibility/validity for C/C++ adapters."""
     if language_id not in {"c_lsp", "cpp_lsp"}:
         return None
 
     workspace_root = _normalize_workspace_root(workspace)
+    search_root = _normalize_workspace_root(project_root) if project_root else workspace_root
     required = language_id == "cpp_lsp"
-    candidates = _compile_commands_paths(workspace_root)
-    override = _resolve_compile_commands_override(workspace_root)
+    candidates = _compile_commands_paths(search_root)
+
+    # Per-call compile_db_path takes priority over env override.
+    explicit_db: Path | None = None
+    if compile_db_path is not None:
+        raw = Path(compile_db_path)
+        explicit_db = raw if raw.is_absolute() else workspace_root / raw
+    override = explicit_db or _resolve_compile_commands_override(workspace_root)
     if override is not None:
         candidates = [override, *candidates]
     existing = [path for path in candidates if path.exists()]
     ordered_existing = _ordered_compile_commands_candidates(
         existing,
-        workspace=workspace_root,
+        workspace=search_root,
         override=override,
     )
 
@@ -420,7 +454,7 @@ def _compile_commands_status(
 
     for path in ordered_existing:
         try:
-            rel = path.resolve().relative_to(workspace_root.resolve())
+            rel = path.resolve().relative_to(search_root.resolve())
             rendered = str(rel)
         except (OSError, ValueError):
             rendered = str(path)
@@ -466,15 +500,23 @@ def _availability_validation(
     command: Sequence[str],
     probe: dict[str, Any],
     workspace: str | Path | None,
+    validation_mode: str | None = None,
+    compile_db_path: str | Path | None = None,
+    project_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate whether a discovered command should count as usable."""
-    validation_mode = _normalized_validation_mode()
+    effective_mode = _normalized_validation_mode_with_override(validation_mode)
     transport = str(probe.get("transport", "subprocess"))
     endpoint_reachable = bool(probe.get("available", False))
-    compile_status = _compile_commands_status(language_id=language_id, workspace=workspace)
+    compile_status = _compile_commands_status(
+        language_id=language_id,
+        workspace=workspace,
+        compile_db_path=compile_db_path,
+        project_root=project_root,
+    )
 
     verification: dict[str, Any] = {
-        "mode": validation_mode,
+        "mode": effective_mode,
         "state": "unavailable",
         "reason": "Command/endpoint is not reachable.",
         "endpoint_reachable": endpoint_reachable,
@@ -496,15 +538,32 @@ def _availability_validation(
             "verification": verification,
         }
 
-    # Subprocess checks are still executable-based; attach checks need protocol validation.
+    # Subprocess: executable-based reachability plus version-probe semantics.
     if transport == "subprocess":
-        verification.update(
-            {
-                "state": "verified",
-                "reason": "Executable is available.",
-                "endpoint_reachable": True,
-            }
+        version_probe = _run_version_probe(language_id, command)
+        version_status = _evaluate_version_status(
+            language_id=language_id,
+            detected=version_probe["detected"],
+            probe_kind=version_probe["probe_kind"],
+            transport=transport,
+            available=True,
         )
+        verification["endpoint_reachable"] = True
+        verification["version_status"] = version_status
+        version_state = str(version_status.get("state", "unknown"))
+
+        if version_state == "unsupported" and _is_production_validation_mode(validation_mode):
+            verification["state"] = "reachable_only"
+            verification["reason"] = (
+                f"Executable is available but version is unsupported: "
+                f"{version_status.get('reason', 'version check failed')}."
+            )
+            return {"available": False, "verification": verification}
+
+        verification["state"] = "verified"
+        verification["reason"] = "Executable is available."
+        if version_state not in {"unknown", "supported"}:
+            verification["reason"] += f" Version status: {version_state}."
         return {
             "available": True,
             "verification": verification,
@@ -551,7 +610,7 @@ def _availability_validation(
         "; ".join(reason_parts) if reason_parts else "Endpoint is reachable only."
     )
 
-    if language_id == "cpp_lsp" and _is_production_validation_mode():
+    if language_id == "cpp_lsp" and _is_production_validation_mode(validation_mode):
         return {"available": False, "verification": verification}
 
     return {"available": True, "verification": verification}
@@ -1012,7 +1071,13 @@ def probe_command(command: Sequence[str] | str | None) -> dict[str, Any]:
     }
 
 
-def collect_lsp_statuses(workspace: str | Path | None = None) -> list[dict[str, Any]]:
+def collect_lsp_statuses(
+    workspace: str | Path | None = None,
+    *,
+    validation_mode: str | None = None,
+    compile_db_path: str | Path | None = None,
+    project_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
     """Collect effective command status for each bundled language adapter."""
     bindings = load_lsp_bindings(workspace)
     statuses: list[dict[str, Any]] = []
@@ -1029,6 +1094,9 @@ def collect_lsp_statuses(workspace: str | Path | None = None) -> list[dict[str, 
             command=effective_command,
             probe=probe,
             workspace=workspace,
+            validation_mode=validation_mode,
+            compile_db_path=compile_db_path,
+            project_root=project_root,
         )
         verification = validation["verification"]
         version_probe = _run_version_probe(spec.language_id, effective_command)
@@ -1092,6 +1160,9 @@ def probe_candidates(
     *,
     workspace: str | Path | None = None,
     observations: Iterable[dict[str, Any]] | None = None,
+    validation_mode: str | None = None,
+    compile_db_path: str | Path | None = None,
+    project_root: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """Probe candidate commands from observations, bindings, env, defaults, and heuristics."""
     seen: set[tuple[str, ...]] = set()
@@ -1112,6 +1183,9 @@ def probe_candidates(
             command=parsed,
             probe=probe,
             workspace=workspace,
+            validation_mode=validation_mode,
+            compile_db_path=compile_db_path,
+            project_root=project_root,
         )
         verification = validation["verification"]
         candidates.append(
@@ -1147,6 +1221,9 @@ def auto_bind_missing_servers(
     workspace: str | Path | None = None,
     observations: Iterable[dict[str, Any]] | None = None,
     languages: Iterable[str] | None = None,
+    validation_mode: str | None = None,
+    compile_db_path: str | Path | None = None,
+    project_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Auto-bind commands only for currently missing bundled language adapters."""
     root = _normalize_workspace_root(workspace)
@@ -1177,6 +1254,9 @@ def auto_bind_missing_servers(
             command=effective_command,
             probe=effective_probe,
             workspace=root,
+            validation_mode=validation_mode,
+            compile_db_path=compile_db_path,
+            project_root=project_root,
         )
         if effective_validation["available"]:
             verification = effective_validation["verification"]
@@ -1198,7 +1278,14 @@ def auto_bind_missing_servers(
             ]
             continue
 
-        language_candidates = probe_candidates(spec, workspace=root, observations=observations)
+        language_candidates = probe_candidates(
+            spec,
+            workspace=root,
+            observations=observations,
+            validation_mode=validation_mode,
+            compile_db_path=compile_db_path,
+            project_root=project_root,
+        )
         probes[spec.language_id] = language_candidates
         selected = next(
             (candidate for candidate in language_candidates if candidate["available"]), None
@@ -1249,7 +1336,12 @@ def auto_bind_missing_servers(
     if changes:
         bindings_path = str(save_lsp_bindings(bindings, root))
 
-    statuses = collect_lsp_statuses(root)
+    statuses = collect_lsp_statuses(
+        root,
+        validation_mode=validation_mode,
+        compile_db_path=compile_db_path,
+        project_root=project_root,
+    )
     if scoped:
         statuses = [status for status in statuses if status["language"] in language_scope]
 

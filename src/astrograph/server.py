@@ -201,6 +201,28 @@ def create_server() -> Server:
                                 "required": ["language", "command"],
                             },
                         },
+                        "validation_mode": {
+                            "type": "string",
+                            "enum": ["production", "bootstrap"],
+                            "description": (
+                                "Per-call validation strictness override "
+                                "(default: production from env or config)"
+                            ),
+                        },
+                        "compile_db_path": {
+                            "type": "string",
+                            "description": (
+                                "Explicit compile_commands.json path for C/C++ "
+                                "(overrides env and auto-discovery)"
+                            ),
+                        },
+                        "project_root": {
+                            "type": "string",
+                            "description": (
+                                "Project root for compile_commands.json search in monorepos "
+                                "(narrows discovery scope)"
+                            ),
+                        },
                     },
                 },
             ),

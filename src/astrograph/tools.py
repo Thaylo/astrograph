@@ -1699,6 +1699,9 @@ class CodeStructureTools(CloseOnExitMixin):
         language: str | None = None,
         command: Sequence[str] | str | None = None,
         observations: list[dict[str, Any]] | None = None,
+        validation_mode: str | None = None,
+        compile_db_path: str | None = None,
+        project_root: str | None = None,
     ) -> ToolResult:
         """Inspect and configure deterministic command bindings for bundled LSP plugins."""
         workspace = self._lsp_setup_workspace()
@@ -1746,7 +1749,12 @@ class CodeStructureTools(CloseOnExitMixin):
             if validation_error := _validate_language(normalized_mode):
                 return validation_error
 
-            statuses = collect_lsp_statuses(workspace)
+            statuses = collect_lsp_statuses(
+                workspace,
+                validation_mode=validation_mode,
+                compile_db_path=compile_db_path,
+                project_root=project_root,
+            )
             if language:
                 statuses = [status for status in statuses if status["language"] == language]
             missing = [status["language"] for status in statuses if not status["available"]]
@@ -1850,6 +1858,9 @@ class CodeStructureTools(CloseOnExitMixin):
                 workspace=workspace,
                 observations=observations,
                 languages=scope_languages,
+                validation_mode=validation_mode,
+                compile_db_path=compile_db_path,
+                project_root=project_root,
             )
             if outcome["changes"]:
                 LanguageRegistry.reset()
@@ -2339,6 +2350,9 @@ class CodeStructureTools(CloseOnExitMixin):
                 language=arguments.get("language"),
                 command=arguments.get("command"),
                 observations=arguments.get("observations"),
+                validation_mode=arguments.get("validation_mode"),
+                compile_db_path=arguments.get("compile_db_path"),
+                project_root=arguments.get("project_root"),
             )
         elif name == "write":
             return self.write(

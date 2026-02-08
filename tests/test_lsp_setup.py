@@ -371,11 +371,11 @@ def test_compile_commands_status_respects_override_env(tmp_path, monkeypatch):
     assert status["selected_path"] == str(override_path)
 
 
-def test_collect_lsp_statuses_cpp_reachable_only_allowed_in_relaxed_mode(tmp_path, monkeypatch):
+def test_collect_lsp_statuses_cpp_reachable_only_allowed_in_bootstrap_mode(tmp_path, monkeypatch):
     endpoint = "tcp://127.0.0.1:2088"
     save_lsp_bindings({"cpp_lsp": [endpoint]}, workspace=tmp_path)
 
-    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "relaxed")
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "bootstrap")
 
     def _fake_probe(command):
         parsed = lsp_setup.parse_command(command)
@@ -427,7 +427,7 @@ def test_collect_lsp_statuses_cpp_reachable_only_allowed_in_relaxed_mode(tmp_pat
     assert cpp["probe_available"] is True
     assert cpp["available"] is True
     assert cpp["verification_state"] == "reachable_only"
-    assert cpp["validation_mode"] == "relaxed"
+    assert cpp["validation_mode"] == "bootstrap"
 
 
 def test_auto_bind_cpp_reports_validation_reason_when_reachable_only(tmp_path, monkeypatch):
@@ -485,3 +485,127 @@ def test_auto_bind_cpp_reports_validation_reason_when_reachable_only(tmp_path, m
     assert result["changes"] == []
     unresolved = next(item for item in result["unresolved"] if item["language"] == "cpp_lsp")
     assert "compile_commands.json" in unresolved["reason"]
+
+
+def test_relaxed_alias_resolves_to_bootstrap(monkeypatch):
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "relaxed")
+    mode = lsp_setup._normalized_validation_mode()
+    assert mode == "bootstrap"
+
+
+def test_per_call_validation_mode_overrides_env(tmp_path, monkeypatch):
+    """Per-call validation_mode takes priority over ASTROGRAPH_LSP_VALIDATION_MODE."""
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "production")
+    statuses = collect_lsp_statuses(tmp_path, validation_mode="bootstrap")
+    for status in statuses:
+        assert status["validation_mode"] == "bootstrap"
+
+
+def test_per_call_validation_mode_production(tmp_path, monkeypatch):
+    """Per-call production mode overrides env bootstrap."""
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "bootstrap")
+    statuses = collect_lsp_statuses(tmp_path, validation_mode="production")
+    for status in statuses:
+        assert status["validation_mode"] == "production"
+
+
+def test_compile_db_path_overrides_env_and_discovery(tmp_path, monkeypatch):
+    """Per-call compile_db_path takes priority over env override and auto-discovery."""
+    default_path = tmp_path / "build" / "compile_commands.json"
+    env_path = tmp_path / "env_override" / "compile_commands.json"
+    explicit_path = tmp_path / "explicit" / "compile_commands.json"
+
+    _write_compile_commands(default_path, file_name="src/default.cpp")
+    _write_compile_commands(env_path, file_name="src/env.cpp")
+    _write_compile_commands(explicit_path, file_name="src/explicit.cpp")
+
+    monkeypatch.setenv("ASTROGRAPH_COMPILE_COMMANDS_PATH", str(env_path))
+
+    status = lsp_setup._compile_commands_status(
+        language_id="cpp_lsp",
+        workspace=tmp_path,
+        compile_db_path=str(explicit_path),
+    )
+    assert status is not None
+    assert status["valid"] is True
+    assert status["selected_path"] == str(explicit_path)
+
+
+def test_project_root_scopes_compile_commands_search(tmp_path):
+    """project_root narrows compile_commands.json discovery to a subdirectory."""
+    sub_a = tmp_path / "project_a" / "build" / "compile_commands.json"
+    sub_b = tmp_path / "project_b" / "build" / "compile_commands.json"
+
+    _write_compile_commands(sub_a, file_name="src/a.cpp")
+    _write_compile_commands(sub_b, file_name="src/b.cpp")
+
+    status = lsp_setup._compile_commands_status(
+        language_id="cpp_lsp",
+        workspace=tmp_path,
+        project_root=str(tmp_path / "project_a"),
+    )
+    assert status is not None
+    assert status["valid"] is True
+    assert "project_a" in status["selected_path"]
+
+
+def test_subprocess_version_unsupported_production_downgrades(tmp_path, monkeypatch):
+    """Subprocess with unsupported version is unavailable in production mode."""
+    monkeypatch.setattr(
+        lsp_setup,
+        "_run_version_probe",
+        lambda _lang, _cmd: {"detected": "pylsp 0.1.0", "probe_kind": "server"},
+    )
+    monkeypatch.setattr(
+        lsp_setup,
+        "_evaluate_version_status",
+        lambda **_kwargs: {
+            "state": "unsupported",
+            "detected": "pylsp 0.1.0",
+            "probe_kind": "server",
+            "reason": "python-lsp-server version is below supported baseline (1.11).",
+            "variant_policy": {},
+        },
+    )
+
+    probe = {"available": True, "executable": "/usr/bin/pylsp", "transport": "subprocess"}
+    result = lsp_setup._availability_validation(
+        language_id="python",
+        command=["pylsp"],
+        probe=probe,
+        workspace=tmp_path,
+        validation_mode="production",
+    )
+    assert result["available"] is False
+    assert result["verification"]["state"] == "reachable_only"
+
+
+def test_subprocess_version_unsupported_bootstrap_still_available(tmp_path, monkeypatch):
+    """Subprocess with unsupported version remains available in bootstrap mode."""
+    monkeypatch.setattr(
+        lsp_setup,
+        "_run_version_probe",
+        lambda _lang, _cmd: {"detected": "pylsp 0.1.0", "probe_kind": "server"},
+    )
+    monkeypatch.setattr(
+        lsp_setup,
+        "_evaluate_version_status",
+        lambda **_kwargs: {
+            "state": "unsupported",
+            "detected": "pylsp 0.1.0",
+            "probe_kind": "server",
+            "reason": "python-lsp-server version is below supported baseline (1.11).",
+            "variant_policy": {},
+        },
+    )
+
+    probe = {"available": True, "executable": "/usr/bin/pylsp", "transport": "subprocess"}
+    result = lsp_setup._availability_validation(
+        language_id="python",
+        command=["pylsp"],
+        probe=probe,
+        workspace=tmp_path,
+        validation_mode="bootstrap",
+    )
+    assert result["available"] is True
+    assert result["verification"]["state"] == "verified"
