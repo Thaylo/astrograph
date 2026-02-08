@@ -793,6 +793,122 @@ class CodeStructureTools(CloseOnExitMixin):
         ]
         return same_language, cross_language
 
+    @staticmethod
+    def _similarity_sort_key(result: SimilarityResult) -> tuple[int, int]:
+        """Sort key for similarity results (exact > high > partial)."""
+        type_order = {"exact": 0, "high": 1, "partial": 2}
+        return (
+            type_order.get(result.similarity_type, 99),
+            -(result.matching_depth or 0),
+        )
+
+    @classmethod
+    def _prefer_similarity_result(
+        cls,
+        current: SimilarityResult | None,
+        candidate: SimilarityResult,
+    ) -> SimilarityResult:
+        """Pick the stronger of two similarity results for the same entry."""
+        if current is None:
+            return candidate
+        if cls._similarity_sort_key(candidate) < cls._similarity_sort_key(current):
+            return candidate
+        return current
+
+    def _candidate_similarity_snippets(
+        self,
+        *,
+        plugin: Any,
+        source_code: str,
+        file_path: str,
+    ) -> list[str]:
+        """
+        Build deduplicated snippets for duplicate checks.
+
+        Includes the full source and, when available, extracted code units so
+        write/edit checks work even when wrapper lines (imports/includes) are present.
+        """
+        snippets: list[str] = []
+        seen: set[str] = set()
+
+        def _add(candidate: str) -> None:
+            normalized = candidate.strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            snippets.append(normalized)
+
+        _add(source_code)
+
+        try:
+            extracted_units = plugin.extract_code_units(
+                source_code,
+                file_path,
+                include_blocks=False,
+                max_block_depth=0,
+            )
+        except TypeError:
+            # Backward-compatible fallback for plugins with narrower signatures.
+            extracted_units = plugin.extract_code_units(source_code, file_path)
+        except Exception:
+            logger.debug(
+                "Failed to extract similarity snippets for %s",
+                file_path,
+                exc_info=True,
+            )
+            return snippets
+
+        for unit in extracted_units:
+            code = getattr(unit, "code", None)
+            if isinstance(code, str):
+                _add(code)
+
+        return snippets
+
+    def _find_similar_for_content(
+        self,
+        *,
+        plugin: Any,
+        source_code: str,
+        file_path: str,
+        min_node_count: int,
+    ) -> list[SimilarityResult]:
+        """
+        Find similarity results for source content plus extracted code units.
+
+        This improves write/edit checks for languages where indexed units are
+        function-level symbols while authored content may include wrappers.
+        """
+        by_entry_id: dict[str, SimilarityResult] = {}
+        snippets = self._candidate_similarity_snippets(
+            plugin=plugin,
+            source_code=source_code,
+            file_path=file_path,
+        )
+
+        for snippet in snippets:
+            for entry in self.index.find_exact_matches(snippet, language=plugin.language_id):
+                candidate = SimilarityResult(entry=entry, similarity_type="exact")
+                by_entry_id[entry.id] = self._prefer_similarity_result(
+                    by_entry_id.get(entry.id),
+                    candidate,
+                )
+
+            for result in self.index.find_similar(
+                snippet,
+                min_node_count=min_node_count,
+                language=plugin.language_id,
+            ):
+                entry_id = result.entry.id
+                by_entry_id[entry_id] = self._prefer_similarity_result(
+                    by_entry_id.get(entry_id),
+                    result,
+                )
+
+        ordered = list(by_entry_id.values())
+        ordered.sort(key=self._similarity_sort_key)
+        return ordered
+
     def _semantic_alignment_hint(
         self,
         *,
@@ -2005,10 +2121,11 @@ class CodeStructureTools(CloseOnExitMixin):
             )
         else:
             # Check for duplicates in the content
-            results = self.index.find_similar(
-                content,
+            results = self._find_similar_for_content(
+                plugin=plugin,
+                source_code=content,
+                file_path=file_path,
                 min_node_count=self._CHECK_MIN_STATEMENTS,
-                language=plugin.language_id,
             )
             same_language, cross_language = self._split_similarity_results_by_language(
                 results,
@@ -2085,10 +2202,11 @@ class CodeStructureTools(CloseOnExitMixin):
             )
         else:
             # Check for duplicates in the new code being introduced
-            results = self.index.find_similar(
-                new_string,
+            results = self._find_similar_for_content(
+                plugin=plugin,
+                source_code=new_string,
+                file_path=file_path,
                 min_node_count=self._CHECK_MIN_STATEMENTS,
-                language=plugin.language_id,
             )
             same_language, cross_language = self._split_similarity_results_by_language(
                 results,

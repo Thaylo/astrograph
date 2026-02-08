@@ -13,6 +13,7 @@ import pytest
 
 from astrograph.index import IndexEntry, SimilarityResult
 from astrograph.languages.base import CodeUnit
+from astrograph.languages.registry import LanguageRegistry
 from astrograph.server import create_server, get_tools, set_tools
 from astrograph.tools import (
     PERSISTENCE_DIR,
@@ -1735,6 +1736,85 @@ def compute_total(x, y):
         assert "BLOCKED" in result.text
         assert not os.path.exists(new_file)
 
+    def test_write_blocks_cpp_duplicate_when_file_contains_wrapper_lines(self, indexed_tools):
+        tools, tmpdir = indexed_tools
+        cpp_exact_entry = _similarity_result(
+            language="cpp_lsp",
+            similarity_type="exact",
+            file_path="existing.cpp",
+            name="accumulate_positive",
+            code=(
+                "int accumulate_positive(const std::vector<int>& values) {\n"
+                "    int total = 0;\n"
+                "    for (int value : values) {\n"
+                "        if (value > 0) {\n"
+                "            total += value;\n"
+                "        }\n"
+                "    }\n"
+                "    return total;\n"
+                "}\n"
+            ),
+        ).entry
+
+        class _FakeCppPlugin:
+            language_id = "cpp_lsp"
+
+            def extract_code_units(
+                self,
+                source: str,
+                file_path: str = "<unknown>",
+                include_blocks: bool = True,
+                max_block_depth: int = 3,
+            ):
+                del source, include_blocks, max_block_depth
+                yield CodeUnit(
+                    name="accumulate_positive",
+                    code=cpp_exact_entry.code_unit.code,
+                    file_path=file_path,
+                    line_start=3,
+                    line_end=11,
+                    unit_type="function",
+                    language="cpp_lsp",
+                )
+
+        def _fake_exact_matches(code: str, language: str = "python"):
+            if language == "cpp_lsp" and code.strip().startswith("int accumulate_positive"):
+                return [cpp_exact_entry]
+            return []
+
+        cpp_file = os.path.join(tmpdir, "new_duplicate.cpp")
+        cpp_content = (
+            "#include <vector>\n\n"
+            "int accumulate_positive(const std::vector<int>& values) {\n"
+            "    int total = 0;\n"
+            "    for (int value : values) {\n"
+            "        if (value > 0) {\n"
+            "            total += value;\n"
+            "        }\n"
+            "    }\n"
+            "    return total;\n"
+            "}\n"
+        )
+
+        with patch.object(
+            LanguageRegistry.get(),
+            "get_plugin_for_file",
+            return_value=_FakeCppPlugin(),
+        ), patch.object(
+            tools.index,
+            "find_exact_matches",
+            side_effect=_fake_exact_matches,
+        ), patch.object(
+            tools.index,
+            "find_similar",
+            return_value=[],
+        ):
+            result = tools.write(cpp_file, cpp_content)
+
+        assert "BLOCKED" in result.text
+        assert "identical code exists" in result.text
+        assert not os.path.exists(cpp_file)
+
     def test_write_handles_io_error(self, indexed_tools):
         """Test that write handles IO errors gracefully."""
         tools, tmpdir = indexed_tools
@@ -1853,6 +1933,87 @@ def placeholder():
         assert "WARNING" in result.text
         assert "same file" in result.text
         assert "Edited" in result.text
+
+    def test_edit_blocks_cpp_duplicate_when_wrapper_lines_present(self, indexed_tools_with_file):
+        tools, tmpdir, _existing_file = indexed_tools_with_file
+        cpp_exact_entry = _similarity_result(
+            language="cpp_lsp",
+            similarity_type="exact",
+            file_path="existing.cpp",
+            name="accumulate_positive",
+            code=(
+                "int accumulate_positive(const std::vector<int>& values) {\n"
+                "    int total = 0;\n"
+                "    for (int value : values) {\n"
+                "        if (value > 0) {\n"
+                "            total += value;\n"
+                "        }\n"
+                "    }\n"
+                "    return total;\n"
+                "}\n"
+            ),
+        ).entry
+
+        class _FakeCppPlugin:
+            language_id = "cpp_lsp"
+
+            def extract_code_units(
+                self,
+                source: str,
+                file_path: str = "<unknown>",
+                include_blocks: bool = True,
+                max_block_depth: int = 3,
+            ):
+                del source, include_blocks, max_block_depth
+                yield CodeUnit(
+                    name="accumulate_positive",
+                    code=cpp_exact_entry.code_unit.code,
+                    file_path=file_path,
+                    line_start=3,
+                    line_end=11,
+                    unit_type="function",
+                    language="cpp_lsp",
+                )
+
+        def _fake_exact_matches(code: str, language: str = "python"):
+            if language == "cpp_lsp" and code.strip().startswith("int accumulate_positive"):
+                return [cpp_exact_entry]
+            return []
+
+        target_cpp = os.path.join(tmpdir, "target.cpp")
+        old_block = "int placeholder() {\n    return 0;\n}\n"
+        Path(target_cpp).write_text(old_block)
+        new_block = (
+            "#include <vector>\n\n"
+            "int accumulate_positive(const std::vector<int>& values) {\n"
+            "    int total = 0;\n"
+            "    for (int value : values) {\n"
+            "        if (value > 0) {\n"
+            "            total += value;\n"
+            "        }\n"
+            "    }\n"
+            "    return total;\n"
+            "}\n"
+        )
+
+        with patch.object(
+            LanguageRegistry.get(),
+            "get_plugin_for_file",
+            return_value=_FakeCppPlugin(),
+        ), patch.object(
+            tools.index,
+            "find_exact_matches",
+            side_effect=_fake_exact_matches,
+        ), patch.object(
+            tools.index,
+            "find_similar",
+            return_value=[],
+        ):
+            result = tools.edit(target_cpp, old_block, new_block)
+
+        assert "BLOCKED" in result.text
+        assert "identical code exists" in result.text
+        assert Path(target_cpp).read_text() == old_block
 
     def test_edit_cross_language_exact_match_is_assist_only(self, indexed_tools_with_file):
         tools, tmpdir, existing_file = indexed_tools_with_file
