@@ -180,6 +180,8 @@ Check server readiness. Returns instantly even during indexing.
 ### astrograph_lsp_setup
 
 Inspect and configure deterministic LSP command bindings for bundled language plugins.
+Responses include `bindings`, `agent_directive`, and `recommended_actions` so AI agents can
+continue with search/install/config loops instead of stopping at diagnostics.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|

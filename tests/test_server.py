@@ -435,6 +435,10 @@ class TestLSPSetupTool:
         assert payload["ok"] is True
         assert payload["mode"] == "inspect"
         assert "servers" in payload
+        assert "bindings" in payload
+        assert "agent_directive" in payload
+        assert "recommended_actions" in payload
+        assert isinstance(payload["recommended_actions"], list)
 
     def test_lsp_setup_bind_and_unbind(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
@@ -486,6 +490,8 @@ class TestLSPSetupTool:
             )
             payload = json.loads(result.text)
             assert any(change["language"] == "python" for change in payload["changes"])
+            assert "recommended_actions" in payload
+            assert payload["agent_directive"]
             tools.close()
 
 

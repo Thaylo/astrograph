@@ -51,7 +51,9 @@ def create_server() -> Server:
         instructions=(
             "ASTrograph indexes the codebase in the background at startup. "
             "If the first tool call is slow, indexing is still in progress. "
-            "Use astrograph_status to check readiness."
+            "Use astrograph_status to check readiness. "
+            "Before large refactors, call astrograph_lsp_setup(mode='inspect') and execute "
+            "recommended_actions (search/install/bind/auto_bind) until missing_required_languages is empty."
         ),
     )
 
@@ -150,7 +152,8 @@ def create_server() -> Server:
                 name="astrograph_lsp_setup",
                 description=(
                     "Inspect and configure deterministic LSP command bindings "
-                    "for bundled language plugins."
+                    "for bundled language plugins. Returns a guided recommended_actions "
+                    "plan for search/install/config workflows."
                 ),
                 inputSchema={
                     "type": "object",
@@ -174,7 +177,10 @@ def create_server() -> Server:
                         },
                         "observations": {
                             "type": "array",
-                            "description": "Optional host-discovery hints used by auto_bind",
+                            "description": (
+                                "Optional host-discovery hints used by auto_bind "
+                                "(agent-provided search results such as commands/endpoints)."
+                            ),
                             "items": {
                                 "type": "object",
                                 "properties": {
