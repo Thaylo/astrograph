@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import sys
 from unittest.mock import patch
 
@@ -11,6 +12,8 @@ import pytest
 from astrograph.lsp_setup import (
     auto_bind_missing_servers,
     load_lsp_bindings,
+    parse_attach_endpoint,
+    probe_command,
     resolve_lsp_command,
     save_lsp_bindings,
 )
@@ -70,3 +73,52 @@ def test_auto_bind_missing_servers_uses_agent_observations(tmp_path):
 
     persisted = load_lsp_bindings(tmp_path)
     assert persisted["python"][0] == sys.executable
+
+
+def test_parse_attach_endpoint_tcp():
+    parsed = parse_attach_endpoint("tcp://127.0.0.1:2088")
+    assert parsed == {
+        "transport": "tcp",
+        "host": "127.0.0.1",
+        "port": 2088,
+        "target": "127.0.0.1:2088",
+    }
+
+
+def test_probe_command_attach_tcp_endpoint_available():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        _host, port = server.getsockname()
+
+        probe = probe_command(f"tcp://127.0.0.1:{port}")
+
+    assert probe["available"] is True
+    assert probe["transport"] == "tcp"
+    assert probe["endpoint"] == f"127.0.0.1:{port}"
+
+
+def test_auto_bind_missing_servers_accepts_attach_observations(tmp_path):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        _host, port = server.getsockname()
+        endpoint = f"tcp://127.0.0.1:{port}"
+
+        result = auto_bind_missing_servers(
+            workspace=tmp_path,
+            observations=[
+                {
+                    "language": "c_lsp",
+                    "command": endpoint,
+                }
+            ],
+        )
+
+    c_change = next(change for change in result["changes"] if change["language"] == "c_lsp")
+    assert c_change["source"] == "observation"
+    assert c_change["transport"] == "tcp"
+    assert c_change["command"] == [endpoint]
+
+    persisted = load_lsp_bindings(tmp_path)
+    assert persisted["c_lsp"] == [endpoint]

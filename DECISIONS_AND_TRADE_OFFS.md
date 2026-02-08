@@ -202,3 +202,40 @@ Command resolution precedence is:
 - Cons:
   - Availability checks verify executable reachability, not semantic LSP correctness.
   - Misconfigured persisted bindings can override otherwise-valid environment defaults.
+
+## D-008: Hybrid LSP Runtime Strategy (Bundle Python/JS, Attach C/C++/Java)
+
+- Status: `Accepted`
+- Effective date: `2026-02-08`
+
+### Context
+
+Bundling every language server in official images increases maintenance cost and image complexity.
+At the same time, requiring end users to manually install Python/JavaScript prerequisites creates
+high adoption friction for the most common workflows.
+
+### Decision
+
+ASTrograph ships with a hybrid runtime model:
+
+- Bundled subprocess defaults:
+  - `python` -> `pylsp`
+  - `javascript_lsp` -> `typescript-language-server --stdio`
+- Attach defaults (already-running server endpoints):
+  - `c_lsp` -> `tcp://127.0.0.1:2087`
+  - `cpp_lsp` -> `tcp://127.0.0.1:2088`
+  - `java_lsp` -> `tcp://127.0.0.1:2089`
+
+Attach languages remain fully configurable through `astrograph_lsp_setup` bindings,
+environment overrides, and observation-assisted auto-bind. They are treated as
+optional for readiness checks (`doctor.ready`), while bundled Python/JavaScript remain required.
+
+### Trade-offs
+
+- Pros:
+  - Frictionless Docker adoption for Python/JavaScript-heavy teams.
+  - Leaner maintenance burden than bundling all language runtimes.
+  - Clear path for advanced users to integrate existing host LSP infrastructure.
+- Cons:
+  - C/C++/Java analysis quality depends on external server lifecycle management.
+  - Default attach endpoints may be unreachable in fresh environments until configured.

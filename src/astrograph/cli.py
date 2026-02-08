@@ -15,16 +15,7 @@ from .canonical_hash import weisfeiler_leman_hash
 from .index import CodeStructureIndex
 from .languages.base import node_match
 from .languages.registry import LanguageRegistry
-from .lsp_setup import resolve_lsp_command
-
-
-@dataclass(frozen=True)
-class LSPServerSpec:
-    """Configuration for a bundled LSP-backed language adapter."""
-
-    language_id: str
-    command_env_var: str
-    default_command: tuple[str, ...]
+from .lsp_setup import LSPServerSpec, bundled_lsp_specs, probe_command, resolve_lsp_command
 
 
 @dataclass
@@ -36,25 +27,12 @@ class LSPServerStatus:
     command_source: str  # "binding", "default", or "env"
     executable: str | None
     available: bool
+    transport: str
+    endpoint: str | None
+    required: bool
     installable: bool
     install_command: list[str] | None
     reason: str | None = None
-
-
-def _bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
-    """Return built-in plugin LSP server specs."""
-    return (
-        LSPServerSpec(
-            language_id="python",
-            command_env_var="ASTROGRAPH_PY_LSP_COMMAND",
-            default_command=("pylsp",),
-        ),
-        LSPServerSpec(
-            language_id="javascript_lsp",
-            command_env_var="ASTROGRAPH_JS_LSP_COMMAND",
-            default_command=("typescript-language-server", "--stdio"),
-        ),
-    )
 
 
 def _resolve_lsp_command(spec: LSPServerSpec) -> tuple[list[str], str]:
@@ -78,32 +56,42 @@ def _default_install_command(spec: LSPServerSpec) -> list[str] | None:
 def _lsp_status(spec: LSPServerSpec) -> LSPServerStatus:
     """Compute runtime availability and auto-install options for one server."""
     command, source = _resolve_lsp_command(spec)
-    executable_name = command[0] if command else ""
 
-    if not executable_name:
+    if not command:
         return LSPServerStatus(
             language_id=spec.language_id,
             command=command,
             command_source=source,
             executable=None,
             available=False,
+            transport="subprocess",
+            endpoint=None,
+            required=spec.required,
             installable=False,
             install_command=None,
             reason=f"{spec.command_env_var} resolved to an empty command",
         )
 
-    executable = shutil.which(executable_name)
-    available = executable is not None
+    probe = probe_command(command)
+    available = bool(probe["available"])
+    executable = probe.get("executable")
+    transport = str(probe.get("transport", "subprocess"))
+    endpoint = probe.get("endpoint")
 
     install_command = _default_install_command(spec)
-    installable = source == "default" and install_command is not None
+    installable = transport == "subprocess" and source == "default" and install_command is not None
     reason: str | None = None
 
     if source == "env" and not available:
-        reason = (
-            f"custom command from {spec.command_env_var} was not found; "
-            "auto-install is disabled for custom commands"
-        )
+        if transport == "subprocess":
+            reason = (
+                f"custom command from {spec.command_env_var} was not found; "
+                "auto-install is disabled for custom commands"
+            )
+        else:
+            reason = f"custom endpoint from {spec.command_env_var} is not reachable"
+    elif source == "default" and transport != "subprocess" and not available:
+        reason = "default attach endpoint is not reachable"
     elif not installable and not available:
         reason = "no auto-install command is available"
 
@@ -115,8 +103,11 @@ def _lsp_status(spec: LSPServerSpec) -> LSPServerStatus:
         language_id=spec.language_id,
         command=command,
         command_source=source,
-        executable=executable,
+        executable=executable if isinstance(executable, str) else None,
         available=available,
+        transport=transport,
+        endpoint=endpoint if isinstance(endpoint, str) else None,
+        required=spec.required,
         installable=installable,
         install_command=install_command if installable else None,
         reason=reason,
@@ -125,16 +116,17 @@ def _lsp_status(spec: LSPServerSpec) -> LSPServerStatus:
 
 def _collect_lsp_statuses() -> list[LSPServerStatus]:
     """Collect status for all bundled LSP servers."""
-    return [_lsp_status(spec) for spec in _bundled_lsp_specs()]
+    return [_lsp_status(spec) for spec in bundled_lsp_specs()]
 
 
 def _print_doctor(statuses: list[LSPServerStatus], as_json: bool) -> None:
     """Render `doctor` command output."""
-    missing = [s for s in statuses if not s.available]
+    missing_required = [s for s in statuses if s.required and not s.available]
+    missing_optional = [s for s in statuses if not s.required and not s.available]
 
     if as_json:
         payload = {
-            "ready": not missing,
+            "ready": not missing_required,
             "servers": [
                 {
                     "language": s.language_id,
@@ -142,6 +134,9 @@ def _print_doctor(statuses: list[LSPServerStatus], as_json: bool) -> None:
                     "command": s.command,
                     "command_source": s.command_source,
                     "executable": s.executable,
+                    "transport": s.transport,
+                    "endpoint": s.endpoint,
+                    "required": s.required,
                     "installable": s.installable,
                     "install_command": s.install_command,
                     "reason": s.reason,
@@ -159,16 +154,22 @@ def _print_doctor(statuses: list[LSPServerStatus], as_json: bool) -> None:
         source = f" ({status.command_source})" if status.command_source == "env" else ""
         print(f"[{state}] {status.language_id}: {command}{source}")
         if status.executable:
-            print(f"      executable: {status.executable}")
+            label = "endpoint" if status.transport != "subprocess" else "executable"
+            print(f"      {label}: {status.executable}")
         elif status.installable and status.install_command:
             print(f"      fix: {' '.join(status.install_command)}")
         elif status.reason:
             print(f"      note: {status.reason}")
 
-    if missing:
-        print(f"\nMissing {len(missing)} LSP server(s).")
+    if missing_required:
+        print(f"\nMissing {len(missing_required)} required LSP server(s).")
+    elif missing_optional:
+        print(
+            "\nAll required LSP servers are available. "
+            f"{len(missing_optional)} optional attach endpoint(s) are unavailable."
+        )
     else:
-        print("\nAll bundled LSP servers are available.")
+        print("\nAll required and optional LSP servers are available.")
 
 
 def _run_install_lsp(
@@ -205,19 +206,14 @@ def _run_install_lsp(
         details = stderr.splitlines()[-1] if stderr else f"exit code {completed.returncode}"
         return "failed", details
 
-    refreshed = _lsp_status(
-        LSPServerSpec(
-            language_id=status.language_id,
-            command_env_var=(
-                "ASTROGRAPH_PY_LSP_COMMAND"
-                if status.language_id == "python"
-                else "ASTROGRAPH_JS_LSP_COMMAND"
-            ),
-            default_command=("pylsp",)
-            if status.language_id == "python"
-            else ("typescript-language-server", "--stdio"),
-        )
+    refreshed_spec = next(
+        (spec for spec in bundled_lsp_specs() if spec.language_id == status.language_id),
+        None,
     )
+    if refreshed_spec is None:
+        return "failed", f"Unknown language '{status.language_id}'"
+
+    refreshed = _lsp_status(refreshed_spec)
     if refreshed.available:
         return "installed", command_text
     return "failed", "installer ran but executable still not found"
@@ -437,7 +433,11 @@ def main() -> None:
             )
         }
         if not selected_languages:
-            selected_languages = {status.language_id for status in statuses}
+            selected_languages = {
+                spec.language_id
+                for spec in bundled_lsp_specs()
+                if _default_install_command(spec) is not None
+            }
 
         selected_statuses = [s for s in statuses if s.language_id in selected_languages]
         install_results: list[dict[str, str]] = []

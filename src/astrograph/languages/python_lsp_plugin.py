@@ -7,34 +7,25 @@ from collections.abc import Iterator
 
 import networkx as nx
 
-from ._lsp_base import LSPClient, LSPLanguagePluginBase
+from ._configured_lsp_plugin import ConfiguredLSPLanguagePluginBase
+from ._lsp_base import LSPClient
 from .base import CodeUnit
-from .lsp_client import create_subprocess_client_from_env
 from .python_plugin import PythonPlugin, ast_to_graph, extract_blocks_from_function
 
-_DEFAULT_PY_LSP_COMMAND = ("pylsp",)
-_PY_LSP_COMMAND_ENV = "ASTROGRAPH_PY_LSP_COMMAND"
-_PY_LSP_TIMEOUT_ENV = "ASTROGRAPH_PY_LSP_TIMEOUT"
 
-
-class PythonLSPPlugin(LSPLanguagePluginBase):
+class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
     """Python support via LSP symbols + AST block extraction."""
 
     LANGUAGE_ID = "python"
     LSP_LANGUAGE_ID = "python"
     FILE_EXTENSIONS = frozenset({".py", ".pyi"})
     SKIP_DIRS = frozenset({"__pycache__", "venv", ".venv", ".tox", ".mypy_cache"})
+    DEFAULT_COMMAND = ("pylsp",)
+    COMMAND_ENV_VAR = "ASTROGRAPH_PY_LSP_COMMAND"
+    TIMEOUT_ENV_VAR = "ASTROGRAPH_PY_LSP_TIMEOUT"
 
     def __init__(self, lsp_client: LSPClient | None = None) -> None:
-        super().__init__(
-            lsp_client=lsp_client
-            or create_subprocess_client_from_env(
-                default_command=_DEFAULT_PY_LSP_COMMAND,
-                command_env_var=_PY_LSP_COMMAND_ENV,
-                timeout_env_var=_PY_LSP_TIMEOUT_ENV,
-                language_id=self.LANGUAGE_ID,
-            )
-        )
+        super().__init__(lsp_client=lsp_client)
         self._graph_plugin = PythonPlugin()
 
     def source_to_graph(self, source: str, normalize_ops: bool = False) -> nx.DiGraph:

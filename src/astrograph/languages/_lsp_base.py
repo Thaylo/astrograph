@@ -317,11 +317,10 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
             return f"{base_label}:Op"
         return f"{base_label}:Op({op})"
 
-    def _opens_block(self, stripped_line: str) -> bool:
-        return stripped_line.endswith(_BLOCK_OPENERS)
-
-    def _closes_block_prefix(self, stripped_line: str) -> bool:
-        return stripped_line.startswith(_BLOCK_CLOSERS)
+    def _is_block_boundary(self, stripped_line: str, *, prefix: bool) -> bool:
+        tokens = _BLOCK_CLOSERS if prefix else _BLOCK_OPENERS
+        matcher = stripped_line.startswith if prefix else stripped_line.endswith
+        return matcher(tokens)
 
     def source_to_graph(
         self,
@@ -345,7 +344,7 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
             if not stripped:
                 continue
 
-            if self._closes_block_prefix(stripped) and len(parent_stack) > 1:
+            if self._is_block_boundary(stripped, prefix=True) and len(parent_stack) > 1:
                 parent_stack.pop()
 
             node_id = node_counter
@@ -353,7 +352,7 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
             graph.add_node(node_id, label=self._line_label(stripped, normalize_ops))
             graph.add_edge(parent_stack[-1], node_id)
 
-            if self._opens_block(stripped):
+            if self._is_block_boundary(stripped, prefix=False):
                 parent_stack.append(node_id)
 
         return graph

@@ -899,6 +899,11 @@ class CodeStructureTools(CloseOnExitMixin):
         if normalized_mode == "inspect":
             statuses = collect_lsp_statuses(workspace)
             missing = [status["language"] for status in statuses if not status["available"]]
+            missing_required = [
+                status["language"]
+                for status in statuses
+                if status.get("required", True) and not status["available"]
+            ]
             payload: dict[str, Any] = {
                 "ok": True,
                 "mode": normalized_mode,
@@ -906,17 +911,35 @@ class CodeStructureTools(CloseOnExitMixin):
                 "bindings_path": str(lsp_bindings_path(workspace)),
                 "servers": statuses,
                 "missing_languages": missing,
+                "missing_required_languages": missing_required,
                 "supported_languages": known_languages,
             }
-            if missing:
+            if missing_required:
                 payload["next_step"] = (
                     "Call astrograph_lsp_setup with mode='auto_bind'. "
                     "If still missing, provide observations with language + command."
                 )
+            elif missing:
+                payload["next_step"] = (
+                    "Optional attach endpoints are currently unavailable. "
+                    "Call astrograph_lsp_setup with mode='auto_bind' to configure them."
+                )
+
+            if missing:
                 payload["observation_format"] = {
-                    "language": "python",
-                    "command": ["/absolute/path/to/pylsp"],
+                    "language": "cpp_lsp",
+                    "command": "tcp://127.0.0.1:2088",
                 }
+                payload["observation_examples"] = [
+                    {
+                        "language": "python",
+                        "command": ["/absolute/path/to/pylsp"],
+                    },
+                    {
+                        "language": "java_lsp",
+                        "command": "tcp://127.0.0.1:2089",
+                    },
+                ]
             return self._lsp_setup_result(payload)
 
         if normalized_mode == "auto_bind":

@@ -6,10 +6,12 @@ import json
 import os
 import shlex
 import shutil
+import socket
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 PERSISTENCE_DIR = ".metadata_astrograph"
 LSP_BINDINGS_FILENAME = "lsp_bindings.json"
@@ -23,6 +25,7 @@ class LSPServerSpec:
     command_env_var: str
     default_command: tuple[str, ...]
     probe_commands: tuple[tuple[str, ...], ...] = ()
+    required: bool = True
 
 
 def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
@@ -42,6 +45,27 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
             command_env_var="ASTROGRAPH_JS_LSP_COMMAND",
             default_command=("typescript-language-server", "--stdio"),
             probe_commands=(),
+        ),
+        LSPServerSpec(
+            language_id="c_lsp",
+            command_env_var="ASTROGRAPH_C_LSP_COMMAND",
+            default_command=("tcp://127.0.0.1:2087",),
+            probe_commands=(),
+            required=False,
+        ),
+        LSPServerSpec(
+            language_id="cpp_lsp",
+            command_env_var="ASTROGRAPH_CPP_LSP_COMMAND",
+            default_command=("tcp://127.0.0.1:2088",),
+            probe_commands=(),
+            required=False,
+        ),
+        LSPServerSpec(
+            language_id="java_lsp",
+            command_env_var="ASTROGRAPH_JAVA_LSP_COMMAND",
+            default_command=("tcp://127.0.0.1:2089",),
+            probe_commands=(),
+            required=False,
         ),
     )
 
@@ -114,6 +138,67 @@ def parse_command(command: Sequence[str] | str | None) -> list[str]:
 def format_command(command: Sequence[str]) -> str:
     """Return shell-safe command rendering for user-facing output."""
     return " ".join(shlex.quote(part) for part in parse_command(command))
+
+
+def parse_attach_endpoint(command: Sequence[str] | str | None) -> dict[str, Any] | None:
+    """Parse single-token attach commands like tcp://host:port or unix:///path."""
+    parsed = parse_command(command)
+    if len(parsed) != 1:
+        return None
+
+    token = parsed[0]
+    url = urlparse(token)
+
+    if url.scheme == "tcp":
+        if not url.hostname or url.port is None:
+            return None
+        return {
+            "transport": "tcp",
+            "host": url.hostname,
+            "port": int(url.port),
+            "target": f"{url.hostname}:{int(url.port)}",
+        }
+
+    if url.scheme == "unix":
+        raw_path = url.path or url.netloc
+        if not raw_path:
+            return None
+        path = unquote(raw_path)
+        return {
+            "transport": "unix",
+            "path": path,
+            "target": path,
+        }
+
+    return None
+
+
+def _probe_attach_endpoint(endpoint: dict[str, Any], timeout: float = 0.3) -> dict[str, Any]:
+    """Probe attach endpoint reachability using short socket connect attempts."""
+    transport = endpoint["transport"]
+
+    try:
+        if transport == "tcp":
+            socket.create_connection((endpoint["host"], endpoint["port"]), timeout=timeout).close()
+        elif transport == "unix":
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                sock.connect(str(endpoint["path"]))
+        else:
+            return {
+                "available": False,
+                "executable": None,
+            }
+    except OSError:
+        return {
+            "available": False,
+            "executable": None,
+        }
+
+    return {
+        "available": True,
+        "executable": endpoint["target"],
+    }
 
 
 def load_lsp_bindings(workspace: str | Path | None = None) -> dict[str, list[str]]:
@@ -210,8 +295,8 @@ def resolve_lsp_command(
     return parse_command(default_command), "default"
 
 
-def probe_command(command: Sequence[str]) -> dict[str, Any]:
-    """Check whether a command executable is available on PATH."""
+def probe_command(command: Sequence[str] | str | None) -> dict[str, Any]:
+    """Check whether a command or attach endpoint is reachable."""
     parsed = parse_command(command)
     if not parsed:
         return {
@@ -220,11 +305,23 @@ def probe_command(command: Sequence[str]) -> dict[str, Any]:
             "executable": None,
         }
 
+    endpoint = parse_attach_endpoint(parsed)
+    if endpoint is not None:
+        endpoint_probe = _probe_attach_endpoint(endpoint)
+        return {
+            "command": parsed,
+            "available": endpoint_probe["available"],
+            "executable": endpoint_probe["executable"],
+            "transport": endpoint["transport"],
+            "endpoint": endpoint["target"],
+        }
+
     executable = shutil.which(parsed[0])
     return {
         "command": parsed,
         "available": executable is not None,
         "executable": executable,
+        "transport": "subprocess",
     }
 
 
@@ -243,8 +340,11 @@ def collect_lsp_statuses(workspace: str | Path | None = None) -> list[dict[str, 
         statuses.append(
             {
                 "language": spec.language_id,
+                "required": spec.required,
                 "available": probe["available"],
                 "executable": probe["executable"],
+                "transport": probe.get("transport", "subprocess"),
+                "endpoint": probe.get("endpoint"),
                 "effective_command": effective_command,
                 "effective_source": effective_source,
                 "binding_command": bindings.get(spec.language_id, []),
@@ -304,6 +404,8 @@ def probe_candidates(
                 "command": parsed,
                 "available": probe["available"],
                 "executable": probe["executable"],
+                "transport": probe.get("transport", "subprocess"),
+                "endpoint": probe.get("endpoint"),
             }
         )
 
@@ -344,9 +446,12 @@ def auto_bind_missing_servers(
             probes[spec.language_id] = [
                 {
                     "source": "effective",
+                    "required": spec.required,
                     "command": effective_command,
                     "available": True,
                     "executable": effective_probe["executable"],
+                    "transport": effective_probe.get("transport", "subprocess"),
+                    "endpoint": effective_probe.get("endpoint"),
                 }
             ]
             continue
@@ -361,7 +466,8 @@ def auto_bind_missing_servers(
             unresolved.append(
                 {
                     "language": spec.language_id,
-                    "reason": "No executable command discovered. Provide observations from host search.",
+                    "required": spec.required,
+                    "reason": "No reachable command/endpoint discovered. Provide observations from host search.",
                 }
             )
             continue
@@ -370,9 +476,12 @@ def auto_bind_missing_servers(
         changes.append(
             {
                 "language": spec.language_id,
+                "required": spec.required,
                 "command": selected["command"],
                 "source": selected["source"],
                 "executable": selected["executable"],
+                "transport": selected.get("transport", "subprocess"),
+                "endpoint": selected.get("endpoint"),
             }
         )
 

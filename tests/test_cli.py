@@ -19,6 +19,9 @@ def _status(
     installable: bool = False,
     install_command: list[str] | None = None,
     reason: str | None = None,
+    transport: str = "subprocess",
+    endpoint: str | None = None,
+    required: bool = True,
 ) -> cli.LSPServerStatus:
     return cli.LSPServerStatus(
         language_id=language_id,
@@ -26,6 +29,9 @@ def _status(
         command_source=command_source,
         executable=executable,
         available=available,
+        transport=transport,
+        endpoint=endpoint,
+        required=required,
         installable=installable,
         install_command=install_command,
         reason=reason,
@@ -233,6 +239,26 @@ class TestDoctorCommand:
         payload = json.loads(capsys.readouterr().out)
         assert payload["ready"] is True
         assert len(payload["servers"]) == 2
+
+    def test_doctor_json_optional_attach_missing_is_still_ready(self, capsys):
+        statuses = [
+            _status(language_id="python", available=True, command=["pylsp"], required=True),
+            _status(
+                language_id="c_lsp",
+                available=False,
+                command=["tcp://127.0.0.1:2087"],
+                transport="tcp",
+                endpoint="127.0.0.1:2087",
+                required=False,
+            ),
+        ]
+        with patch("astrograph.cli._collect_lsp_statuses", return_value=statuses):
+            _run_cli(["cli", "doctor", "--json"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ready"] is True
+        optional = next(server for server in payload["servers"] if server["language"] == "c_lsp")
+        assert optional["required"] is False
 
 
 class TestInstallLSPsCommand:

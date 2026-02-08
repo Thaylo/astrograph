@@ -1,5 +1,7 @@
 """Tests for language plugin discovery."""
 
+import pytest
+
 from astrograph.languages.base import BaseLanguagePlugin
 from astrograph.languages.plugin_loader import discover_language_plugins
 
@@ -26,16 +28,18 @@ class EnvPlugin(BaseLanguagePlugin):
         return nx.DiGraph()
 
 
-def test_discover_includes_python_plugin():
-    """Default discovery always includes Python support."""
+@pytest.mark.parametrize("language_id", ["python", "javascript_lsp"])
+def test_discover_includes_default_languages(language_id):
+    """Default discovery includes bundled Python and JavaScript plugins."""
     plugins = discover_language_plugins()
-    assert any(plugin.language_id == "python" for plugin in plugins)
+    assert any(plugin.language_id == language_id for plugin in plugins)
 
 
-def test_discover_includes_javascript_lsp_plugin():
-    """Entry-point discovery includes the JavaScript LSP plugin."""
+def test_discover_includes_attach_plugins():
+    """Default discovery includes attach-model plugins for C/C++/Java."""
     plugins = discover_language_plugins()
-    assert any(plugin.language_id == "javascript_lsp" for plugin in plugins)
+    language_ids = {plugin.language_id for plugin in plugins}
+    assert {"c_lsp", "cpp_lsp", "java_lsp"}.issubset(language_ids)
 
 
 def test_discover_deduplicates_python_language():
@@ -45,18 +49,15 @@ def test_discover_deduplicates_python_language():
     assert language_ids.count("python") == 1
 
 
-def test_discover_loads_plugins_from_env(monkeypatch):
-    """Class paths in ASTROGRAPH_LANGUAGE_PLUGINS are loaded."""
-    monkeypatch.setenv(
-        "ASTROGRAPH_LANGUAGE_PLUGINS",
-        "tests.languages.test_plugin_loader:EnvPlugin",
-    )
+@pytest.mark.parametrize(
+    ("env_value", "expected_language"),
+    [
+        ("tests.languages.test_plugin_loader:EnvPlugin", "envtest"),
+        ("not_a_valid_path", "python"),
+    ],
+)
+def test_discover_handles_env_plugin_paths(monkeypatch, env_value, expected_language):
+    """Env plugin paths can add plugins or fail safely without breaking defaults."""
+    monkeypatch.setenv("ASTROGRAPH_LANGUAGE_PLUGINS", env_value)
     plugins = discover_language_plugins()
-    assert any(plugin.language_id == "envtest" for plugin in plugins)
-
-
-def test_discover_ignores_invalid_env_plugin_path(monkeypatch):
-    """Invalid env paths are skipped without breaking built-in discovery."""
-    monkeypatch.setenv("ASTROGRAPH_LANGUAGE_PLUGINS", "not_a_valid_path")
-    plugins = discover_language_plugins()
-    assert any(plugin.language_id == "python" for plugin in plugins)
+    assert any(plugin.language_id == expected_language for plugin in plugins)

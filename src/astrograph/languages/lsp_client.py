@@ -7,14 +7,15 @@ import json
 import logging
 import os
 import shlex
+import socket
 import subprocess
 import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
-from ..lsp_setup import resolve_lsp_command
+from ..lsp_setup import parse_attach_endpoint, resolve_lsp_command
 from ._lsp_base import LSPClient, LSPPosition, LSPRange, LSPSymbol
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,25 @@ class SubprocessLSPClient(LSPClient):
                     raise RuntimeError(f"LSP error in {method}: {message['error']}")
                 return message.get("result")
 
+    def _shutdown_if_initialized(self, *, force: bool) -> None:
+        if force or not self._initialized:
+            return
+
+        with contextlib.suppress(Exception):
+            self._request(
+                "shutdown",
+                None,
+                timeout=min(self._request_timeout, 1.0),
+                allow_uninitialized=True,
+            )
+            self._notify("exit")
+
+    def _close_quietly(self, resource: Any) -> None:
+        if resource is None:
+            return
+        with contextlib.suppress(Exception):
+            resource.close()
+
     def _notify(self, method: str, params: dict[str, Any] | None = None) -> None:
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
@@ -257,6 +277,17 @@ class SubprocessLSPClient(LSPClient):
             end=self._parse_position(data.get("end")),
         )
 
+    def _parse_symbol_list(self, items: Any) -> list[LSPSymbol]:
+        if not isinstance(items, list):
+            return []
+
+        symbols: list[LSPSymbol] = []
+        for item in items:
+            parsed = self._parse_symbol(item)
+            if parsed is not None:
+                symbols.append(parsed)
+        return symbols
+
     def _parse_symbol(self, data: Any) -> LSPSymbol | None:
         if not isinstance(data, dict):
             return None
@@ -267,13 +298,7 @@ class SubprocessLSPClient(LSPClient):
         # DocumentSymbol shape.
         if "range" in data:
             symbol_range = self._parse_range(data.get("range"))
-            children_raw = data.get("children", [])
-            children: list[LSPSymbol] = []
-            if isinstance(children_raw, list):
-                for child in children_raw:
-                    parsed = self._parse_symbol(child)
-                    if parsed is not None:
-                        children.append(parsed)
+            children = self._parse_symbol_list(data.get("children", []))
             return LSPSymbol(
                 name=name,
                 kind=kind,
@@ -287,15 +312,7 @@ class SubprocessLSPClient(LSPClient):
         return LSPSymbol(name=name, kind=kind, symbol_range=symbol_range)
 
     def _parse_symbols_result(self, result: Any) -> list[LSPSymbol]:
-        if not isinstance(result, list):
-            return []
-
-        symbols: list[LSPSymbol] = []
-        for item in result:
-            parsed = self._parse_symbol(item)
-            if parsed is not None:
-                symbols.append(parsed)
-        return symbols
+        return self._parse_symbol_list(result)
 
     def document_symbols(
         self,
@@ -336,40 +353,174 @@ class SubprocessLSPClient(LSPClient):
             with contextlib.suppress(Exception):
                 self._notify("textDocument/didClose", {"textDocument": {"uri": uri}})
 
+    def _terminate_process(self, proc: subprocess.Popen[bytes]) -> None:
+        if proc.poll() is not None:
+            return
+
+        proc.terminate()
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=1.0)
+
     def close(self, *, force: bool = False) -> None:
         with self._lock:
-            if self._proc is None:
+            proc = self._proc
+            if proc is None:
                 return
 
-            if not force and self._initialized:
-                try:
-                    self._request(
-                        "shutdown",
-                        None,
-                        timeout=min(self._request_timeout, 1.0),
-                        allow_uninitialized=True,
-                    )
-                    self._notify("exit")
-                except Exception:
-                    pass
+            self._shutdown_if_initialized(force=force)
 
-            proc = self._proc
             self._proc = None
             self._initialized = False
-
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=1.0)
+            self._terminate_process(proc)
 
     def __enter__(self) -> SubprocessLSPClient:
         return self
 
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
+
+
+class SocketLSPClient(SubprocessLSPClient):
+    """LSP client that attaches to an already-running server over sockets."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        request_timeout: float = 5.0,
+        initialization_options: dict[str, Any] | None = None,
+    ) -> None:
+        parsed_endpoint = parse_attach_endpoint([endpoint])
+        if parsed_endpoint is None:
+            raise ValueError(f"Invalid attach endpoint: {endpoint}")
+
+        super().__init__(
+            [endpoint],
+            request_timeout=request_timeout,
+            initialization_options=initialization_options,
+        )
+        self._endpoint = parsed_endpoint
+        self._sock: socket.socket | None = None
+        self._stdin: BinaryIO | None = None
+        self._stdout: BinaryIO | None = None
+
+    def _start_process(self) -> bool:
+        if self._disabled:
+            return False
+
+        if self._sock is not None:
+            return True
+
+        try:
+            transport = self._endpoint["transport"]
+            if transport == "tcp":
+                sock = socket.create_connection(
+                    (self._endpoint["host"], self._endpoint["port"]),
+                    timeout=self._request_timeout,
+                )
+            else:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(self._request_timeout)
+                sock.connect(str(self._endpoint["path"]))
+
+            sock.settimeout(self._request_timeout)
+            self._sock = sock
+            self._stdin = sock.makefile("wb")
+            self._stdout = sock.makefile("rb")
+        except OSError as exc:
+            self._disabled = True
+            logger.warning("Failed to attach to LSP endpoint %s: %s", self._command[0], exc)
+            return False
+
+        self._initialized = False
+        self._next_id = 1
+        return True
+
+    def _send_message(self, payload: dict[str, Any]) -> None:
+        if self._stdin is None:
+            raise RuntimeError("LSP socket writer is not available")
+
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+
+        self._stdin.write(header)
+        self._stdin.write(body)
+        self._stdin.flush()
+
+    def _read_message(self, timeout: float) -> dict[str, Any] | None:
+        if self._stdout is None or self._sock is None:
+            return None
+
+        stdout = self._stdout
+        deadline = time.monotonic() + timeout
+
+        headers: dict[str, str] = {}
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+
+            self._sock.settimeout(remaining)
+            try:
+                raw = stdout.readline()
+            except OSError:
+                return None
+
+            if not raw:
+                return None
+
+            line = raw.decode("ascii", errors="replace").strip()
+            if not line:
+                break
+
+            if ":" not in line:
+                continue
+
+            name, value = line.split(":", 1)
+            headers[name.strip().lower()] = value.strip()
+
+        content_length = int(headers.get("content-length", "0"))
+        if content_length <= 0:
+            return None
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+
+        self._sock.settimeout(remaining)
+        try:
+            payload = stdout.read(content_length)
+        except OSError:
+            return None
+
+        if len(payload) != content_length:
+            return None
+
+        decoded = json.loads(payload.decode("utf-8"))
+        return decoded if isinstance(decoded, dict) else None
+
+    def close(self, *, force: bool = False) -> None:
+        with self._lock:
+            sock = self._sock
+            if sock is None:
+                return
+
+            self._shutdown_if_initialized(force=force)
+
+            stdin = self._stdin
+            stdout = self._stdout
+
+            self._sock = None
+            self._stdin = None
+            self._stdout = None
+            self._initialized = False
+
+            self._close_quietly(stdin)
+            self._close_quietly(stdout)
+            self._close_quietly(sock)
 
 
 def create_subprocess_client_from_env(
@@ -380,8 +531,8 @@ def create_subprocess_client_from_env(
     language_id: str,
     workspace: str | Path | None = None,
     default_timeout: float = 5.0,
-) -> SubprocessLSPClient:
-    """Create a subprocess LSP client with binding/env/default command resolution."""
+) -> LSPClient:
+    """Create an LSP client from binding/env/default command resolution."""
     command, _source = resolve_lsp_command(
         language_id=language_id,
         default_command=default_command,
@@ -395,4 +546,9 @@ def create_subprocess_client_from_env(
     except ValueError:
         timeout = default_timeout
 
-    return SubprocessLSPClient(command, request_timeout=max(timeout, 0.1))
+    request_timeout = max(timeout, 0.1)
+    endpoint = parse_attach_endpoint(command)
+    if endpoint is not None:
+        return SocketLSPClient(command[0], request_timeout=request_timeout)
+
+    return SubprocessLSPClient(command, request_timeout=request_timeout)

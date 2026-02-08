@@ -1,6 +1,6 @@
 [project]
 name = "astrograph"
-version = "0.5.22"
+version = "0.5.23"
 description = "Detect structural code duplication using AST graph isomorphism"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,6 +39,9 @@ astrograph-cli = "astrograph.cli:main"
 [project.entry-points."astrograph.languages"]
 python = "astrograph.languages.python_lsp_plugin:PythonLSPPlugin"
 javascript_lsp = "astrograph.languages.javascript_lsp_plugin:JavaScriptLSPPlugin"
+c_lsp = "astrograph.languages.c_lsp_plugin:CLSPPlugin"
+cpp_lsp = "astrograph.languages.cpp_lsp_plugin:CppLSPPlugin"
+java_lsp = "astrograph.languages.java_lsp_plugin:JavaLSPPlugin"
 
 [build-system]
 requires = ["hatchling"]

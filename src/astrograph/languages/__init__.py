@@ -9,7 +9,7 @@ from .base import (
     compute_label_histogram,
     node_match,
 )
-from .lsp_client import SubprocessLSPClient
+from .lsp_client import SocketLSPClient, SubprocessLSPClient
 from .plugin_loader import discover_language_plugins
 from .registry import LanguageRegistry
 
@@ -23,6 +23,7 @@ __all__ = [
     "LSPRange",
     "LSPSymbol",
     "LanguagePlugin",
+    "SocketLSPClient",
     "SubprocessLSPClient",
     "LanguageRegistry",
     "compute_label_histogram",

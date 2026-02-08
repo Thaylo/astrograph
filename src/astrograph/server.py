@@ -13,7 +13,7 @@ Provides 12 tools (all prefixed with astrograph_):
 - astrograph_unsuppress_batch: Remove suppression from multiple hashes
 - astrograph_list_suppressions: List all suppressed hashes
 - astrograph_status: Check server readiness (returns instantly even during indexing)
-- astrograph_lsp_setup: Inspect/bind LSP commands for bundled language plugins
+- astrograph_lsp_setup: Inspect/bind LSP commands or attach endpoints for bundled language plugins
 - astrograph_metadata_erase: Erase all persisted metadata
 - astrograph_metadata_recompute_baseline: Erase metadata and re-index from scratch
 """
@@ -163,7 +163,7 @@ def create_server() -> Server:
                         },
                         "language": {
                             "type": "string",
-                            "description": "Language ID for bind/unbind (python or javascript_lsp)",
+                            "description": "Language ID for bind/unbind (python, javascript_lsp, c_lsp, cpp_lsp, java_lsp)",
                         },
                         "command": {
                             "oneOf": [
