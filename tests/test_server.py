@@ -797,6 +797,9 @@ class TestLSPSetupTool:
         action_ids = [action["id"] for action in actions]
         assert "verify_cpp_lsp_protocol" in action_ids
         assert "ensure_compile_commands_cpp_lsp" in action_ids
+        verify_cpp = next(action for action in actions if action["id"] == "verify_cpp_lsp_protocol")
+        assert "which clangd" in verify_cpp["host_search_commands"]
+        assert "which ccls" in verify_cpp["host_search_commands"]
 
     def test_lsp_setup_guidance_adds_attach_ready_verification_actions(self, tools):
         payload = {

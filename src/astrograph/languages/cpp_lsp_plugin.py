@@ -212,7 +212,7 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
 
         if plus_binding == "unknown":
             notes.append(
-                "C++ plus-expression types are partially unresolved; clangd hover/type info would improve confidence."
+                "C++ plus-expression types are partially unresolved; C++ LSP hover/type info would improve confidence."
             )
 
         extra_coverage = 0.0

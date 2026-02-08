@@ -1178,9 +1178,7 @@ class CodeStructureTools(CloseOnExitMixin):
         if language_id in {"c_lsp", "cpp_lsp"}:
             return (
                 f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" '
-                '"EXEC:clangd --background-index --log=error '
-                "--compile-commands-dir=<host_project>/build "
-                '--path-mappings=/workspace=<host_project>",stderr'
+                '"EXEC:<c_or_cpp_lsp_server_command>",stderr'
             )
         if language_id == "java_lsp":
             return f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" "EXEC:jdtls",stderr'
@@ -1338,7 +1336,9 @@ class CodeStructureTools(CloseOnExitMixin):
                         ),
                         "host_search_commands": [
                             "which clangd",
+                            "which ccls",
                             "clangd --version",
+                            "ccls --version",
                         ]
                         if language in {"c_lsp", "cpp_lsp"}
                         else [],
@@ -1362,8 +1362,8 @@ class CodeStructureTools(CloseOnExitMixin):
                         "language": language,
                         "why": (
                             compile_commands.get("reason")
-                            or "clangd requires compile_commands.json for production-grade type "
-                            "and operator resolution."
+                            or "C/C++ language servers require compile_commands.json for "
+                            "production-grade type and operator resolution."
                         ),
                         "host_search_commands": [
                             "find . -maxdepth 4 -name compile_commands.json",
@@ -1554,7 +1554,7 @@ class CodeStructureTools(CloseOnExitMixin):
             payload["agent_directive"] = (
                 "cpp_lsp endpoint is reachable but not production-verified. "
                 "Treat it as unavailable and execute recommended_actions "
-                "(real clangd endpoint + valid compile_commands.json)."
+                "(real C++ LSP endpoint, such as clangd/ccls, + valid compile_commands.json)."
             )
         elif missing:
             payload["agent_directive"] = (
@@ -1675,7 +1675,8 @@ class CodeStructureTools(CloseOnExitMixin):
             elif cpp_reachable_only:
                 payload["next_step"] = (
                     "cpp_lsp is reachable but not production-verified. "
-                    "Use a real clangd endpoint and a valid compile_commands.json, "
+                    "Use a real C++ LSP endpoint (for example clangd/ccls) and a valid "
+                    "compile_commands.json, "
                     "then re-run auto_bind and inspect."
                 )
             elif missing:

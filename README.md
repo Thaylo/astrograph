@@ -76,9 +76,9 @@ The codebase is auto-indexed at startup and re-indexed on file changes. Then:
 1. `astrograph_analyze()` - Find existing duplicates
 2. Use `astrograph_write` / `astrograph_edit` - They'll block duplicates automatically
 
-## First C++ Project (Docker + Host `clangd`)
+## First C++ Project (Docker + Host C++ LSP)
 
-Use this exact flow for a first-time C++ setup where ASTrograph runs in Docker and `clangd` runs on the host (MacOS/Unix).
+Use this exact flow for a first-time C++ setup where ASTrograph runs in Docker and a real C++ language server runs on the host (MacOS/Unix).
 
 ### 1) Prepare a tiny C++ workspace with `compile_commands.json`
 
@@ -105,17 +105,23 @@ PROJECT="$(pwd)"
 sed -i.bak "s|__PROJECT_ROOT__|${PROJECT}|g" build/compile_commands.json && rm -f build/compile_commands.json.bak
 ```
 
-### 2) Start a host TCP bridge for `clangd` on port `2088`
+### 2) Start a host TCP bridge for your C++ LSP server on port `2088`
 
 ```bash
 PORT=2088
 PROJECT="$(pwd)"
 
+# Example A: clangd
 socat "TCP-LISTEN:${PORT},bind=0.0.0.0,reuseaddr,fork" \
   "EXEC:clangd --background-index --log=error --compile-commands-dir=${PROJECT}/build --path-mappings=/workspace=${PROJECT},stderr"
+
+# Example B: ccls
+socat "TCP-LISTEN:${PORT},bind=0.0.0.0,reuseaddr,fork" \
+  "EXEC:ccls,stderr"
 ```
 
 Keep this terminal open while testing.
+For ccls, make sure `compile_commands.json` is discoverable from the project root.
 
 ### 3) Configure MCP to run ASTrograph in Docker
 
@@ -160,7 +166,7 @@ ASTrograph now validates C++ attach endpoints beyond raw TCP reachability.
 
 - `verification_state="verified"`: endpoint passed LSP initialize + semantic probe, and a valid `compile_commands.json` is visible.
 - `verification_state="reachable_only"`: endpoint accepted TCP but failed protocol/semantic/compile-db checks.
-- In production mode (default), `reachable_only` is treated as unavailable for `cpp_lsp` (fail-closed nudges).
+- In production mode (default), `reachable_only` is treated as unavailable for `cpp_lsp` (fail-closed nudges to real C++ LSP endpoints).
 
 Validation mode:
 - `ASTROGRAPH_LSP_VALIDATION_MODE=production` (default): strict for `cpp_lsp`

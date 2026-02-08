@@ -66,8 +66,9 @@ _LANGUAGE_VARIANT_POLICY: dict[str, dict[str, Any]] = {
         "supported": ["C++17", "C++20", "C++23"],
         "best_effort": ["C++14"],
         "notes": (
-            "Use clangd with compile_commands.json for template/operator resolution and "
-            "stronger semantic confidence."
+            "Use a production C++ language server (for example clangd or ccls) "
+            "with compile_commands.json for template/operator resolution and stronger "
+            "semantic confidence."
         ),
     },
     "java_lsp": {
@@ -636,15 +637,29 @@ def _evaluate_version_status(
             state = "unsupported"
             reason = "typescript-language-server major version is below supported range."
     elif language_id in {"c_lsp", "cpp_lsp"}:
-        if major >= 16:
-            state = "supported"
-            reason = "clangd major version is in supported range (>=16)."
-        elif major == 15:
+        detected_lower = (detected or "").lower()
+        if "clangd" in detected_lower:
+            if major >= 16:
+                state = "supported"
+                reason = "clangd major version is in supported range (>=16)."
+            elif major == 15:
+                state = "best_effort"
+                reason = "clangd 15 is accepted as best-effort."
+            else:
+                state = "unsupported"
+                reason = "clangd major version is below supported range."
+        elif "ccls" in detected_lower:
             state = "best_effort"
-            reason = "clangd 15 is accepted as best-effort."
+            reason = (
+                "ccls compatibility is treated as best-effort; rely on protocol and "
+                "compile database verification."
+            )
         else:
-            state = "unsupported"
-            reason = "clangd major version is below supported range."
+            state = "best_effort"
+            reason = (
+                "Non-clangd C/C++ language server detected; compatibility is best-effort "
+                "and verified through protocol and compile database checks."
+            )
     elif language_id == "java_lsp" and major >= 1:
         state = "best_effort"
         reason = "Java adapter version probing is best-effort; rely on workspace JDK checks."

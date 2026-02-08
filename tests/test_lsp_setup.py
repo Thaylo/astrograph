@@ -217,6 +217,42 @@ def test_language_variant_policy_scoped():
     assert "supported" in scoped["cpp_lsp"]
 
 
+def test_evaluate_version_status_cpp_clangd_supported():
+    status = lsp_setup._evaluate_version_status(
+        language_id="cpp_lsp",
+        detected="clangd version 17.0.6",
+        probe_kind="server",
+        transport="subprocess",
+        available=True,
+    )
+    assert status["state"] == "supported"
+    assert "clangd" in status["reason"]
+
+
+def test_evaluate_version_status_cpp_ccls_best_effort():
+    status = lsp_setup._evaluate_version_status(
+        language_id="cpp_lsp",
+        detected="ccls version 0.20250117",
+        probe_kind="server",
+        transport="subprocess",
+        available=True,
+    )
+    assert status["state"] == "best_effort"
+    assert "ccls" in status["reason"]
+
+
+def test_evaluate_version_status_cpp_non_clangd_best_effort():
+    status = lsp_setup._evaluate_version_status(
+        language_id="cpp_lsp",
+        detected="mycpp-lsp 2.4.1",
+        probe_kind="server",
+        transport="subprocess",
+        available=True,
+    )
+    assert status["state"] == "best_effort"
+    assert "Non-clangd C/C++ language server" in status["reason"]
+
+
 def test_collect_lsp_statuses_cpp_fail_closed_when_reachable_only_in_production(
     tmp_path, monkeypatch
 ):
