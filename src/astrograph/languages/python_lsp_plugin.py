@@ -307,6 +307,23 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
             return "plain"
         return None
 
+    @staticmethod
+    def _append_set_signal(
+        signals: list[SemanticSignal],
+        items: set[str],
+        key: str,
+        confidence: float,
+    ) -> None:
+        """Append a sorted, comma-joined set signal."""
+        signals.append(
+            SemanticSignal(
+                key=key,
+                value=",".join(sorted(items)),
+                confidence=confidence,
+                origin="ast",
+            )
+        )
+
     def extract_semantic_profile(
         self,
         source: str,
@@ -327,14 +344,7 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
         # 1. Dunder methods
         dunders = self._collect_dunder_methods(tree)
         if dunders:
-            signals.append(
-                SemanticSignal(
-                    key="python.dunder_methods.defined",
-                    value=",".join(sorted(dunders)),
-                    confidence=0.95,
-                    origin="ast",
-                )
-            )
+            self._append_set_signal(signals, dunders, "python.dunder_methods.defined", 0.95)
             extra_coverage += 0.15
 
         # 2. Annotation density (always emitted)
@@ -352,14 +362,7 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
         # 3. Decorators
         decorators = self._collect_decorators(tree)
         if decorators:
-            signals.append(
-                SemanticSignal(
-                    key="python.decorators.present",
-                    value=",".join(sorted(decorators)),
-                    confidence=0.95,
-                    origin="ast",
-                )
-            )
+            self._append_set_signal(signals, decorators, "python.decorators.present", 0.95)
             extra_coverage += 0.10
 
         # 4. Async constructs (always emitted)

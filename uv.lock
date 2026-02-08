@@ -31,9 +31,10 @@ wheels = [
 
 [[package]]
 name = "astrograph"
-version = "0.5.37"
+version = "0.5.39"
 source = { editable = "." }
 dependencies = [
+    { name = "esprima" },
     { name = "mcp" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -59,6 +60,7 @@ treesitter = [
 
 [package.metadata]
 requires-dist = [
+    { name = "esprima", specifier = ">=4.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "networkx", specifier = ">=3.0" },
@@ -444,6 +446,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/52/d8/8abe80d62c5dce107
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/7b/af3d0da15bed3a8665419bb3a630585756920f4ad67abfdfef26240ebcc0/docstring_to_markdown-0.17-py3-none-any.whl", hash = "sha256:fd7d5094aa83943bf5f9e1a13701866b7c452eac19765380dead666e36d3711c", size = 23479, upload-time = "2025-05-02T15:09:06.676Z" },
 ]
+
+[[package]]
+name = "esprima"
+version = "4.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/a1/50fccd68a12bcfc27adfc9969c090286670a9109a0259f3f70943390b721/esprima-4.0.1.tar.gz", hash = "sha256:08db1a876d3c2910db9cfaeb83108193af5411fc3a3a66ebefacd390d21323ee", size = 47021, upload-time = "2018-08-24T13:59:11.374Z" }
 
 [[package]]
 name = "exceptiongroup"

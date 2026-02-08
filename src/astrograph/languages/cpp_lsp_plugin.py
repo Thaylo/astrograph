@@ -9,6 +9,14 @@ from .base import SemanticProfile, SemanticSignal
 
 _CPP_USER_TYPE_RE = re.compile(r"\b(?:class|struct)\s+([A-Za-z_][A-Za-z0-9_]*)")
 _CPP_OPERATOR_PLUS_DECL_RE = re.compile(r"\boperator\s*\+\s*\(")
+
+# -- New semantic signal patterns --
+_CPP_TEMPLATE_RE = re.compile(r"\btemplate\s*<")
+_CPP_VIRTUAL_RE = re.compile(r"\bvirtual\b")
+_CPP_OVERRIDE_RE = re.compile(r"\boverride\b")
+_CPP_NAMESPACE_RE = re.compile(r"\bnamespace\s+([A-Za-z_]\w*)")
+_CPP_CONST_METHOD_RE = re.compile(r"\)\s*const\b")
+_CPP_CONSTEXPR_RE = re.compile(r"\bconstexpr\b")
 _CPP_PLUS_EXPR_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*([A-Za-z_][A-Za-z0-9_]*)\b")
 _CPP_FUNCTION_SIG_RE = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9_:<>]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^()]*)\)"
@@ -220,6 +228,72 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
             extra_coverage += 0.2
         if plus_binding != "absent":
             extra_coverage += 0.4
+
+        # 3. Template presence (always emitted)
+        has_template = bool(_CPP_TEMPLATE_RE.search(source))
+        signals.append(
+            SemanticSignal(
+                key="cpp.template.present",
+                value="yes" if has_template else "no",
+                confidence=0.95,
+                origin="syntax",
+            )
+        )
+        extra_coverage += 0.10
+
+        # 4. Virtual / override (always emitted)
+        has_virtual = bool(_CPP_VIRTUAL_RE.search(source))
+        has_override = bool(_CPP_OVERRIDE_RE.search(source))
+        if has_virtual and has_override:
+            virtual_val = "both"
+        elif has_virtual:
+            virtual_val = "virtual"
+        elif has_override:
+            virtual_val = "override"
+        else:
+            virtual_val = "none"
+        signals.append(
+            SemanticSignal(
+                key="cpp.virtual_override",
+                value=virtual_val,
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+        extra_coverage += 0.10
+
+        # 5. Namespace names (always emitted)
+        namespaces = sorted({m.group(1) for m in _CPP_NAMESPACE_RE.finditer(source)})
+        signals.append(
+            SemanticSignal(
+                key="cpp.namespace",
+                value=",".join(namespaces) if namespaces else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+        extra_coverage += 0.05
+
+        # 6. Const correctness (always emitted)
+        has_const_method = bool(_CPP_CONST_METHOD_RE.search(source))
+        has_constexpr = bool(_CPP_CONSTEXPR_RE.search(source))
+        if has_const_method and has_constexpr:
+            const_val = "both"
+        elif has_const_method:
+            const_val = "const_method"
+        elif has_constexpr:
+            const_val = "constexpr"
+        else:
+            const_val = "none"
+        signals.append(
+            SemanticSignal(
+                key="cpp.const_correctness",
+                value=const_val,
+                confidence=0.85,
+                origin="syntax",
+            )
+        )
+        extra_coverage += 0.05
 
         return SemanticProfile(
             signals=tuple(signals),

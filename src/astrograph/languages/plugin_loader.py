@@ -14,6 +14,7 @@ PLUGIN_PATHS_ENV_VAR = "ASTROGRAPH_LANGUAGE_PLUGINS"
 DEFAULT_PLUGIN_CLASS_PATHS = (
     "astrograph.languages.python_lsp_plugin:PythonLSPPlugin",
     "astrograph.languages.javascript_lsp_plugin:JavaScriptLSPPlugin",
+    "astrograph.languages.typescript_lsp_plugin:TypeScriptLSPPlugin",
     "astrograph.languages.c_lsp_plugin:CLSPPlugin",
     "astrograph.languages.cpp_lsp_plugin:CppLSPPlugin",
     "astrograph.languages.java_lsp_plugin:JavaLSPPlugin",

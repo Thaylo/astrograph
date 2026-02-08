@@ -899,12 +899,6 @@ def _probe_attach_endpoint(endpoint: dict[str, Any], timeout: float = 0.3) -> di
             # Try all resolved addresses (IPv4/IPv6) so one failing family
             # does not mask a reachable endpoint.
             addrinfos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            if not addrinfos:
-                return {
-                    "available": False,
-                    "executable": None,
-                }
-
             connected = False
             for family, socktype, proto, _canonname, sockaddr in addrinfos:
                 try:

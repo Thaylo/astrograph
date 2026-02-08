@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # Persistence directory name for cached index
 PERSISTENCE_DIR = ".metadata_astrograph"
 LEGACY_ANALYSIS_REPORT = "analysis_report.txt"
-_SEMANTIC_MODES = frozenset({"off", "assist", "strict"})
+_SEMANTIC_MODES = frozenset({"off", "annotate", "differentiate"})
 _MUTATING_TOOL_NAMES = frozenset(
     {
         "edit",
@@ -1060,7 +1060,9 @@ class CodeStructureTools(CloseOnExitMixin):
         """Compare two code snippets with structural and optional semantic checks."""
         mode = semantic_mode.strip().lower()
         if mode not in _SEMANTIC_MODES:
-            return ToolResult("Invalid semantic_mode. Supported values: off, assist, strict.")
+            return ToolResult(
+                "Invalid semantic_mode. Supported values: off, annotate, differentiate."
+            )
 
         plugin = LanguageRegistry.get().get_plugin(language)
         if plugin is None:
@@ -1085,12 +1087,12 @@ class CodeStructureTools(CloseOnExitMixin):
                 "astrograph_lsp_setup(mode='inspect', language='"
                 f"{language}')."
             )
-            if mode == "assist":
+            if mode == "annotate":
                 return ToolResult(
                     f"{structural_message} SEMANTIC_INCONCLUSIVE: {reason}. {guidance}"
                 )
             return ToolResult(
-                "INCONCLUSIVE: strict semantic mode could not reach high-confidence overlap. "
+                "INCONCLUSIVE: differentiate mode could not reach high-confidence overlap. "
                 f"{reason}. {guidance}"
             )
 
@@ -1098,7 +1100,7 @@ class CodeStructureTools(CloseOnExitMixin):
             semantic_match_text = (
                 f"SEMANTIC_MATCH: compared {', '.join(matched)}." if matched else "SEMANTIC_MATCH."
             )
-            if mode == "assist":
+            if mode == "annotate":
                 return ToolResult(f"{structural_message} {semantic_match_text}")
             if structural_kind == "equivalent":
                 return ToolResult(
@@ -1108,7 +1110,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
         mismatch_text = "; ".join(mismatches[:3])
         if structural_kind == "equivalent":
-            if mode == "assist":
+            if mode == "annotate":
                 return ToolResult(
                     "EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: " f"{mismatch_text}."
                 )

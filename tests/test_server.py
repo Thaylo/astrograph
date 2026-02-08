@@ -30,6 +30,7 @@ def _clear_lsp_env(monkeypatch):
     for key in (
         "ASTROGRAPH_PY_LSP_COMMAND",
         "ASTROGRAPH_JS_LSP_COMMAND",
+        "ASTROGRAPH_TS_LSP_COMMAND",
         "ASTROGRAPH_C_LSP_COMMAND",
         "ASTROGRAPH_CPP_LSP_COMMAND",
         "ASTROGRAPH_JAVA_LSP_COMMAND",
@@ -464,49 +465,49 @@ class TestCompare:
         )
         assert "Invalid semantic_mode" in result.text
 
-    def test_compare_strict_semantic_mode_equivalent_with_matching_signals(self, tools):
+    def test_compare_differentiate_semantic_mode_equivalent_with_matching_signals(self, tools):
         # Python now always emits type_annotation.density and async.present,
         # so two structurally identical snippets with matching signals → EQUIVALENT.
         result = tools.compare(
             "def one(): return 1",
             "def two(): return 2",
-            semantic_mode="strict",
+            semantic_mode="differentiate",
         )
         assert "EQUIVALENT" in result.text
 
-    def test_compare_cpp_semantic_mismatch_assist(self, tools):
+    def test_compare_cpp_semantic_mismatch_annotate(self, tools):
         builtin_plus = "int add(int a, int b) { return a + b; }"
         custom_plus = "Vec add(Vec a, Vec b) { return a + b; }"
         result = tools.compare(
             builtin_plus,
             custom_plus,
             language="cpp_lsp",
-            semantic_mode="assist",
+            semantic_mode="annotate",
         )
         assert "SEMANTIC_MISMATCH" in result.text
         assert "operator.plus.binding" in result.text
 
-    def test_compare_cpp_semantic_mismatch_strict(self, tools):
+    def test_compare_cpp_semantic_mismatch_differentiate(self, tools):
         builtin_plus = "int add(int a, int b) { return a + b; }"
         custom_plus = "Vec add(Vec a, Vec b) { return a + b; }"
         result = tools.compare(
             builtin_plus,
             custom_plus,
             language="cpp_lsp",
-            semantic_mode="strict",
+            semantic_mode="differentiate",
         )
         assert "DIFFERENT" in result.text
 
     # -- Python semantic profiling tests --
 
-    def test_compare_python_semantic_async_vs_sync_assist(self, tools):
+    def test_compare_python_semantic_async_vs_sync_annotate(self, tools):
         sync_code = "def fetch(url: str) -> str:\n    return url"
         async_code = "async def fetch(url: str) -> str:\n    return url"
         result = tools.compare(
             sync_code,
             async_code,
             language="python",
-            semantic_mode="assist",
+            semantic_mode="annotate",
         )
         assert "SEMANTIC_MISMATCH" in result.text
         assert "python.async.present" in result.text
@@ -518,7 +519,7 @@ class TestCompare:
             annotated,
             unannotated,
             language="python",
-            semantic_mode="assist",
+            semantic_mode="annotate",
         )
         assert "SEMANTIC_MISMATCH" in result.text
         assert "python.type_annotation.density" in result.text
@@ -530,7 +531,7 @@ class TestCompare:
             numeric,
             string,
             language="python",
-            semantic_mode="strict",
+            semantic_mode="differentiate",
         )
         assert "DIFFERENT" in result.text
 
@@ -541,7 +542,7 @@ class TestCompare:
             code1,
             code2,
             language="python",
-            semantic_mode="strict",
+            semantic_mode="differentiate",
         )
         assert "EQUIVALENT" in result.text
 
@@ -558,9 +559,158 @@ class TestCompare:
             dataclass_code,
             plain_code,
             language="python",
-            semantic_mode="assist",
+            semantic_mode="annotate",
         )
         assert "SEMANTIC_MISMATCH" in result.text
+
+    # -- JavaScript semantic profiling tests --
+
+    def test_compare_js_semantic_async_vs_sync_annotate(self, tools):
+        sync_code = "function fetchData(url) { return fetch(url); }"
+        async_code = "async function fetchData(url) { return await fetch(url); }"
+        result = tools.compare(
+            sync_code,
+            async_code,
+            language="javascript_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "javascript.async.present" in result.text
+
+    def test_compare_js_semantic_esm_vs_commonjs(self, tools):
+        esm = "import { add } from './math';\nexport function sum(a, b) { return a + b; }"
+        cjs = "const { add } = require('./math');\nmodule.exports = function sum(a, b) { return a + b; }"
+        result = tools.compare(
+            esm,
+            cjs,
+            language="javascript_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "javascript.module_system" in result.text
+
+    def test_compare_js_semantic_typed_vs_untyped(self, tools):
+        typed = "function add(a: number, b: number): number { return a + b; }"
+        untyped = "function add(a, b) { return a + b; }"
+        result = tools.compare(
+            typed,
+            untyped,
+            language="javascript_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "javascript.type_system" in result.text
+
+    def test_compare_js_semantic_class_vs_prototype(self, tools):
+        es6_class = (
+            "class Animal {\n"
+            "  constructor(name) { this.name = name; }\n"
+            "  speak() { return this.name; }\n"
+            "}"
+        )
+        prototype = (
+            "function Animal(name) { this.name = name; }\n"
+            "Animal.prototype.speak = function() { return this.name; };"
+        )
+        result = tools.compare(
+            es6_class,
+            prototype,
+            language="javascript_lsp",
+            semantic_mode="differentiate",
+        )
+        assert "DIFFERENT" in result.text
+
+    def test_compare_js_semantic_equivalent_sync(self, tools):
+        code1 = "function add(a, b) { return a + b; }"
+        code2 = "function sum(x, y) { return x + y; }"
+        result = tools.compare(
+            code1,
+            code2,
+            language="javascript_lsp",
+            semantic_mode="differentiate",
+        )
+        assert "EQUIVALENT" in result.text
+
+    # -- JavaScript esprima AST graph tests --
+
+    def test_compare_js_esprima_structural_match(self, tools):
+        """Two structurally identical JS functions match via esprima AST."""
+        code1 = "function add(a, b) { return a + b; }"
+        code2 = "function sum(x, y) { return x + y; }"
+        result = tools.compare(code1, code2, language="javascript_lsp")
+        assert any(exp in result.text for exp in ["EQUIVALENT", "EXACT_MATCH"])
+
+    def test_compare_js_esprima_structural_different(self, tools):
+        """Different control flow produces DIFFERENT via esprima AST."""
+        code1 = "function f(x) { return x + 1; }"
+        code2 = "function f(x) { if (x > 0) { return x; } else { return -x; } }"
+        result = tools.compare(code1, code2, language="javascript_lsp")
+        assert "DIFFERENT" in result.text
+
+    def test_compare_js_arrow_vs_function(self, tools):
+        """Arrow function vs function declaration → DIFFERENT via esprima."""
+        code1 = "const add = (a, b) => a + b;"
+        code2 = "function add(a, b) { return a + b; }"
+        result = tools.compare(code1, code2, language="javascript_lsp")
+        assert "DIFFERENT" in result.text
+
+    # -- C++ semantic signal tests --
+
+    def test_compare_cpp_template_vs_non_template(self, tools):
+        """Template vs non-template function triggers SEMANTIC_MISMATCH."""
+        template_code = "template <typename T>\nT add(T a, T b) { return a + b; }"
+        non_template = "int add(int a, int b) { return a + b; }"
+        result = tools.compare(
+            template_code,
+            non_template,
+            language="cpp_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "cpp.template.present" in result.text
+
+    def test_compare_cpp_virtual_vs_override(self, tools):
+        """virtual vs override triggers SEMANTIC_MISMATCH."""
+        virtual_code = "virtual void draw() { }"
+        override_code = "void draw() override { }"
+        result = tools.compare(
+            virtual_code,
+            override_code,
+            language="cpp_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "cpp.virtual_override" in result.text
+
+    # -- TypeScript tests --
+
+    def test_compare_ts_structural_match(self, tools):
+        """Two identical TS functions match structurally."""
+        code1 = "function add(a: number, b: number): number { return a + b; }"
+        code2 = "function sum(x: number, y: number): number { return x + y; }"
+        result = tools.compare(code1, code2, language="typescript_lsp")
+        assert any(exp in result.text for exp in ["EQUIVALENT", "EXACT_MATCH"])
+
+    def test_compare_ts_generic_vs_non_generic(self, tools):
+        """Generic vs plain function → SEMANTIC_MISMATCH."""
+        generic = "function identity<T>(x: T): T { return x; }"
+        plain = "function identity(x: any): any { return x; }"
+        result = tools.compare(
+            generic,
+            plain,
+            language="typescript_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "typescript.generic.present" in result.text
+
+    def test_compare_ts_vs_js_same_structure(self, tools):
+        """TS function structurally matches equivalent JS when compared as TS."""
+        ts_code = "function add(a: number, b: number): number { return a + b; }"
+        js_code = "function add(a, b) { return a + b; }"
+        result = tools.compare(ts_code, js_code, language="typescript_lsp")
+        # Both reduce to same structure after TS annotation stripping
+        assert any(exp in result.text for exp in ["EQUIVALENT", "EXACT_MATCH", "SIMILAR"])
 
 
 class TestCallTool:
@@ -601,7 +751,7 @@ class TestCallTool:
                 "code1": "int add(int a, int b) { return a + b; }",
                 "code2": "Vec add(Vec a, Vec b) { return a + b; }",
                 "language": "cpp_lsp",
-                "semantic_mode": "strict",
+                "semantic_mode": "differentiate",
             },
         )
         assert "DIFFERENT" in result.text
