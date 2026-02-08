@@ -381,35 +381,16 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
         signals: list[SemanticSignal] = []
         notes: list[str] = []
 
-        if self._has_type_hints(source):
-            signals.append(
-                SemanticSignal(
-                    key="typing.channel",
-                    value="annotated",
-                    confidence=0.65,
-                    origin="syntax",
+        _signal_checks: list[tuple[bool, str, str, float]] = [
+            (self._has_type_hints(source), "typing.channel", "annotated", 0.65),
+            (bool(_PLUS_EXPR_RE.search(source)), "operator.plus.present", "yes", 0.8),
+            (bool(_OPERATOR_PLUS_DECL_RE.search(source)), "operator.plus.declared", "yes", 0.95),
+        ]
+        for condition, key, value, confidence in _signal_checks:
+            if condition:
+                signals.append(
+                    SemanticSignal(key=key, value=value, confidence=confidence, origin="syntax")
                 )
-            )
-
-        if _PLUS_EXPR_RE.search(source):
-            signals.append(
-                SemanticSignal(
-                    key="operator.plus.present",
-                    value="yes",
-                    confidence=0.8,
-                    origin="syntax",
-                )
-            )
-
-        if _OPERATOR_PLUS_DECL_RE.search(source):
-            signals.append(
-                SemanticSignal(
-                    key="operator.plus.declared",
-                    value="yes",
-                    confidence=0.95,
-                    origin="syntax",
-                )
-            )
 
         if not signals:
             notes.append("No stable semantic hints found in source.")

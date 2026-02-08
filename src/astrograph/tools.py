@@ -739,40 +739,25 @@ class CodeStructureTools(CloseOnExitMixin):
                 base += "\n\n" + assist
             return ToolResult(prefix + base)
 
-        exact = [r for r in same_language if r.similarity_type == "exact"]
-        high = [r for r in same_language if r.similarity_type == "high"]
-        partial = [r for r in same_language if r.similarity_type == "partial"]
-
-        if exact:
-            entry = exact[0].entry
-            rel = self._relative_path(entry.code_unit.file_path)
-            message = (
-                f"STOP: Identical {language} code exists at {rel}:{entry.code_unit.name} "
-                f"(lines {entry.code_unit.line_start}-{entry.code_unit.line_end}). Reuse it."
-            )
-            if assist:
-                message += "\n\n" + assist
-            return ToolResult(prefix + message)
-        if high:
-            entry = high[0].entry
-            rel = self._relative_path(entry.code_unit.file_path)
-            message = (
-                f"CAUTION: Very similar {language} code at {rel}:{entry.code_unit.name}. "
-                f"Consider reusing or extending."
-            )
-            if assist:
-                message += "\n\n" + assist
-            return ToolResult(prefix + message)
-        if partial:
-            entry = partial[0].entry
-            rel = self._relative_path(entry.code_unit.file_path)
-            message = (
-                f"NOTE: Partially similar {language} code at {rel}:{entry.code_unit.name}. "
-                f"Review for potential reuse."
-            )
-            if assist:
-                message += "\n\n" + assist
-            return ToolResult(prefix + message)
+        tiers = [
+            ("exact", "STOP: Identical {lang} code exists at {loc} (lines {lines}). Reuse it."),
+            ("high", "CAUTION: Very similar {lang} code at {loc}. Consider reusing or extending."),
+            (
+                "partial",
+                "NOTE: Partially similar {lang} code at {loc}. Review for potential reuse.",
+            ),
+        ]
+        for tier_type, template in tiers:
+            matches = [r for r in same_language if r.similarity_type == tier_type]
+            if matches:
+                entry = matches[0].entry
+                rel = self._relative_path(entry.code_unit.file_path)
+                loc = f"{rel}:{entry.code_unit.name}"
+                lines = f"{entry.code_unit.line_start}-{entry.code_unit.line_end}"
+                message = template.format(lang=language, loc=loc, lines=lines)
+                if assist:
+                    message += "\n\n" + assist
+                return ToolResult(prefix + message)
 
         message = "No same-language similar code found. Safe to proceed."
         if assist:

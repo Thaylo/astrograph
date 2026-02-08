@@ -196,32 +196,35 @@ def _is_production_validation_mode(mode_override: str | None = None) -> bool:
     return _normalized_validation_mode_with_override(mode_override) == "production"
 
 
+_PROBE_DOCUMENTS: dict[str, dict[str, str]] = {
+    "cpp_lsp": {
+        "lsp_language_id": "cpp",
+        "suffix": "_probe.cpp",
+        "source": (
+            "class Greeter {\n"
+            "public:\n"
+            "  int greet(int value) { return value + 1; }\n"
+            "};\n"
+            "int helper(int value) { return value + 1; }\n"
+        ),
+    },
+    "c_lsp": {
+        "lsp_language_id": "c",
+        "suffix": "_probe.c",
+        "source": "int helper(int value) { return value + 1; }\n",
+    },
+    "java_lsp": {
+        "lsp_language_id": "java",
+        "suffix": "_probe.java",
+        "source": "class Greeter {\n  int greet(int value) { return value + 1; }\n}\n",
+    },
+}
+
+
 def _probe_document(language_id: str) -> dict[str, str]:
     """Return a tiny probe document per language for semantic verification."""
-    if language_id == "cpp_lsp":
-        return {
-            "lsp_language_id": "cpp",
-            "suffix": "_probe.cpp",
-            "source": (
-                "class Greeter {\n"
-                "public:\n"
-                "  int greet(int value) { return value + 1; }\n"
-                "};\n"
-                "int helper(int value) { return value + 1; }\n"
-            ),
-        }
-    if language_id == "c_lsp":
-        return {
-            "lsp_language_id": "c",
-            "suffix": "_probe.c",
-            "source": "int helper(int value) { return value + 1; }\n",
-        }
-    if language_id == "java_lsp":
-        return {
-            "lsp_language_id": "java",
-            "suffix": "_probe.java",
-            "source": ("class Greeter {\n" "  int greet(int value) { return value + 1; }\n" "}\n"),
-        }
+    if language_id in _PROBE_DOCUMENTS:
+        return _PROBE_DOCUMENTS[language_id]
     return {
         "lsp_language_id": language_id,
         "suffix": "_probe.txt",
@@ -300,6 +303,14 @@ def _probe_attach_lsp_semantics(
     }
 
 
+def _safe_resolve(path: Path) -> Path:
+    """Resolve a path, returning it unchanged on OSError."""
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
 def _compile_commands_paths(workspace: Path, *, max_depth: int = 4) -> list[Path]:
     """Discover candidate compile_commands.json files under the workspace."""
     roots: list[Path] = []
@@ -311,10 +322,7 @@ def _compile_commands_paths(workspace: Path, *, max_depth: int = 4) -> list[Path
         if candidate.exists():
             roots.append(candidate)
 
-    try:
-        workspace_resolved = workspace.resolve()
-    except OSError:
-        workspace_resolved = workspace
+    workspace_resolved = _safe_resolve(workspace)
 
     for current_root, dirnames, filenames in os.walk(workspace_resolved):
         current = Path(current_root)
@@ -334,10 +342,7 @@ def _compile_commands_paths(workspace: Path, *, max_depth: int = 4) -> list[Path
     deduped: list[Path] = []
     seen: set[Path] = set()
     for path in roots:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            resolved = path
+        resolved = _safe_resolve(path)
         if resolved in seen:
             continue
         seen.add(resolved)
@@ -360,17 +365,7 @@ def _ordered_compile_commands_candidates(
     candidates: Sequence[Path], *, workspace: Path, override: Path | None
 ) -> list[Path]:
     """Order compile db candidates to prefer explicit, root, and recent paths."""
-    try:
-        workspace_resolved = workspace.resolve()
-    except OSError:
-        workspace_resolved = workspace
-
-    def _safe_resolve(path: Path) -> Path:
-        try:
-            return path.resolve()
-        except OSError:
-            return path
-
+    workspace_resolved = _safe_resolve(workspace)
     override_resolved = _safe_resolve(override) if override is not None else None
     root_compile = _safe_resolve(workspace / _COMPILE_COMMANDS_FILENAME)
     build_compile = _safe_resolve(workspace / "build" / _COMPILE_COMMANDS_FILENAME)

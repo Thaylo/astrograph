@@ -464,13 +464,15 @@ class TestCompare:
         )
         assert "Invalid semantic_mode" in result.text
 
-    def test_compare_strict_semantic_mode_inconclusive_without_signals(self, tools):
+    def test_compare_strict_semantic_mode_equivalent_with_matching_signals(self, tools):
+        # Python now always emits type_annotation.density and async.present,
+        # so two structurally identical snippets with matching signals → EQUIVALENT.
         result = tools.compare(
             "def one(): return 1",
             "def two(): return 2",
             semantic_mode="strict",
         )
-        assert "INCONCLUSIVE" in result.text
+        assert "EQUIVALENT" in result.text
 
     def test_compare_cpp_semantic_mismatch_assist(self, tools):
         builtin_plus = "int add(int a, int b) { return a + b; }"
@@ -494,6 +496,71 @@ class TestCompare:
             semantic_mode="strict",
         )
         assert "DIFFERENT" in result.text
+
+    # -- Python semantic profiling tests --
+
+    def test_compare_python_semantic_async_vs_sync_assist(self, tools):
+        sync_code = "def fetch(url: str) -> str:\n    return url"
+        async_code = "async def fetch(url: str) -> str:\n    return url"
+        result = tools.compare(
+            sync_code,
+            async_code,
+            language="python",
+            semantic_mode="assist",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "python.async.present" in result.text
+
+    def test_compare_python_semantic_annotation_mismatch(self, tools):
+        annotated = "def add(a: int, b: int) -> int:\n    return a + b"
+        unannotated = "def add(a, b):\n    return a + b"
+        result = tools.compare(
+            annotated,
+            unannotated,
+            language="python",
+            semantic_mode="assist",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "python.type_annotation.density" in result.text
+
+    def test_compare_python_semantic_plus_numeric_vs_str(self, tools):
+        numeric = "def add(a: int, b: int) -> int:\n    return a + b"
+        string = "def add(a: str, b: str) -> str:\n    return a + b"
+        result = tools.compare(
+            numeric,
+            string,
+            language="python",
+            semantic_mode="strict",
+        )
+        assert "DIFFERENT" in result.text
+
+    def test_compare_python_semantic_match_equivalent(self, tools):
+        code1 = "def add(x: int, y: int) -> int:\n    return x + y"
+        code2 = "def add(a: int, b: int) -> int:\n    return a + b"
+        result = tools.compare(
+            code1,
+            code2,
+            language="python",
+            semantic_mode="strict",
+        )
+        assert "EQUIVALENT" in result.text
+
+    def test_compare_python_dataclass_vs_plain(self, tools):
+        dataclass_code = (
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class Point:\n"
+            "    x: int\n"
+            "    y: int\n"
+        )
+        plain_code = "class Point:\n" "    x: int\n" "    y: int\n"
+        result = tools.compare(
+            dataclass_code,
+            plain_code,
+            language="python",
+            semantic_mode="assist",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
 
 
 class TestCallTool:
