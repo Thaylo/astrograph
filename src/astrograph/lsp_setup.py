@@ -23,6 +23,7 @@ _SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 _VALIDATION_MODES = frozenset({"production", "relaxed"})
 _DEFAULT_VALIDATION_MODE = "production"
 _COMPILE_COMMANDS_FILENAME = "compile_commands.json"
+_COMPILE_COMMANDS_PATH_ENV = "ASTROGRAPH_COMPILE_COMMANDS_PATH"
 _COMPILE_COMMANDS_SKIP_DIRS = frozenset(
     {
         ".git",
@@ -319,6 +320,62 @@ def _compile_commands_paths(workspace: Path, *, max_depth: int = 4) -> list[Path
     return deduped
 
 
+def _resolve_compile_commands_override(workspace: Path) -> Path | None:
+    """Return an optional compile_commands override path from environment."""
+    raw = os.getenv(_COMPILE_COMMANDS_PATH_ENV, "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    return candidate
+
+
+def _ordered_compile_commands_candidates(
+    candidates: Sequence[Path], *, workspace: Path, override: Path | None
+) -> list[Path]:
+    """Order compile db candidates to prefer explicit, root, and recent paths."""
+    try:
+        workspace_resolved = workspace.resolve()
+    except OSError:
+        workspace_resolved = workspace
+
+    def _safe_resolve(path: Path) -> Path:
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
+    override_resolved = _safe_resolve(override) if override is not None else None
+    root_compile = _safe_resolve(workspace / _COMPILE_COMMANDS_FILENAME)
+    build_compile = _safe_resolve(workspace / "build" / _COMPILE_COMMANDS_FILENAME)
+
+    def _sort_key(path: Path) -> tuple[int, int, float, str]:
+        resolved = _safe_resolve(path)
+        if override_resolved is not None and resolved == override_resolved:
+            priority = -1
+        elif resolved == root_compile:
+            priority = 0
+        elif resolved == build_compile:
+            priority = 1
+        else:
+            priority = 2
+
+        try:
+            depth = len(resolved.relative_to(workspace_resolved).parts)
+        except ValueError:
+            depth = 10_000
+
+        try:
+            modified = resolved.stat().st_mtime
+        except OSError:
+            modified = 0.0
+
+        return (priority, depth, -modified, str(resolved))
+
+    return sorted(candidates, key=_sort_key)
+
+
 def _is_compile_commands_entry(entry: Any) -> bool:
     """Validate one compilation database entry shape."""
     if not isinstance(entry, dict):
@@ -340,11 +397,19 @@ def _compile_commands_status(
     workspace_root = _normalize_workspace_root(workspace)
     required = language_id == "cpp_lsp"
     candidates = _compile_commands_paths(workspace_root)
+    override = _resolve_compile_commands_override(workspace_root)
+    if override is not None:
+        candidates = [override, *candidates]
     existing = [path for path in candidates if path.exists()]
+    ordered_existing = _ordered_compile_commands_candidates(
+        existing,
+        workspace=workspace_root,
+        override=override,
+    )
 
     result: dict[str, Any] = {
         "required": required,
-        "present": bool(existing),
+        "present": bool(ordered_existing),
         "readable": False,
         "valid": False,
         "entry_count": 0,
@@ -353,7 +418,7 @@ def _compile_commands_status(
         "reason": None,
     }
 
-    for path in existing:
+    for path in ordered_existing:
         try:
             rel = path.resolve().relative_to(workspace_root.resolve())
             rendered = str(rel)
@@ -361,14 +426,14 @@ def _compile_commands_status(
             rendered = str(path)
         result["paths"].append(rendered)
 
-    if not existing:
+    if not ordered_existing:
         result["reason"] = (
             "No compile_commands.json found. Generate one via your build system "
             "(e.g. CMake with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)."
         )
         return result
 
-    for path in existing:
+    for path in ordered_existing:
         try:
             payload = json.loads(path.read_text())
             result["readable"] = True

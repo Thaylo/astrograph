@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
@@ -20,6 +21,18 @@ from astrograph.lsp_setup import (
     resolve_lsp_command,
     save_lsp_bindings,
 )
+
+
+def _write_compile_commands(path, *, file_name: str = "src/main.cpp") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = [
+        {
+            "directory": str(path.parent.parent),
+            "command": f"clang++ -std=c++14 -c {file_name}",
+            "file": file_name,
+        }
+    ]
+    path.write_text(json.dumps(payload))
 
 
 @pytest.mark.parametrize(
@@ -312,6 +325,50 @@ def test_collect_lsp_statuses_cpp_fail_closed_when_reachable_only_in_production(
     assert cpp["available"] is False
     assert cpp["verification_state"] == "reachable_only"
     assert cpp["validation_mode"] == "production"
+
+
+def test_compile_commands_status_prefers_workspace_build_path(tmp_path):
+    stale = tmp_path / "demo_old" / "build" / "compile_commands.json"
+    preferred = tmp_path / "build" / "compile_commands.json"
+
+    _write_compile_commands(stale, file_name="src/stale.cpp")
+    _write_compile_commands(preferred, file_name="src/preferred.cpp")
+    os.utime(stale, (1_000, 1_000))
+    os.utime(preferred, (500, 500))
+
+    status = lsp_setup._compile_commands_status(language_id="cpp_lsp", workspace=tmp_path)
+    assert status is not None
+    assert status["valid"] is True
+    assert status["selected_path"] == str(preferred)
+
+
+def test_compile_commands_status_prefers_newer_nested_candidate(tmp_path):
+    older = tmp_path / "demo_old" / "build" / "compile_commands.json"
+    newer = tmp_path / "demo_new" / "build" / "compile_commands.json"
+
+    _write_compile_commands(older, file_name="src/older.cpp")
+    _write_compile_commands(newer, file_name="src/newer.cpp")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    status = lsp_setup._compile_commands_status(language_id="cpp_lsp", workspace=tmp_path)
+    assert status is not None
+    assert status["valid"] is True
+    assert status["selected_path"] == str(newer)
+
+
+def test_compile_commands_status_respects_override_env(tmp_path, monkeypatch):
+    default_path = tmp_path / "build" / "compile_commands.json"
+    override_path = tmp_path / "manual" / "compile_commands.json"
+
+    _write_compile_commands(default_path, file_name="src/default.cpp")
+    _write_compile_commands(override_path, file_name="src/override.cpp")
+    monkeypatch.setenv("ASTROGRAPH_COMPILE_COMMANDS_PATH", str(override_path))
+
+    status = lsp_setup._compile_commands_status(language_id="cpp_lsp", workspace=tmp_path)
+    assert status is not None
+    assert status["valid"] is True
+    assert status["selected_path"] == str(override_path)
 
 
 def test_collect_lsp_statuses_cpp_reachable_only_allowed_in_relaxed_mode(tmp_path, monkeypatch):
