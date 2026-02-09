@@ -548,7 +548,7 @@ class EventDrivenIndex(CloseOnExitMixin):
         return {
             **index_stats,
             "persistence": persistence_stats,
-            "watching": self._watcher is not None and self._watcher.is_watching,
+            "watching": self.is_watching,
             "watched_path": str(self._watched_path) if self._watched_path else None,
             "cache_valid": self._cache.is_valid(),
             "cache_computed_at": self._cache.computed_at,

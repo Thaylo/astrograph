@@ -683,13 +683,9 @@ class TestCompare:
 
     def test_compare_python_dataclass_vs_plain(self, tools):
         dataclass_code = (
-            "from dataclasses import dataclass\n"
-            "@dataclass\n"
-            "class Point:\n"
-            "    x: int\n"
-            "    y: int\n"
+            "from dataclasses import dataclass\n@dataclass\nclass Point:\n    x: int\n    y: int\n"
         )
-        plain_code = "class Point:\n" "    x: int\n" "    y: int\n"
+        plain_code = "class Point:\n    x: int\n    y: int\n"
         result = tools.compare(
             dataclass_code,
             plain_code,
@@ -830,29 +826,20 @@ class TestEsprimaGraph:
         assert "interface" not in stripped
         assert "function f()" in stripped
 
-    def test_ts_strip_generic_params(self):
-        """TS annotation stripping removes generic type parameters."""
+    @pytest.mark.parametrize(
+        "ts_source,absent_pattern",
+        [
+            pytest.param("function identity<T>(x: T): T { return x; }", "<T>", id="generic-params"),
+            pytest.param("const x = value as string;", "as string", id="as-cast"),
+            pytest.param("const x = obj!.prop;", "!", id="non-null-assertion"),
+        ],
+    )
+    def test_ts_strip_simple_patterns(self, ts_source, absent_pattern):
+        """TS annotation stripping removes simple type patterns."""
         from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
 
-        ts_source = "function identity<T>(x: T): T { return x; }"
         stripped = _strip_ts_annotations(ts_source)
-        assert "<T>" not in stripped
-
-    def test_ts_strip_as_cast(self):
-        """TS annotation stripping removes 'as Type' casts."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
-
-        ts_source = "const x = value as string;"
-        stripped = _strip_ts_annotations(ts_source)
-        assert "as string" not in stripped
-
-    def test_ts_strip_non_null_assertion(self):
-        """TS annotation stripping removes non-null assertions."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
-
-        ts_source = "const x = obj!.prop;"
-        stripped = _strip_ts_annotations(ts_source)
-        assert "!" not in stripped
+        assert absent_pattern not in stripped
 
     # -- TS 5.x annotation stripping tests --
 
@@ -860,9 +847,7 @@ class TestEsprimaGraph:
         """TS annotation stripping removes decorators (Stage 3)."""
         from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
 
-        ts_source = (
-            "@injectable()\n" "class Service {\n" "  @log\n" "  process() { return 1; }\n" "}"
-        )
+        ts_source = "@injectable()\nclass Service {\n  @log\n  process() { return 1; }\n}"
         stripped = _strip_ts_annotations(ts_source)
         assert "@injectable" not in stripped
         assert "@log" not in stripped
@@ -911,19 +896,33 @@ class TestEsprimaGraph:
         assert "typeof" in c23_val
         assert "attributes" in c23_val
 
-    def test_c23_features_none_for_c99(self):
-        """C plugin emits 'none' for C23 features on plain C99 code."""
+    @pytest.mark.parametrize(
+        "plugin_name,source,filename,signal_key",
+        [
+            pytest.param(
+                "CLSPPlugin",
+                '#include <stdio.h>\nint main(void) {\n  printf("hello\\n");\n  return 0;\n}',
+                "test.c",
+                "c.c23_features",
+                id="c23-none-for-c99",
+            ),
+            pytest.param(
+                "JavaLSPPlugin",
+                "public class App {\n  public static void main(String[] args) {\n    System.out.println(args[0]);\n  }\n}",
+                "App.java",
+                "java.modern_features",
+                id="java-modern-none-for-java8",
+            ),
+        ],
+    )
+    def test_modern_features_none_for_old_standard(self, plugin_name, source, filename, signal_key):
+        """Plugin emits 'none' for modern features on older standard code."""
         from astrograph.languages.c_lsp_plugin import CLSPPlugin
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        source = (
-            "#include <stdio.h>\n"
-            "int main(void) {\n"
-            '  printf("hello\\n");\n'
-            "  return 0;\n"
-            "}"
-        )
-        sig_map = _extract_signal_map(CLSPPlugin, source, "test.c")
-        assert sig_map["c.c23_features"] == "none"
+        plugin_cls = {"CLSPPlugin": CLSPPlugin, "JavaLSPPlugin": JavaLSPPlugin}[plugin_name]
+        sig_map = _extract_signal_map(plugin_cls, source, filename)
+        assert sig_map[signal_key] == "none"
 
     # -- C++20/23 feature detection tests --
 
@@ -945,18 +944,53 @@ class TestEsprimaGraph:
         assert "spaceship" in modern
         assert "consteval" in modern
 
-    def test_cpp_coroutines_detected(self):
-        """C++ plugin detects coroutine keywords."""
+    @pytest.mark.parametrize(
+        "plugin_name,source,filename,signal_key,expected_feature",
+        [
+            pytest.param(
+                "CppLSPPlugin",
+                "task<int> compute() {\n  auto val = co_await fetch_value();\n  co_return val * 2;\n}",
+                "test.cpp",
+                "cpp.modern_features",
+                "coroutine",
+                id="cpp-coroutines",
+            ),
+            pytest.param(
+                "JavaLSPPlugin",
+                "public sealed class Shape permits Circle, Rectangle {\n  abstract double area();\n}",
+                "Shape.java",
+                "java.modern_features",
+                "sealed",
+                id="java-sealed",
+            ),
+            pytest.param(
+                "JavaLSPPlugin",
+                "void process(Object obj) {\n  if (obj instanceof String s) {\n    System.out.println(s.length());\n  }\n}",
+                "Test.java",
+                "java.modern_features",
+                "pattern_instanceof",
+                id="java-pattern-instanceof",
+            ),
+            pytest.param(
+                "JavaLSPPlugin",
+                "int result = switch (day) {\n  case MONDAY -> 1;\n  case TUESDAY -> 2;\n  default -> 0;\n};",
+                "Test.java",
+                "java.modern_features",
+                "switch_expression",
+                id="java-switch-expression",
+            ),
+        ],
+    )
+    def test_modern_feature_single_assert(
+        self, plugin_name, source, filename, signal_key, expected_feature
+    ):
+        """Plugin detects a specific modern language feature."""
         from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        source = (
-            "task<int> compute() {\n"
-            "  auto val = co_await fetch_value();\n"
-            "  co_return val * 2;\n"
-            "}"
-        )
-        sig_map = _extract_signal_map(CppLSPPlugin, source, "test.cpp")
-        assert "coroutine" in sig_map["cpp.modern_features"]
+        plugin_cls = {"CppLSPPlugin": CppLSPPlugin, "JavaLSPPlugin": JavaLSPPlugin}[plugin_name]
+        sig_map = _extract_signal_map(plugin_cls, source, filename)
+        assert expected_feature in sig_map[signal_key]
 
     # -- Java 25 feature detection tests --
 
@@ -975,69 +1009,15 @@ class TestEsprimaGraph:
         assert "java.modern_features" in sig_map
         assert "record" in sig_map["java.modern_features"]
 
-    def test_java_sealed_class_detected(self):
-        """Java plugin detects sealed classes."""
-        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
-
-        source = (
-            "public sealed class Shape permits Circle, Rectangle {\n"
-            "  abstract double area();\n"
-            "}"
-        )
-        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Shape.java")
-        assert "sealed" in sig_map["java.modern_features"]
-
-    def test_java_pattern_instanceof_detected(self):
-        """Java plugin detects pattern matching instanceof."""
-        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
-
-        source = (
-            "void process(Object obj) {\n"
-            "  if (obj instanceof String s) {\n"
-            "    System.out.println(s.length());\n"
-            "  }\n"
-            "}"
-        )
-        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Test.java")
-        assert "pattern_instanceof" in sig_map["java.modern_features"]
-
-    def test_java_switch_expression_detected(self):
-        """Java plugin detects switch expressions with arrow syntax."""
-        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
-
-        source = (
-            "int result = switch (day) {\n"
-            "  case MONDAY -> 1;\n"
-            "  case TUESDAY -> 2;\n"
-            "  default -> 0;\n"
-            "};"
-        )
-        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Test.java")
-        assert "switch_expression" in sig_map["java.modern_features"]
-
     def test_java_text_block_and_var_detected(self):
         """Java plugin detects text blocks and var keyword."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        source = 'var greeting = """\n' "    Hello,\n" '    World!""";\n'
+        source = 'var greeting = """\n    Hello,\n    World!""";\n'
         sig_map = _extract_signal_map(JavaLSPPlugin, source, "Test.java")
         modern = sig_map["java.modern_features"]
         assert "text_block" in modern
         assert "var" in modern
-
-    def test_java_modern_features_none_for_java8(self):
-        """Java plugin emits 'none' for modern features on Java 8 style code."""
-        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
-
-        source = (
-            "public class App {\n"
-            "  public static void main(String[] args) {\n"
-            "    System.out.println(args[0]);\n"
-            "  }\n"
-            "}"
-        )
-        sig_map = _extract_signal_map(JavaLSPPlugin, source, "App.java")
-        assert sig_map["java.modern_features"] == "none"
 
     # -- Updated signal count tests --
 
@@ -1337,7 +1317,7 @@ class TestEsprimaGraph:
             extract_brace_blocks_from_function,
         )
 
-        cpp_code = "void run(int n) {\n" "    while (n > 0) {\n" "        n--;\n" "    }\n" "}"
+        cpp_code = "void run(int n) {\n    while (n > 0) {\n        n--;\n    }\n}"
         blocks = list(extract_brace_blocks_from_function(cpp_code, "test.cpp", "run", 1, "cpp_lsp"))
         assert len(blocks) == 1
         assert blocks[0].name == "run.while_1"
@@ -1522,9 +1502,10 @@ class TestCallTool:
 
     def test_call_tool_uses_mutation_lock_for_mutating_calls(self, tools):
         lock = _RecordingLock()
-        with patch.object(tools, "_mutation_lock", lock), patch.object(
-            tools, "_call_tool_unlocked", return_value=ToolResult("ok")
-        ) as dispatch:
+        with (
+            patch.object(tools, "_mutation_lock", lock),
+            patch.object(tools, "_call_tool_unlocked", return_value=ToolResult("ok")) as dispatch,
+        ):
             result = tools.call_tool("metadata_erase", {})
 
         assert result.text == "ok"
@@ -1533,9 +1514,10 @@ class TestCallTool:
 
     def test_call_tool_skips_mutation_lock_for_read_only_calls(self, tools):
         lock = _RecordingLock()
-        with patch.object(tools, "_mutation_lock", lock), patch.object(
-            tools, "_call_tool_unlocked", return_value=ToolResult("ok")
-        ) as dispatch:
+        with (
+            patch.object(tools, "_mutation_lock", lock),
+            patch.object(tools, "_call_tool_unlocked", return_value=ToolResult("ok")) as dispatch,
+        ):
             result = tools.call_tool("status", {})
 
         assert result.text == "ok"
@@ -1581,10 +1563,13 @@ class TestLSPSetupTool:
         assert "Unsupported language" in payload["error"]
 
     def test_lsp_setup_bind_and_unbind(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {"ASTROGRAPH_WORKSPACE": tmpdir},
-            clear=False,
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(
+                os.environ,
+                {"ASTROGRAPH_WORKSPACE": tmpdir},
+                clear=False,
+            ),
         ):
             tools = CodeStructureTools()
 
@@ -1610,13 +1595,16 @@ class TestLSPSetupTool:
             tools.close()
 
     def test_lsp_setup_auto_bind_uses_observations(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {
-                "ASTROGRAPH_WORKSPACE": tmpdir,
-                "ASTROGRAPH_PY_LSP_COMMAND": "missing-python-lsp-xyz",
-            },
-            clear=False,
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(
+                os.environ,
+                {
+                    "ASTROGRAPH_WORKSPACE": tmpdir,
+                    "ASTROGRAPH_PY_LSP_COMMAND": "missing-python-lsp-xyz",
+                },
+                clear=False,
+            ),
         ):
             tools = CodeStructureTools()
             result = tools.lsp_setup(
@@ -1635,13 +1623,16 @@ class TestLSPSetupTool:
             tools.close()
 
     def test_lsp_setup_auto_bind_scoped_language(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {
-                "ASTROGRAPH_WORKSPACE": tmpdir,
-                "ASTROGRAPH_PY_LSP_COMMAND": "missing-python-lsp-xyz",
-            },
-            clear=False,
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(
+                os.environ,
+                {
+                    "ASTROGRAPH_WORKSPACE": tmpdir,
+                    "ASTROGRAPH_PY_LSP_COMMAND": "missing-python-lsp-xyz",
+                },
+                clear=False,
+            ),
         ):
             tools = CodeStructureTools()
             payload = json.loads(
@@ -1861,8 +1852,9 @@ class TestLSPSetupTool:
             "servers": [missing_cpp_status],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            CodeStructureTools, "_is_docker_runtime", return_value=True
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(CodeStructureTools, "_is_docker_runtime", return_value=True),
         ):
             tools._inject_lsp_setup_guidance(payload, workspace=Path(tmpdir))
 
@@ -1885,8 +1877,9 @@ class TestLSPSetupTool:
             "servers": [missing_cpp_status],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            CodeStructureTools, "_is_docker_runtime", return_value=False
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(CodeStructureTools, "_is_docker_runtime", return_value=False),
         ):
             tools._inject_lsp_setup_guidance(payload, workspace=Path(tmpdir))
 
@@ -2896,18 +2889,22 @@ def compute_total(x, y):
             "}\n"
         )
 
-        with patch.object(
-            LanguageRegistry.get(),
-            "get_plugin_for_file",
-            return_value=_FakeCppPlugin(cpp_exact_entry),
-        ), patch.object(
-            tools.index,
-            "find_exact_matches",
-            side_effect=_fake_cpp_exact_matches(cpp_exact_entry),
-        ), patch.object(
-            tools.index,
-            "find_similar",
-            return_value=[],
+        with (
+            patch.object(
+                LanguageRegistry.get(),
+                "get_plugin_for_file",
+                return_value=_FakeCppPlugin(cpp_exact_entry),
+            ),
+            patch.object(
+                tools.index,
+                "find_exact_matches",
+                side_effect=_fake_cpp_exact_matches(cpp_exact_entry),
+            ),
+            patch.object(
+                tools.index,
+                "find_similar",
+                return_value=[],
+            ),
         ):
             result = tools.write(cpp_file, cpp_content)
 
@@ -3073,18 +3070,22 @@ def placeholder():
             "}\n"
         )
 
-        with patch.object(
-            LanguageRegistry.get(),
-            "get_plugin_for_file",
-            return_value=_FakeCppPlugin(cpp_exact_entry),
-        ), patch.object(
-            tools.index,
-            "find_exact_matches",
-            side_effect=_fake_cpp_exact_matches(cpp_exact_entry),
-        ), patch.object(
-            tools.index,
-            "find_similar",
-            return_value=[],
+        with (
+            patch.object(
+                LanguageRegistry.get(),
+                "get_plugin_for_file",
+                return_value=_FakeCppPlugin(cpp_exact_entry),
+            ),
+            patch.object(
+                tools.index,
+                "find_exact_matches",
+                side_effect=_fake_cpp_exact_matches(cpp_exact_entry),
+            ),
+            patch.object(
+                tools.index,
+                "find_similar",
+                return_value=[],
+            ),
         ):
             result = tools.edit(target_cpp, old_block, new_block)
 

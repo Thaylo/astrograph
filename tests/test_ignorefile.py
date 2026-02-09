@@ -93,6 +93,17 @@ class TestIgnoreSpec:
         assert spec.is_file_ignored("src/foo/bar/test.py")
         assert not spec.is_file_ignored("test.py")
 
+    def test_doublestar_glob_min_js(self):
+        """**/*.min.js matches .min.js files at any depth."""
+        spec = IgnoreSpec.from_lines(["**/*.min.js"])
+        assert spec.is_file_ignored("app.min.js")
+        assert spec.is_file_ignored("src/app.min.js")
+        assert spec.is_file_ignored("src/dist/app.min.js")
+        assert spec.is_file_ignored("src/dist/vendor/jquery.min.js")
+        assert not spec.is_file_ignored("app.js")
+        assert not spec.is_file_ignored("src/app.js")
+        assert not spec.is_file_ignored("app.min.css")
+
     def test_wildcard_in_path(self):
         spec = IgnoreSpec.from_lines(["dist/*.js"])
         assert spec.is_file_ignored("dist/bundle.js")
