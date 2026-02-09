@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
 
-import networkx as nx
-
-from ._brace_block_extractor import extract_brace_blocks_from_function
-from ._configured_lsp_plugin import ConfiguredLSPLanguagePluginBase
-from .base import CodeUnit, SemanticSignal
+from ._configured_lsp_plugin import BraceLanguageLSPPlugin
+from .base import SemanticSignal
 
 # -- Annotation patterns --
 _JAVA_ANNOTATION_RE = re.compile(r"^\s*@([A-Za-z_]\w*)", re.MULTILINE)
@@ -49,7 +45,7 @@ _JAVA_TEXT_BLOCK_RE = re.compile(r'"""')
 _JAVA_VAR_RE = re.compile(r"\bvar\s+\w+")
 
 
-class JavaLSPPlugin(ConfiguredLSPLanguagePluginBase):
+class JavaLSPPlugin(BraceLanguageLSPPlugin):
     """Java support via an attached or spawned LSP backend."""
 
     LANGUAGE_ID = "java_lsp"
@@ -59,44 +55,6 @@ class JavaLSPPlugin(ConfiguredLSPLanguagePluginBase):
     DEFAULT_COMMAND = ("tcp://127.0.0.1:2089",)
     COMMAND_ENV_VAR = "ASTROGRAPH_JAVA_LSP_COMMAND"
     TIMEOUT_ENV_VAR = "ASTROGRAPH_JAVA_LSP_TIMEOUT"
-
-    def normalize_graph_for_pattern(self, graph: nx.DiGraph) -> nx.DiGraph:
-        """Normalize operator labels from the line-level parser for pattern matching."""
-        normalized: nx.DiGraph = graph.copy()
-        for _node_id, data in normalized.nodes(data=True):
-            label = data.get("label", "")
-            if ":Op(" in label:
-                data["label"] = label[: label.index(":Op(") + 3]
-        return normalized
-
-    def extract_code_units(
-        self,
-        source: str,
-        file_path: str = "<unknown>",
-        include_blocks: bool = True,
-        max_block_depth: int = 3,
-    ) -> Iterator[CodeUnit]:
-        """Extract units via LSP, then optionally extract inner blocks via brace matching."""
-        func_units: list[CodeUnit] = []
-        for unit in super().extract_code_units(
-            source, file_path, include_blocks=False, max_block_depth=max_block_depth
-        ):
-            yield unit
-            if unit.unit_type in {"function", "method"}:
-                func_units.append(unit)
-
-        if not include_blocks:
-            return
-
-        for unit in func_units:
-            yield from extract_brace_blocks_from_function(
-                func_code=unit.code,
-                file_path=file_path,
-                func_name=unit.name,
-                func_line_start=unit.line_start,
-                language=self.LANGUAGE_ID,
-                max_depth=max_block_depth,
-            )
 
     def _language_signals(self, source: str) -> list[SemanticSignal]:
         """Java-specific regex signals for semantic profiling."""
