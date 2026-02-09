@@ -682,6 +682,32 @@ class TestCompare:
         assert "SEMANTIC_MISMATCH" in result.text
         assert "cpp.virtual_override" in result.text
 
+    def test_compare_cpp_namespace_mismatch(self, tools):
+        """Different namespaces trigger SEMANTIC_MISMATCH."""
+        ns_alpha = "namespace alpha {\nint add(int a, int b) { return a + b; }\n}"
+        ns_beta = "namespace beta {\nint add(int a, int b) { return a + b; }\n}"
+        result = tools.compare(
+            ns_alpha,
+            ns_beta,
+            language="cpp_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "cpp.namespace" in result.text
+
+    def test_compare_cpp_constexpr_vs_plain(self, tools):
+        """constexpr vs plain function triggers SEMANTIC_MISMATCH."""
+        constexpr_code = "constexpr int add(int a, int b) { return a + b; }"
+        plain_code = "int add(int a, int b) { return a + b; }"
+        result = tools.compare(
+            constexpr_code,
+            plain_code,
+            language="cpp_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "cpp.const_correctness" in result.text
+
     # -- TypeScript tests --
 
     def test_compare_ts_structural_match(self, tools):
@@ -704,6 +730,19 @@ class TestCompare:
         assert "SEMANTIC_MISMATCH" in result.text
         assert "typescript.generic.present" in result.text
 
+    def test_compare_ts_strict_vs_loose(self, tools):
+        """TS strict mode indicators vs plain triggers SEMANTIC_MISMATCH."""
+        strict_code = "function get(x: unknown): string { return x as string; }"
+        loose_code = "function get(x) { return x; }"
+        result = tools.compare(
+            strict_code,
+            loose_code,
+            language="typescript_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "typescript.strict_mode" in result.text
+
     def test_compare_ts_vs_js_same_structure(self, tools):
         """TS function structurally matches equivalent JS when compared as TS."""
         ts_code = "function add(a: number, b: number): number { return a + b; }"
@@ -711,6 +750,850 @@ class TestCompare:
         result = tools.compare(ts_code, js_code, language="typescript_lsp")
         # Both reduce to same structure after TS annotation stripping
         assert any(exp in result.text for exp in ["EQUIVALENT", "EXACT_MATCH", "SIMILAR"])
+
+    # -- Java semantic signal tests --
+
+    def test_compare_java_annotated_vs_plain(self, tools):
+        """Java @Override annotation vs plain method → SEMANTIC_MISMATCH."""
+        annotated = "@Override\npublic int getValue() { return value; }"
+        plain = "public int getValue() { return value; }"
+        result = tools.compare(
+            annotated,
+            plain,
+            language="java_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "java.annotations" in result.text
+
+    def test_compare_java_public_vs_private(self, tools):
+        """Java public vs private access modifier → SEMANTIC_MISMATCH."""
+        public_code = "public int add(int a, int b) { return a + b; }"
+        private_code = "private int add(int a, int b) { return a + b; }"
+        result = tools.compare(
+            public_code,
+            private_code,
+            language="java_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "java.access_modifiers" in result.text
+
+    def test_compare_java_generic_vs_non_generic(self, tools):
+        """Java generic vs non-generic → SEMANTIC_MISMATCH."""
+        generic = "public <T extends Comparable> T max(T a, T b) { return a; }"
+        plain = "public int max(int a, int b) { return a; }"
+        result = tools.compare(
+            generic,
+            plain,
+            language="java_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "java.generic.present" in result.text
+
+    def test_compare_java_stream_vs_loop(self, tools):
+        """Java stream/lambda vs plain → SEMANTIC_MISMATCH."""
+        stream_code = "list.stream().filter(x -> x > 0).collect(Collectors.toList());"
+        loop_code = "for (int x : list) { if (x > 0) result.add(x); }"
+        result = tools.compare(
+            stream_code,
+            loop_code,
+            language="java_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "java.functional_style" in result.text
+
+    def test_compare_java_interface_vs_class(self, tools):
+        """Java interface vs class → SEMANTIC_MISMATCH."""
+        iface = "interface Drawable { void draw(); }"
+        cls = "class Circle { void draw() { } }"
+        result = tools.compare(
+            iface,
+            cls,
+            language="java_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "java.class_kind" in result.text
+
+    def test_compare_java_exception_handling_mismatch(self, tools):
+        """Java throws vs try-catch → SEMANTIC_MISMATCH."""
+        throws_code = "void read() throws IOException { }"
+        try_code = "void read() { try { } catch (IOException e) { } }"
+        result = tools.compare(
+            throws_code,
+            try_code,
+            language="java_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "java.exception_handling" in result.text
+
+    # -- C semantic signal tests --
+
+    def test_compare_c_malloc_vs_stack(self, tools):
+        """C malloc vs stack allocation → SEMANTIC_MISMATCH."""
+        heap_code = "int* arr = malloc(10 * sizeof(int)); free(arr);"
+        stack_code = "int arr[10];"
+        result = tools.compare(
+            heap_code,
+            stack_code,
+            language="c_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "c.memory_management" in result.text
+
+    def test_compare_c_struct_vs_plain(self, tools):
+        """C struct usage vs plain types → SEMANTIC_MISMATCH."""
+        struct_code = "struct Point { int x; int y; };"
+        plain_code = "int x; int y;"
+        result = tools.compare(
+            struct_code,
+            plain_code,
+            language="c_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "c.composite_types" in result.text
+
+    def test_compare_c_preprocessor_mismatch(self, tools):
+        """C preprocessor conditional vs non-conditional → SEMANTIC_MISMATCH."""
+        ifdef_code = "#ifdef DEBUG\nint x = 1;\n#endif"
+        plain_code = "int x = 1;"
+        result = tools.compare(
+            ifdef_code,
+            plain_code,
+            language="c_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "c.preprocessor" in result.text
+
+    def test_compare_c_goto_vs_structured(self, tools):
+        """C goto usage vs structured control flow → SEMANTIC_MISMATCH."""
+        goto_code = "goto cleanup; cleanup: return;"
+        structured_code = "return;"
+        result = tools.compare(
+            goto_code,
+            structured_code,
+            language="c_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "c.control_flow" in result.text
+
+    def test_compare_c_pointer_vs_value(self, tools):
+        """C pointer dereference vs value semantics → SEMANTIC_MISMATCH."""
+        pointer_code = "void swap(int *a, int *b) { int t = *a; *a = *b; *b = t; }"
+        value_code = "void swap(int a, int b) { int t = a; a = b; b = t; }"
+        result = tools.compare(
+            pointer_code,
+            value_code,
+            language="c_lsp",
+            semantic_mode="annotate",
+        )
+        assert "SEMANTIC_MISMATCH" in result.text
+        assert "c.pointer_usage" in result.text
+
+
+class TestEsprimaGraph:
+    """Unit tests for esprima AST graph builder and TS annotation stripping."""
+
+    def test_js_esprima_graph_node_count(self):
+        """Esprima AST graph has more nodes than line-level parser for same code."""
+        from astrograph.languages.javascript_lsp_plugin import _esprima_ast_to_graph
+
+        source = "function add(a, b) { return a + b; }"
+        esprima_graph = _esprima_ast_to_graph(source)
+        assert esprima_graph is not None
+        # Esprima AST produces a richer graph than line-level
+        assert len(esprima_graph.nodes) > 5
+
+    def test_js_normalize_graph_collapses_operators(self):
+        """normalize_graph_for_pattern collapses operator specifics."""
+        from astrograph.languages.javascript_lsp_plugin import (
+            JavaScriptLSPPlugin,
+            _esprima_ast_to_graph,
+        )
+
+        plugin = JavaScriptLSPPlugin.__new__(JavaScriptLSPPlugin)
+        source = "function f(a, b) { return a + b; }"
+        graph = _esprima_ast_to_graph(source)
+        assert graph is not None
+        # Original graph has specific operator
+        labels = [data["label"] for _, data in graph.nodes(data=True)]
+        assert any("BinaryExpression:+" in lbl for lbl in labels)
+        # Normalized graph collapses to :Op
+        normalized = plugin.normalize_graph_for_pattern(graph)
+        norm_labels = [data["label"] for _, data in normalized.nodes(data=True)]
+        assert any("BinaryExpression:Op" in lbl for lbl in norm_labels)
+        assert not any("BinaryExpression:+" in lbl for lbl in norm_labels)
+
+    def test_ts_strip_annotations_basic(self):
+        """TS annotation stripping produces valid JS that esprima can parse."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = "function add(a: number, b: number): number { return a + b; }"
+        stripped = _strip_ts_annotations(ts_source)
+        # Type annotations removed
+        assert ": number" not in stripped
+        # Function structure preserved
+        assert "function" in stripped
+        assert "return" in stripped
+
+    def test_ts_strip_interface_blocks(self):
+        """TS annotation stripping removes interface declarations."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = "interface Foo { bar: string; baz: number; }\nfunction f() { return 1; }"
+        stripped = _strip_ts_annotations(ts_source)
+        assert "interface" not in stripped
+        assert "function f()" in stripped
+
+    def test_ts_strip_generic_params(self):
+        """TS annotation stripping removes generic type parameters."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = "function identity<T>(x: T): T { return x; }"
+        stripped = _strip_ts_annotations(ts_source)
+        assert "<T>" not in stripped
+
+    def test_ts_strip_as_cast(self):
+        """TS annotation stripping removes 'as Type' casts."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = "const x = value as string;"
+        stripped = _strip_ts_annotations(ts_source)
+        assert "as string" not in stripped
+
+    def test_ts_strip_non_null_assertion(self):
+        """TS annotation stripping removes non-null assertions."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = "const x = obj!.prop;"
+        stripped = _strip_ts_annotations(ts_source)
+        assert "!" not in stripped
+
+    # -- TS 5.x annotation stripping tests --
+
+    def test_ts_strip_decorators(self):
+        """TS annotation stripping removes decorators (Stage 3)."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = (
+            "@injectable()\n" "class Service {\n" "  @log\n" "  process() { return 1; }\n" "}"
+        )
+        stripped = _strip_ts_annotations(ts_source)
+        assert "@injectable" not in stripped
+        assert "@log" not in stripped
+        assert "class Service" in stripped
+
+    def test_ts_strip_using_keyword(self):
+        """TS annotation stripping converts 'using' to 'const'."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = "using resource = getResource();"
+        stripped = _strip_ts_annotations(ts_source)
+        assert "using" not in stripped or "const" in stripped
+        assert "resource" in stripped
+
+    def test_ts_strip_satisfies_operator(self):
+        """TS annotation stripping removes 'satisfies Type'."""
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        ts_source = 'const config = { key: "value" } satisfies Config;'
+        stripped = _strip_ts_annotations(ts_source)
+        assert "satisfies Config" not in stripped
+        assert "config" in stripped
+
+    # -- C23 feature detection tests --
+
+    def test_c23_features_detected(self):
+        """C plugin detects C23 features in source code."""
+        from astrograph.languages.c_lsp_plugin import CLSPPlugin
+
+        plugin = CLSPPlugin.__new__(CLSPPlugin)
+        source = (
+            "#include <stddef.h>\n"
+            "constexpr int MAX = 100;\n"
+            "bool is_valid = true;\n"
+            "static_assert(MAX > 0);\n"
+            "int *p = nullptr;\n"
+            "typeof(MAX) val = 42;\n"
+            "[[nodiscard]] int compute(void) { return 0; }\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "test.c")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "c.c23_features" in sig_map
+        c23_val = sig_map["c.c23_features"]
+        assert "constexpr" in c23_val
+        assert "nullptr" in c23_val
+        assert "bool" in c23_val
+        assert "static_assert" in c23_val
+        assert "typeof" in c23_val
+        assert "attributes" in c23_val
+
+    def test_c23_features_none_for_c99(self):
+        """C plugin emits 'none' for C23 features on plain C99 code."""
+        from astrograph.languages.c_lsp_plugin import CLSPPlugin
+
+        plugin = CLSPPlugin.__new__(CLSPPlugin)
+        source = (
+            "#include <stdio.h>\n"
+            "int main(void) {\n"
+            '  printf("hello\\n");\n'
+            "  return 0;\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "test.c")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert sig_map["c.c23_features"] == "none"
+
+    # -- C++20/23 feature detection tests --
+
+    def test_cpp23_features_detected(self):
+        """C++ plugin detects C++20/23 features in source code."""
+        from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
+
+        plugin = CppLSPPlugin.__new__(CppLSPPlugin)
+        source = (
+            "template<typename T>\n"
+            "concept Addable = requires(T a, T b) { a + b; };\n"
+            "consteval int square(int n) { return n * n; }\n"
+            "auto result = a <=> b;\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "test.cpp")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "cpp.modern_features" in sig_map
+        modern = sig_map["cpp.modern_features"]
+        assert "concept" in modern
+        assert "requires" in modern
+        assert "spaceship" in modern
+        assert "consteval" in modern
+
+    def test_cpp_coroutines_detected(self):
+        """C++ plugin detects coroutine keywords."""
+        from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
+
+        plugin = CppLSPPlugin.__new__(CppLSPPlugin)
+        source = (
+            "task<int> compute() {\n"
+            "  auto val = co_await fetch_value();\n"
+            "  co_return val * 2;\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "test.cpp")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "coroutine" in sig_map["cpp.modern_features"]
+
+    # -- Java 25 feature detection tests --
+
+    def test_java_record_detected(self):
+        """Java plugin detects record declarations."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "public record Point(int x, int y) {\n"
+            "  public double distance() {\n"
+            "    return Math.sqrt(x * x + y * y);\n"
+            "  }\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "Point.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "java.modern_features" in sig_map
+        assert "record" in sig_map["java.modern_features"]
+
+    def test_java_sealed_class_detected(self):
+        """Java plugin detects sealed classes."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "public sealed class Shape permits Circle, Rectangle {\n"
+            "  abstract double area();\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "Shape.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "sealed" in sig_map["java.modern_features"]
+
+    def test_java_pattern_instanceof_detected(self):
+        """Java plugin detects pattern matching instanceof."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "void process(Object obj) {\n"
+            "  if (obj instanceof String s) {\n"
+            "    System.out.println(s.length());\n"
+            "  }\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "Test.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "pattern_instanceof" in sig_map["java.modern_features"]
+
+    def test_java_switch_expression_detected(self):
+        """Java plugin detects switch expressions with arrow syntax."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "int result = switch (day) {\n"
+            "  case MONDAY -> 1;\n"
+            "  case TUESDAY -> 2;\n"
+            "  default -> 0;\n"
+            "};"
+        )
+        profile = plugin.extract_semantic_profile(source, "Test.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "switch_expression" in sig_map["java.modern_features"]
+
+    def test_java_text_block_and_var_detected(self):
+        """Java plugin detects text blocks and var keyword."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = 'var greeting = """\n' "    Hello,\n" '    World!""";\n'
+        profile = plugin.extract_semantic_profile(source, "Test.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+        modern = sig_map["java.modern_features"]
+        assert "text_block" in modern
+        assert "var" in modern
+
+    def test_java_modern_features_none_for_java8(self):
+        """Java plugin emits 'none' for modern features on Java 8 style code."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "public class App {\n"
+            "  public static void main(String[] args) {\n"
+            "    System.out.println(args[0]);\n"
+            "  }\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "App.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert sig_map["java.modern_features"] == "none"
+
+    # -- Updated signal count tests --
+
+    def test_c_semantic_signals_include_c23(self):
+        """C plugin emits all 6 signals including c.c23_features."""
+        from astrograph.languages.c_lsp_plugin import CLSPPlugin
+
+        plugin = CLSPPlugin.__new__(CLSPPlugin)
+        source = "#include <stdio.h>\nint main(void) { return 0; }"
+        profile = plugin.extract_semantic_profile(source, "test.c")
+        keys = {s.key for s in profile.signals}
+        assert "c.c23_features" in keys
+        # All 6 signal keys present
+        expected = {
+            "c.preprocessor",
+            "c.pointer_usage",
+            "c.composite_types",
+            "c.memory_management",
+            "c.control_flow",
+            "c.c23_features",
+        }
+        assert expected.issubset(keys)
+
+    def test_java_semantic_signals_include_modern(self):
+        """Java plugin emits all 7 signals including java.modern_features."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = "public class App { public void run() {} }"
+        profile = plugin.extract_semantic_profile(source, "App.java")
+        keys = {s.key for s in profile.signals}
+        assert "java.modern_features" in keys
+        expected = {
+            "java.annotations",
+            "java.access_modifiers",
+            "java.generic.present",
+            "java.exception_handling",
+            "java.functional_style",
+            "java.class_kind",
+            "java.modern_features",
+        }
+        assert expected.issubset(keys)
+
+    def test_cpp_semantic_signals_include_modern(self):
+        """C++ plugin emits all 5 always-emitted signals including cpp.modern_features."""
+        from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
+
+        plugin = CppLSPPlugin.__new__(CppLSPPlugin)
+        source = "void foo() { int x = 1; }"
+        profile = plugin.extract_semantic_profile(source, "test.cpp")
+        keys = {s.key for s in profile.signals}
+        expected = {
+            "cpp.template.present",
+            "cpp.virtual_override",
+            "cpp.namespace",
+            "cpp.const_correctness",
+            "cpp.modern_features",
+        }
+        assert expected.issubset(keys)
+
+    def test_js_block_extraction_for_loop(self):
+        """JS block extraction finds for-loop blocks inside functions."""
+        import esprima
+
+        from astrograph.languages.javascript_lsp_plugin import (
+            _esprima_extract_function_blocks,
+        )
+
+        source = (
+            "function process(items) {\n"
+            "  for (var i = 0; i < items.length; i++) {\n"
+            "    console.log(items[i]);\n"
+            "  }\n"
+            "}"
+        )
+        tree = esprima.parseScript(source, loc=True)
+        blocks = list(
+            _esprima_extract_function_blocks(
+                tree, source.splitlines(), "test.js", max_depth=3, language="javascript_lsp"
+            )
+        )
+        assert len(blocks) >= 1
+        assert any(".for_" in b.name for b in blocks)
+        assert all(b.unit_type == "block" for b in blocks)
+
+    def test_js_block_extraction_if_statement(self):
+        """JS block extraction finds if-statement blocks."""
+        import esprima
+
+        from astrograph.languages.javascript_lsp_plugin import (
+            _esprima_extract_function_blocks,
+        )
+
+        source = (
+            "function check(x) {\n"
+            "  if (x > 0) {\n"
+            "    return 'positive';\n"
+            "  } else {\n"
+            "    return 'non-positive';\n"
+            "  }\n"
+            "}"
+        )
+        tree = esprima.parseScript(source, loc=True)
+        blocks = list(
+            _esprima_extract_function_blocks(
+                tree, source.splitlines(), "test.js", max_depth=3, language="javascript_lsp"
+            )
+        )
+        assert len(blocks) >= 1
+        assert any(".if_" in b.name for b in blocks)
+
+    def test_js_block_extraction_nested_depth(self):
+        """JS block extraction respects max_depth parameter."""
+        import esprima
+
+        from astrograph.languages.javascript_lsp_plugin import (
+            _esprima_extract_function_blocks,
+        )
+
+        source = (
+            "function f(x) {\n"
+            "  for (var i = 0; i < x; i++) {\n"
+            "    if (i > 0) {\n"
+            "      console.log(i);\n"
+            "    }\n"
+            "  }\n"
+            "}"
+        )
+        tree = esprima.parseScript(source, loc=True)
+        # depth=1 should only get the for-loop, not nested if
+        blocks_d1 = list(
+            _esprima_extract_function_blocks(
+                tree, source.splitlines(), "test.js", max_depth=1, language="javascript_lsp"
+            )
+        )
+        blocks_d3 = list(
+            _esprima_extract_function_blocks(
+                tree, source.splitlines(), "test.js", max_depth=3, language="javascript_lsp"
+            )
+        )
+        assert len(blocks_d3) >= len(blocks_d1)
+
+    def test_ts_block_extraction_with_types(self):
+        """TS block extraction works after annotation stripping."""
+        import esprima
+
+        from astrograph.languages.javascript_lsp_plugin import (
+            _esprima_extract_function_blocks,
+        )
+        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+
+        source = (
+            "function process(items: number[]): void {\n"
+            "  for (let i: number = 0; i < items.length; i++) {\n"
+            "    console.log(items[i]);\n"
+            "  }\n"
+            "}"
+        )
+        stripped = _strip_ts_annotations(source)
+        tree = esprima.parseScript(stripped, loc=True)
+        blocks = list(
+            _esprima_extract_function_blocks(
+                tree, source.splitlines(), "test.ts", max_depth=3, language="typescript_lsp"
+            )
+        )
+        assert len(blocks) >= 1
+
+    def test_cpp_normalize_graph_op_pattern(self):
+        """C++ normalize_graph_for_pattern collapses :Op(...) to :Op."""
+        import networkx as nx
+
+        from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
+
+        plugin = CppLSPPlugin.__new__(CppLSPPlugin)
+        g = nx.DiGraph()
+        g.add_node(0, label="AssignStmt:Op(+)")
+        g.add_node(1, label="AssignStmt:Op(*)")
+        g.add_node(2, label="VarDecl")
+        g.add_edge(0, 1)
+        g.add_edge(0, 2)
+        normalized = plugin.normalize_graph_for_pattern(g)
+        labels = [data["label"] for _, data in normalized.nodes(data=True)]
+        assert "AssignStmt:Op" in labels
+        assert "AssignStmt:Op(+)" not in labels
+        assert "VarDecl" in labels
+
+    def test_c_semantic_signals_emitted(self):
+        """C plugin emits all 5 semantic signals for C code."""
+        from astrograph.languages.c_lsp_plugin import CLSPPlugin
+
+        plugin = CLSPPlugin.__new__(CLSPPlugin)
+        source = (
+            "#include <stdlib.h>\n"
+            "#define MAX 100\n"
+            "struct Point { int x; int y; };\n"
+            "void process(struct Point *p) {\n"
+            "  int *arr = malloc(MAX * sizeof(int));\n"
+            "  free(arr);\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "test.c")
+        keys = {s.key for s in profile.signals}
+        assert "c.preprocessor" in keys
+        assert "c.pointer_usage" in keys
+        assert "c.composite_types" in keys
+        assert "c.memory_management" in keys
+        assert "c.control_flow" in keys
+        assert profile.extractor == "c_lsp:syntax"
+
+    def test_java_semantic_signals_emitted(self):
+        """Java plugin emits all 6 semantic signals for Java code."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "@Override\n"
+            "public <T> T process(T item) throws Exception {\n"
+            "  try {\n"
+            "    return item;\n"
+            "  } catch (Exception e) {\n"
+            "    throw e;\n"
+            "  }\n"
+            "}"
+        )
+        profile = plugin.extract_semantic_profile(source, "Test.java")
+        keys = {s.key for s in profile.signals}
+        assert "java.annotations" in keys
+        assert "java.access_modifiers" in keys
+        assert "java.generic.present" in keys
+        assert "java.exception_handling" in keys
+        assert "java.functional_style" in keys
+        assert "java.class_kind" in keys
+        assert profile.extractor == "java_lsp:syntax"
+        # Check specific values
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "Override" in sig_map["java.annotations"]
+        assert sig_map["java.access_modifiers"] == "public"
+        assert sig_map["java.generic.present"] == "yes"
+        assert sig_map["java.exception_handling"] == "both"
+
+    # -- Brace-based block extraction tests --
+
+    def test_brace_block_extraction_c_for_if(self):
+        """Brace block extractor finds for and nested if in C code."""
+        from astrograph.languages._brace_block_extractor import (
+            extract_brace_blocks_from_function,
+        )
+
+        c_code = (
+            "void process(int *arr, int n) {\n"
+            "    for (int i = 0; i < n; i++) {\n"
+            "        if (arr[i] > 0) {\n"
+            "            arr[i] *= 2;\n"
+            "        }\n"
+            "    }\n"
+            "}"
+        )
+        blocks = list(extract_brace_blocks_from_function(c_code, "test.c", "process", 1, "c_lsp"))
+        assert len(blocks) == 2
+        assert blocks[0].name == "process.for_1"
+        assert blocks[0].block_type == "for"
+        assert blocks[0].nesting_depth == 1
+        assert blocks[1].name == "process.for_1.if_1"
+        assert blocks[1].block_type == "if"
+        assert blocks[1].nesting_depth == 2
+
+    def test_brace_block_extraction_java_try_switch(self):
+        """Brace block extractor finds try and nested switch in Java code."""
+        from astrograph.languages._brace_block_extractor import (
+            extract_brace_blocks_from_function,
+        )
+
+        java_code = (
+            "public void handle(int type) {\n"
+            "    try {\n"
+            "        switch (type) {\n"
+            "            case 1:\n"
+            "                process();\n"
+            "                break;\n"
+            "        }\n"
+            "    } catch (Exception e) {\n"
+            "        log(e);\n"
+            "    }\n"
+            "}"
+        )
+        blocks = list(
+            extract_brace_blocks_from_function(java_code, "Test.java", "handle", 1, "java_lsp")
+        )
+        assert len(blocks) == 2
+        assert blocks[0].block_type == "try"
+        assert blocks[1].block_type == "switch"
+        assert blocks[1].nesting_depth == 2
+
+    def test_brace_block_extraction_cpp_while(self):
+        """Brace block extractor finds while loops in C++ code."""
+        from astrograph.languages._brace_block_extractor import (
+            extract_brace_blocks_from_function,
+        )
+
+        cpp_code = "void run(int n) {\n" "    while (n > 0) {\n" "        n--;\n" "    }\n" "}"
+        blocks = list(extract_brace_blocks_from_function(cpp_code, "test.cpp", "run", 1, "cpp_lsp"))
+        assert len(blocks) == 1
+        assert blocks[0].name == "run.while_1"
+        assert blocks[0].block_type == "while"
+
+    def test_brace_block_extraction_respects_max_depth(self):
+        """Brace block extractor respects max_depth parameter."""
+        from astrograph.languages._brace_block_extractor import (
+            extract_brace_blocks_from_function,
+        )
+
+        code = (
+            "void f() {\n"
+            "    for (int i = 0; i < 10; i++) {\n"
+            "        if (i > 0) {\n"
+            "            while (i > 5) {\n"
+            "                i--;\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "}"
+        )
+        blocks_d1 = list(
+            extract_brace_blocks_from_function(code, "t.c", "f", 1, "c_lsp", max_depth=1)
+        )
+        blocks_d3 = list(
+            extract_brace_blocks_from_function(code, "t.c", "f", 1, "c_lsp", max_depth=3)
+        )
+        assert len(blocks_d1) == 1  # only for
+        assert len(blocks_d3) == 3  # for, if, while
+
+    def test_brace_block_extraction_skips_comments(self):
+        """Brace block extractor ignores keywords inside comments."""
+        from astrograph.languages._brace_block_extractor import (
+            extract_brace_blocks_from_function,
+        )
+
+        code = (
+            "void f() {\n"
+            "    // for (int i = 0; i < n; i++) {\n"
+            "    /* if (x) { } */\n"
+            "    for (int j = 0; j < 5; j++) {\n"
+            "        j++;\n"
+            "    }\n"
+            "}"
+        )
+        blocks = list(extract_brace_blocks_from_function(code, "t.c", "f", 1, "c_lsp"))
+        assert len(blocks) == 1
+        assert blocks[0].block_type == "for"
+
+    def test_c_normalize_graph_op_pattern(self):
+        """C normalize_graph_for_pattern collapses :Op(...) to :Op."""
+        import networkx as nx
+
+        from astrograph.languages.c_lsp_plugin import CLSPPlugin
+
+        plugin = CLSPPlugin.__new__(CLSPPlugin)
+        g = nx.DiGraph()
+        g.add_node(0, label="AssignStmt:Op(+)")
+        g.add_node(1, label="CallStmt")
+        g.add_edge(0, 1)
+        normalized = plugin.normalize_graph_for_pattern(g)
+        labels = [data["label"] for _, data in normalized.nodes(data=True)]
+        assert "AssignStmt:Op" in labels
+        assert "AssignStmt:Op(+)" not in labels
+
+    def test_java_normalize_graph_op_pattern(self):
+        """Java normalize_graph_for_pattern collapses :Op(...) to :Op."""
+        import networkx as nx
+
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        g = nx.DiGraph()
+        g.add_node(0, label="AssignStmt:Op(=)")
+        g.add_node(1, label="ForStmt")
+        g.add_edge(0, 1)
+        normalized = plugin.normalize_graph_for_pattern(g)
+        labels = [data["label"] for _, data in normalized.nodes(data=True)]
+        assert "AssignStmt:Op" in labels
+        assert "AssignStmt:Op(=)" not in labels
+        assert "ForStmt" in labels
+
+    def test_ts_version_probing_reuses_js_logic(self):
+        """TypeScript version probing uses the same logic as JavaScript."""
+        from astrograph.lsp_setup import _evaluate_version_status
+
+        result = _evaluate_version_status(
+            language_id="typescript_lsp",
+            detected="4.3.5",
+            probe_kind="server",
+            transport="subprocess",
+            available=True,
+        )
+        assert result["state"] == "supported"
+
+        result_old = _evaluate_version_status(
+            language_id="typescript_lsp",
+            detected="3.1.0",
+            probe_kind="server",
+            transport="subprocess",
+            available=True,
+        )
+        assert result_old["state"] == "best_effort"
+
+        result_too_old = _evaluate_version_status(
+            language_id="typescript_lsp",
+            detected="2.0.0",
+            probe_kind="server",
+            transport="subprocess",
+            available=True,
+        )
+        assert result_too_old["state"] == "unsupported"
 
 
 class TestCallTool:

@@ -404,6 +404,22 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
             )
             extra_coverage += 0.10
 
+        # 7. Pattern matching (always emitted, Python 3.10+)
+        has_match = (
+            any(isinstance(n, ast.Match) for n in ast.walk(tree))
+            if hasattr(ast, "Match")
+            else False
+        )
+        signals.append(
+            SemanticSignal(
+                key="python.pattern_matching.present",
+                value="yes" if has_match else "no",
+                confidence=0.95,
+                origin="ast",
+            )
+        )
+        extra_coverage += 0.05
+
         return SemanticProfile(
             signals=tuple(signals),
             coverage=min(1.0, base_profile.coverage + extra_coverage),

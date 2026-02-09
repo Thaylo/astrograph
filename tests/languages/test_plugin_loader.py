@@ -28,9 +28,9 @@ class EnvPlugin(BaseLanguagePlugin):
         return nx.DiGraph()
 
 
-@pytest.mark.parametrize("language_id", ["python", "javascript_lsp"])
+@pytest.mark.parametrize("language_id", ["python", "javascript_lsp", "typescript_lsp"])
 def test_discover_includes_default_languages(language_id):
-    """Default discovery includes bundled Python and JavaScript plugins."""
+    """Default discovery includes bundled Python, JavaScript, and TypeScript plugins."""
     plugins = discover_language_plugins()
     assert any(plugin.language_id == language_id for plugin in plugins)
 

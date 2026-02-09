@@ -45,22 +45,36 @@ logger = logging.getLogger(__name__)
 
 _LANGUAGE_VARIANT_POLICY: dict[str, dict[str, Any]] = {
     "python": {
-        "supported": ["3.11", "3.12", "3.13"],
-        "best_effort": ["3.14"],
+        "supported": ["3.11", "3.12", "3.13", "3.14"],
+        "best_effort": ["3.15"],
         "notes": (
             "Prefer project-specific interpreter bindings. "
             "For deterministic analysis, bind python to the interpreter that matches the repo."
         ),
     },
     "javascript_lsp": {
-        "supported": ["TypeScript 5.x", "ES2021+"],
-        "best_effort": ["TypeScript 4.x"],
+        "supported": [
+            "TypeScript 5.x",
+            "ES2021+",
+            "Node.js 20 LTS",
+            "Node.js 22 LTS",
+            "Node.js 24 LTS",
+        ],
+        "best_effort": ["TypeScript 4.x", "Node.js 18 LTS"],
         "notes": (
             "Prefer Node LTS and a recent TypeScript toolchain for stable symbol extraction."
         ),
     },
+    "typescript_lsp": {
+        "supported": ["TypeScript 5.x", "Node.js 20 LTS", "Node.js 22 LTS", "Node.js 24 LTS"],
+        "best_effort": ["TypeScript 4.x", "Node.js 18 LTS"],
+        "notes": (
+            "Shares typescript-language-server with javascript_lsp. "
+            "Prefer Node LTS and a recent TypeScript toolchain."
+        ),
+    },
     "c_lsp": {
-        "supported": ["C11", "C17"],
+        "supported": ["C11", "C17", "C23"],
         "best_effort": ["C99"],
         "notes": "Requires compile flags consistent with the project build.",
     },
@@ -74,7 +88,7 @@ _LANGUAGE_VARIANT_POLICY: dict[str, dict[str, Any]] = {
         ),
     },
     "java_lsp": {
-        "supported": ["Java 11", "Java 17", "Java 21"],
+        "supported": ["Java 11", "Java 17", "Java 21", "Java 25"],
         "best_effort": ["Java 8"],
         "notes": "Prefer LTS JDKs for predictable language-server behavior.",
     },
@@ -107,6 +121,12 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
         LSPServerSpec(
             language_id="javascript_lsp",
             command_env_var="ASTROGRAPH_JS_LSP_COMMAND",
+            default_command=("typescript-language-server", "--stdio"),
+            probe_commands=(),
+        ),
+        LSPServerSpec(
+            language_id="typescript_lsp",
+            command_env_var="ASTROGRAPH_TS_LSP_COMMAND",
             default_command=("typescript-language-server", "--stdio"),
             probe_commands=(),
         ),
@@ -640,6 +660,12 @@ def _version_probe_candidates(
     if language_id == "python" and len(parsed) >= 3 and parsed[1] == "-m" and parsed[2] == "pylsp":
         candidates.append(([parsed[0], "--version"], "runtime"))
 
+    if language_id in {"javascript_lsp", "typescript_lsp"}:
+        candidates.append((["node", "--version"], "runtime"))
+
+    if language_id == "java_lsp":
+        candidates.append((["java", "-version"], "runtime"))
+
     deduped: list[tuple[list[str], str]] = []
     seen: set[tuple[str, ...]] = set()
     for candidate, kind in candidates:
@@ -736,25 +762,44 @@ def _evaluate_version_status(
                 state = "unsupported"
                 reason = "python-lsp-server version is below supported baseline (1.11)."
         elif probe_kind == "runtime":
-            if major == 3 and minor in {11, 12, 13}:
+            if major == 3 and minor in {11, 12, 13, 14}:
                 state = "supported"
                 reason = "Python runtime matches the primary supported variants."
-            elif major == 3 and minor == 14:
+            elif major == 3 and minor == 15:
                 state = "best_effort"
-                reason = "Python 3.14 is currently treated as best-effort."
+                reason = "Python 3.15 is currently treated as best-effort."
             else:
                 state = "unsupported"
                 reason = "Python runtime is outside the supported variant window."
-    elif language_id == "javascript_lsp":
-        if major >= 4:
-            state = "supported"
-            reason = "typescript-language-server major version is in supported range (>=4)."
-        elif major == 3:
-            state = "best_effort"
-            reason = "typescript-language-server major version 3 is accepted as best-effort."
+    elif language_id in {"javascript_lsp", "typescript_lsp"}:
+        if probe_kind == "runtime":
+            # Node.js runtime version probing
+            if major in {20, 22, 24}:
+                state = "supported"
+                reason = f"Node.js {major} LTS is within the supported range."
+            elif major == 18:
+                state = "best_effort"
+                reason = "Node.js 18 LTS is accepted as best-effort."
+            elif major >= 20:
+                state = "supported"
+                reason = f"Node.js {major} is within the supported range (>=20)."
+            elif major >= 16:
+                state = "best_effort"
+                reason = f"Node.js {major} is accepted as best-effort."
+            else:
+                state = "unsupported"
+                reason = "Node.js version is below the supported range."
         else:
-            state = "unsupported"
-            reason = "typescript-language-server major version is below supported range."
+            # typescript-language-server version probing
+            if major >= 4:
+                state = "supported"
+                reason = "typescript-language-server major version is in supported range (>=4)."
+            elif major == 3:
+                state = "best_effort"
+                reason = "typescript-language-server major version 3 is accepted as best-effort."
+            else:
+                state = "unsupported"
+                reason = "typescript-language-server major version is below supported range."
     elif language_id in {"c_lsp", "cpp_lsp"}:
         detected_lower = (detected or "").lower()
         if "clangd" in detected_lower:
@@ -779,9 +824,24 @@ def _evaluate_version_status(
                 "Non-clangd C/C++ language server detected; compatibility is best-effort "
                 "and verified through protocol and compile database checks."
             )
-    elif language_id == "java_lsp" and major >= 1:
-        state = "best_effort"
-        reason = "Java adapter version probing is best-effort; rely on workspace JDK checks."
+    elif language_id == "java_lsp":
+        if probe_kind == "runtime":
+            # JDK version probing
+            if major in {11, 17, 21, 25}:
+                state = "supported"
+                reason = f"Java {major} is a supported LTS version."
+            elif major == 8:
+                state = "best_effort"
+                reason = "Java 8 is accepted as best-effort."
+            elif major >= 11:
+                state = "supported"
+                reason = f"Java {major} is within the supported range (>=11)."
+            else:
+                state = "unsupported"
+                reason = "Java version is below the supported range."
+        elif major >= 1:
+            state = "best_effort"
+            reason = "Java adapter version probing is best-effort; rely on workspace JDK checks."
 
     return {
         "state": state,

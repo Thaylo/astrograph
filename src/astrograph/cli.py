@@ -48,7 +48,7 @@ def _default_install_command(spec: LSPServerSpec) -> list[str] | None:
     """Return auto-install command for known default servers."""
     if spec.language_id == "python":
         return [sys.executable, "-m", "pip", "install", "python-lsp-server>=1.11"]
-    if spec.language_id == "javascript_lsp":
+    if spec.language_id in ("javascript_lsp", "typescript_lsp"):
         return ["npm", "install", "-g", "typescript", "typescript-language-server"]
     return None
 

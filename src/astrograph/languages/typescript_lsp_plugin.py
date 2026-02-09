@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterator
 
+import esprima
 import networkx as nx
 
-from .base import SemanticProfile, SemanticSignal
-from .javascript_lsp_plugin import JavaScriptLSPPlugin, _esprima_ast_to_graph
+from .base import CodeUnit, SemanticSignal
+from .javascript_lsp_plugin import (
+    JavaScriptLSPPlugin,
+    _esprima_ast_to_graph,
+    _esprima_extract_function_blocks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,16 @@ _TS_NAMESPACE_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+# -- TS 5.x+ syntax (decorators, using, satisfies) --
+# Stage 3 decorators (esprima doesn't support them)
+_TS_DECORATOR_RE = re.compile(r"^\s*@\w[\w$.]*(?:\([^)]*\))?\s*$", re.MULTILINE)
+# `using` / `await using` (TS 5.2+, explicit resource management)
+_TS_USING_RE = re.compile(r"\b(?:await\s+)?using\s+[A-Za-z_$][\w$]*\s*=")
+# `satisfies` operator (TS 4.9+)
+_TS_SATISFIES_RE = re.compile(r"\bsatisfies\s+[A-Za-z_$][\w$.<>,\s|&\[\]]*")
+# `accessor` keyword (TS 4.9+ auto-accessor)
+_TS_ACCESSOR_RE = re.compile(r"\baccessor\s+\w+")
+
 # -- TS-specific semantic patterns --
 _TS_GENERIC_DETECT_RE = re.compile(
     r"<\s*[A-Z][\w$]*(?:\s+extends\b)?" r"|(?:function|class|interface|type)\s+\w+\s*<"
@@ -56,6 +72,8 @@ _TS_STRICT_MODE_RE = re.compile(
 def _strip_ts_annotations(source: str) -> str:
     """Remove TypeScript-specific syntax so esprima can parse the result."""
     result = source
+    # Remove decorators (Stage 3, not supported by esprima)
+    result = _TS_DECORATOR_RE.sub("", result)
     # Remove enum declarations
     result = _TS_ENUM_RE.sub("", result)
     # Remove namespace blocks
@@ -64,6 +82,14 @@ def _strip_ts_annotations(source: str) -> str:
     result = _TS_INTERFACE_BLOCK_RE.sub("", result)
     # Remove declare statements
     result = _TS_DECLARE_RE.sub("", result)
+    # Replace `using`/`await using` with `const` (preserves structure)
+    result = _TS_USING_RE.sub(
+        lambda m: "const " + m.group(0).split("=")[0].split()[-1] + " =", result
+    )
+    # Remove `satisfies Type` (TS 4.9+)
+    result = _TS_SATISFIES_RE.sub("", result)
+    # Remove `accessor` keyword (TS 4.9+)
+    result = _TS_ACCESSOR_RE.sub(lambda m: m.group(0).replace("accessor ", ""), result)
     # Remove generic type params
     result = _TS_GENERIC_PARAMS_RE.sub("", result)
     # Remove as casts
@@ -108,21 +134,61 @@ class TypeScriptLSPPlugin(JavaScriptLSPPlugin):
         return super(JavaScriptLSPPlugin, self).source_to_graph(source, normalize_ops=normalize_ops)
 
     # ------------------------------------------------------------------
-    # Semantic profiling (inherited JS signals + TS-specific)
+    # Block extraction (strip TS → parse as JS → extract blocks)
     # ------------------------------------------------------------------
 
-    def extract_semantic_profile(
+    def extract_code_units(
         self,
         source: str,
         file_path: str = "<unknown>",
-    ) -> SemanticProfile:
-        """Extend JS semantic profile with TypeScript-specific signals."""
-        base_profile = super().extract_semantic_profile(source=source, file_path=file_path)
-        signals = list(base_profile.signals)
-        notes = list(base_profile.notes)
-        extra_coverage = 0.0
+        include_blocks: bool = True,
+        max_block_depth: int = 3,
+    ) -> Iterator[CodeUnit]:
+        """Extract units via LSP, then extract inner blocks from stripped TS."""
+        yield from super(JavaScriptLSPPlugin, self).extract_code_units(
+            source,
+            file_path,
+            include_blocks=False,
+            max_block_depth=max_block_depth,
+        )
 
-        # 1. Strict mode indicators (always emitted)
+        if not include_blocks:
+            return
+
+        stripped = _strip_ts_annotations(source)
+        tree = None
+        for parser in (esprima.parseScript, esprima.parseModule):
+            try:
+                tree = parser(stripped, loc=True)
+                break
+            except esprima.Error:
+                continue
+
+        if tree is None:
+            return
+
+        source_lines = source.splitlines()
+        yield from _esprima_extract_function_blocks(
+            tree,
+            source_lines,
+            file_path,
+            max_depth=max_block_depth,
+            language=self.LANGUAGE_ID,
+        )
+
+    # ------------------------------------------------------------------
+    # Semantic profiling (inherited JS signals + TS-specific)
+    # ------------------------------------------------------------------
+
+    def _language_signals(self, source: str) -> list[SemanticSignal]:
+        """TypeScript language signals (extends JS base signals).
+
+        Adds TS-specific strict-mode and generic-usage indicators on top of
+        the JavaScript signals provided by the parent class.
+        """
+        signals = super()._language_signals(source)
+
+        # 1. Strict mode indicators (as/non-null/typed params)
         has_strict = bool(_TS_STRICT_MODE_RE.search(source))
         signals.append(
             SemanticSignal(
@@ -132,9 +198,8 @@ class TypeScriptLSPPlugin(JavaScriptLSPPlugin):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.05
 
-        # 2. Generic usage (always emitted)
+        # 2. Generic usage (<T>, <T extends ...>, generic declarations)
         has_generic = bool(_TS_GENERIC_DETECT_RE.search(source))
         signals.append(
             SemanticSignal(
@@ -144,11 +209,5 @@ class TypeScriptLSPPlugin(JavaScriptLSPPlugin):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.05
 
-        return SemanticProfile(
-            signals=tuple(signals),
-            coverage=min(1.0, base_profile.coverage + extra_coverage),
-            notes=tuple(notes),
-            extractor="typescript_lsp:syntax",
-        )
+        return signals

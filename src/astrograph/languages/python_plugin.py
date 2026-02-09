@@ -14,8 +14,18 @@ import networkx as nx
 from .base import ASTGraph, BaseLanguagePlugin, CodeUnit, build_ast_graph
 
 # Block types to extract from functions
-BLOCK_TYPES = (ast.For, ast.While, ast.If, ast.Try, ast.With, ast.AsyncFor, ast.AsyncWith)
-BLOCK_TYPE_NAMES = {
+_MATCH_TYPE: tuple[type, ...] = (ast.Match,) if hasattr(ast, "Match") else ()
+BLOCK_TYPES = (
+    ast.For,
+    ast.While,
+    ast.If,
+    ast.Try,
+    ast.With,
+    ast.AsyncFor,
+    ast.AsyncWith,
+    *_MATCH_TYPE,
+)
+BLOCK_TYPE_NAMES: dict[type, str] = {
     ast.For: "for",
     ast.While: "while",
     ast.If: "if",
@@ -24,6 +34,8 @@ BLOCK_TYPE_NAMES = {
     ast.AsyncFor: "async_for",
     ast.AsyncWith: "async_with",
 }
+if hasattr(ast, "Match"):
+    BLOCK_TYPE_NAMES[ast.Match] = "match"
 
 
 def _extract_blocks_recursive(

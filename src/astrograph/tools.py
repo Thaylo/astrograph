@@ -1230,7 +1230,7 @@ class CodeStructureTools(CloseOnExitMixin):
         """Return a known install command for bundled subprocess servers."""
         if language_id == "python":
             return ["python3", "-m", "pip", "install", "python-lsp-server>=1.11"]
-        if language_id == "javascript_lsp":
+        if language_id in ("javascript_lsp", "typescript_lsp"):
             return ["npm", "install", "-g", "typescript", "typescript-language-server"]
         return None
 

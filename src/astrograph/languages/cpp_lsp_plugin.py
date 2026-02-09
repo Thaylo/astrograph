@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
+import networkx as nx
+
+from ._brace_block_extractor import extract_brace_blocks_from_function
 from ._configured_lsp_plugin import ConfiguredLSPLanguagePluginBase
-from .base import SemanticProfile, SemanticSignal
+from .base import CodeUnit, SemanticSignal
 
 _CPP_USER_TYPE_RE = re.compile(r"\b(?:class|struct)\s+([A-Za-z_][A-Za-z0-9_]*)")
 _CPP_OPERATOR_PLUS_DECL_RE = re.compile(r"\boperator\s*\+\s*\(")
@@ -17,6 +21,15 @@ _CPP_OVERRIDE_RE = re.compile(r"\boverride\b")
 _CPP_NAMESPACE_RE = re.compile(r"\bnamespace\s+([A-Za-z_]\w*)")
 _CPP_CONST_METHOD_RE = re.compile(r"\)\s*const\b")
 _CPP_CONSTEXPR_RE = re.compile(r"\bconstexpr\b")
+# -- C++20/23 features --
+_CPP_CONCEPT_RE = re.compile(r"\bconcept\s+[A-Za-z_]\w*")
+_CPP_REQUIRES_RE = re.compile(r"\brequires\b")
+_CPP_CO_AWAIT_RE = re.compile(r"\bco_(?:await|return|yield)\b")
+_CPP_MODULE_RE = re.compile(r"^\s*(?:export\s+)?(?:module|import)\s+\w", re.MULTILINE)
+_CPP_SPACESHIP_RE = re.compile(r"<=>")
+_CPP_CONSTEVAL_RE = re.compile(r"\bconsteval\b")
+_CPP_CONSTINIT_RE = re.compile(r"\bconstinit\b")
+
 _CPP_PLUS_EXPR_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*([A-Za-z_][A-Za-z0-9_]*)\b")
 _CPP_FUNCTION_SIG_RE = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9_:<>]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^()]*)\)"
@@ -75,6 +88,45 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
     DEFAULT_COMMAND = ("tcp://127.0.0.1:2088",)
     COMMAND_ENV_VAR = "ASTROGRAPH_CPP_LSP_COMMAND"
     TIMEOUT_ENV_VAR = "ASTROGRAPH_CPP_LSP_TIMEOUT"
+
+    def normalize_graph_for_pattern(self, graph: nx.DiGraph) -> nx.DiGraph:
+        """Normalize operator labels from the line-level parser for pattern matching."""
+        normalized: nx.DiGraph = graph.copy()
+        for _node_id, data in normalized.nodes(data=True):
+            label = data.get("label", "")
+            if ":Op(" in label:
+                # "AssignStmt:Op(+)" → "AssignStmt:Op"
+                data["label"] = label[: label.index(":Op(") + 3]
+        return normalized
+
+    def extract_code_units(
+        self,
+        source: str,
+        file_path: str = "<unknown>",
+        include_blocks: bool = True,
+        max_block_depth: int = 3,
+    ) -> Iterator[CodeUnit]:
+        """Extract units via LSP, then optionally extract inner blocks via brace matching."""
+        func_units: list[CodeUnit] = []
+        for unit in super().extract_code_units(
+            source, file_path, include_blocks=False, max_block_depth=max_block_depth
+        ):
+            yield unit
+            if unit.unit_type in {"function", "method"}:
+                func_units.append(unit)
+
+        if not include_blocks:
+            return
+
+        for unit in func_units:
+            yield from extract_brace_blocks_from_function(
+                func_code=unit.code,
+                file_path=file_path,
+                func_name=unit.name,
+                func_line_start=unit.line_start,
+                language=self.LANGUAGE_ID,
+                max_depth=max_block_depth,
+            )
 
     def _normalize_cpp_type(self, raw_type: str) -> str:
         cleaned = raw_type.replace("&", " ").replace("*", " ")
@@ -179,15 +231,11 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
             return "unknown", 0.25
         return "absent", 0.0
 
-    def extract_semantic_profile(
-        self,
-        source: str,
-        file_path: str = "<unknown>",
-    ) -> SemanticProfile:
-        base_profile = super().extract_semantic_profile(source=source, file_path=file_path)
-        signals = list(base_profile.signals)
-        notes = list(base_profile.notes)
+    def _language_signals(self, source: str) -> list[SemanticSignal]:
+        """All C++-specific regex/syntax signals."""
+        signals = super()._language_signals(source)
 
+        # 1. User types
         user_types = {
             self._normalize_cpp_type(match) for match in _CPP_USER_TYPE_RE.findall(source)
         }
@@ -201,6 +249,7 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 )
             )
 
+        # 2. Operator plus binding (type-resolved)
         var_types = self._collect_variable_types(source)
         operator_plus_declared = bool(_CPP_OPERATOR_PLUS_DECL_RE.search(source))
         plus_binding, plus_confidence = self._infer_plus_binding(
@@ -218,17 +267,6 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 )
             )
 
-        if plus_binding == "unknown":
-            notes.append(
-                "C++ plus-expression types are partially unresolved; C++ LSP hover/type info would improve confidence."
-            )
-
-        extra_coverage = 0.0
-        if user_types:
-            extra_coverage += 0.2
-        if plus_binding != "absent":
-            extra_coverage += 0.4
-
         # 3. Template presence (always emitted)
         has_template = bool(_CPP_TEMPLATE_RE.search(source))
         signals.append(
@@ -239,7 +277,6 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.10
 
         # 4. Virtual / override (always emitted)
         has_virtual = bool(_CPP_VIRTUAL_RE.search(source))
@@ -260,7 +297,6 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.10
 
         # 5. Namespace names (always emitted)
         namespaces = sorted({m.group(1) for m in _CPP_NAMESPACE_RE.finditer(source)})
@@ -272,7 +308,6 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.05
 
         # 6. Const correctness (always emitted)
         has_const_method = bool(_CPP_CONST_METHOD_RE.search(source))
@@ -293,11 +328,30 @@ class CppLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.05
 
-        return SemanticProfile(
-            signals=tuple(signals),
-            coverage=min(1.0, base_profile.coverage + extra_coverage),
-            notes=tuple(notes),
-            extractor="cpp_lsp:syntax",
+        # 7. C++20/23 features (always emitted)
+        cpp_modern_parts = []
+        if _CPP_CONCEPT_RE.search(source):
+            cpp_modern_parts.append("concept")
+        if _CPP_REQUIRES_RE.search(source):
+            cpp_modern_parts.append("requires")
+        if _CPP_CO_AWAIT_RE.search(source):
+            cpp_modern_parts.append("coroutine")
+        if _CPP_MODULE_RE.search(source):
+            cpp_modern_parts.append("module")
+        if _CPP_SPACESHIP_RE.search(source):
+            cpp_modern_parts.append("spaceship")
+        if _CPP_CONSTEVAL_RE.search(source):
+            cpp_modern_parts.append("consteval")
+        if _CPP_CONSTINIT_RE.search(source):
+            cpp_modern_parts.append("constinit")
+        signals.append(
+            SemanticSignal(
+                key="cpp.modern_features",
+                value=",".join(cpp_modern_parts) if cpp_modern_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
         )
+
+        return signals

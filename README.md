@@ -206,7 +206,7 @@ Large codebases accumulate duplicate code because:
 - **Any MCP client** - Should work (standard stdio protocol)
 
 > **Language support (official):**
-> - Bundled defaults: `python` (`pylsp`), `javascript_lsp` (`typescript-language-server --stdio`)
+> - Bundled defaults: `python` (`pylsp`), `javascript_lsp` / `typescript_lsp` (`typescript-language-server --stdio`)
 > - Attach defaults: `c_lsp` (`tcp://127.0.0.1:2087`), `cpp_lsp` (`tcp://127.0.0.1:2088`), `java_lsp` (`tcp://127.0.0.1:2089`)
 >
 > More languages can be added via plugins — see [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -294,7 +294,7 @@ continue with search/install/config loops instead of stopping at diagnostics.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `mode` | string | No | `inspect` | One of `inspect`, `auto_bind`, `bind`, `unbind` |
-| `language` | string | Conditionally | - | Optional filter for `inspect`/`auto_bind`; required for `bind`/`unbind` (`python`, `javascript_lsp`, `c_lsp`, `cpp_lsp`, `java_lsp`) |
+| `language` | string | Conditionally | - | Optional filter for `inspect`/`auto_bind`; required for `bind`/`unbind` (`python`, `javascript_lsp`, `typescript_lsp`, `c_lsp`, `cpp_lsp`, `java_lsp`) |
 | `command` | string or string[] | Conditionally | - | Required for `bind`; executable command or attach endpoint (`tcp://host:port`, `unix:///path`) |
 | `observations` | object[] | No | - | Optional host-discovery hints used by `auto_bind` (`language` + executable command or endpoint) |
 
@@ -458,11 +458,12 @@ First-party language plugins are enabled by default:
 |-------------|------------|-----------------|------|---------------|
 | `python` | `.py`, `.pyi` | `pylsp` | bundled subprocess | `ASTROGRAPH_PY_LSP_COMMAND`, `ASTROGRAPH_PY_LSP_TIMEOUT` |
 | `javascript_lsp` | `.js`, `.jsx`, `.mjs`, `.cjs` | `typescript-language-server --stdio` | bundled subprocess | `ASTROGRAPH_JS_LSP_COMMAND`, `ASTROGRAPH_JS_LSP_TIMEOUT` |
+| `typescript_lsp` | `.ts`, `.tsx` | `typescript-language-server --stdio` | bundled subprocess | `ASTROGRAPH_TS_LSP_COMMAND`, `ASTROGRAPH_TS_LSP_TIMEOUT` |
 | `c_lsp` | `.c`, `.h` | `tcp://127.0.0.1:2087` | attach to running server | `ASTROGRAPH_C_LSP_COMMAND`, `ASTROGRAPH_C_LSP_TIMEOUT` |
 | `cpp_lsp` | `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx`, `.ipp` | `tcp://127.0.0.1:2088` | attach to running server | `ASTROGRAPH_CPP_LSP_COMMAND`, `ASTROGRAPH_CPP_LSP_TIMEOUT` |
 | `java_lsp` | `.java` | `tcp://127.0.0.1:2089` | attach to running server | `ASTROGRAPH_JAVA_LSP_COMMAND`, `ASTROGRAPH_JAVA_LSP_TIMEOUT` |
 
-Official Docker images bundle the Python + JavaScript LSP runtime (`pylsp`, `node`, `npm`, `typescript`, `typescript-language-server`). C/C++/Java support uses attach endpoints and expects those language servers to be already running.
+Official Docker images bundle the Python + JavaScript/TypeScript LSP runtime (`pylsp`, `node`, `npm`, `typescript`, `typescript-language-server`). C/C++/Java support uses attach endpoints and expects those language servers to be already running.
 `astrograph-cli doctor` reports `ready=true` when required bundled languages are available, even if optional attach endpoints are currently offline.
 
 For local (non-Docker) installs, verify and bootstrap bundled prerequisites with:
@@ -490,7 +491,7 @@ pip install .
 # Verify bundled LSP prerequisites and attach endpoint reachability
 astrograph-cli doctor
 
-# Auto-install missing bundled LSP servers (python + javascript)
+# Auto-install missing bundled LSP servers (python + javascript/typescript)
 astrograph-cli install-lsps
 
 # Core analysis commands

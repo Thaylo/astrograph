@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
+import textwrap
+from collections.abc import Iterator
 
 import esprima
 import networkx as nx
 
 from ._configured_lsp_plugin import ConfiguredLSPLanguagePluginBase
-from .base import SemanticProfile, SemanticSignal
+from .base import CodeUnit, SemanticSignal
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +185,197 @@ def _esprima_ast_to_graph(source: str, normalize_ops: bool = False) -> nx.DiGrap
     return graph
 
 
+# -- Esprima block types for sub-function extraction --
+_ESPRIMA_BLOCK_TYPES = frozenset(
+    {
+        "ForStatement",
+        "ForInStatement",
+        "ForOfStatement",
+        "WhileStatement",
+        "DoWhileStatement",
+        "IfStatement",
+        "TryStatement",
+        "SwitchStatement",
+    }
+)
+_ESPRIMA_BLOCK_TYPE_NAMES: dict[str, str] = {
+    "ForStatement": "for",
+    "ForInStatement": "for_in",
+    "ForOfStatement": "for_of",
+    "WhileStatement": "while",
+    "DoWhileStatement": "do_while",
+    "IfStatement": "if",
+    "TryStatement": "try",
+    "SwitchStatement": "switch",
+}
+_ESPRIMA_FUNCTION_TYPES = frozenset(
+    {
+        "FunctionDeclaration",
+        "FunctionExpression",
+        "ArrowFunctionExpression",
+    }
+)
+
+
+def _esprima_extract_blocks(
+    node: object,
+    source_lines: list[str],
+    file_path: str,
+    func_name: str,
+    parent_block_name: str,
+    current_depth: int,
+    max_depth: int,
+    block_counters: dict[str, int],
+    language: str,
+) -> Iterator[CodeUnit]:
+    """Recursively extract blocks from an esprima AST node."""
+    if current_depth > max_depth:
+        return
+
+    for field in _ESPRIMA_CHILD_FIELDS:
+        child = getattr(node, field, None)
+        if child is None:
+            continue
+        children = child if isinstance(child, list) else [child]
+        for item in children:
+            node_type = getattr(item, "type", None)
+            if node_type is None:
+                continue
+
+            if node_type in _ESPRIMA_BLOCK_TYPES:
+                block_type = _ESPRIMA_BLOCK_TYPE_NAMES[node_type]
+                counter_key = f"{parent_block_name}.{block_type}"
+                if counter_key not in block_counters:
+                    block_counters[counter_key] = 0
+                block_counters[counter_key] += 1
+                block_num = block_counters[counter_key]
+
+                if parent_block_name == func_name:
+                    block_name = f"{func_name}.{block_type}_{block_num}"
+                else:
+                    block_name = f"{parent_block_name}.{block_type}_{block_num}"
+
+                loc = getattr(item, "loc", None)
+                if loc is None:
+                    continue
+                start_line = getattr(loc.start, "line", 1)
+                end_line = getattr(loc.end, "line", start_line)
+                code = textwrap.dedent("\n".join(source_lines[start_line - 1 : end_line]))
+
+                yield CodeUnit(
+                    name=block_name,
+                    code=code,
+                    file_path=file_path,
+                    line_start=start_line,
+                    line_end=end_line,
+                    unit_type="block",
+                    parent_name=func_name,
+                    block_type=block_type,
+                    nesting_depth=current_depth,
+                    parent_block_name=(
+                        parent_block_name if parent_block_name != func_name else None
+                    ),
+                    language=language,
+                )
+
+                yield from _esprima_extract_blocks(
+                    item,
+                    source_lines,
+                    file_path,
+                    func_name,
+                    block_name,
+                    current_depth + 1,
+                    max_depth,
+                    block_counters,
+                    language,
+                )
+            else:
+                # Recurse into non-block nodes to find nested blocks
+                yield from _esprima_extract_blocks(
+                    item,
+                    source_lines,
+                    file_path,
+                    func_name,
+                    parent_block_name,
+                    current_depth,
+                    max_depth,
+                    block_counters,
+                    language,
+                )
+
+
+def _esprima_extract_function_blocks(
+    tree: object,
+    source_lines: list[str],
+    file_path: str,
+    max_depth: int,
+    language: str,
+) -> Iterator[CodeUnit]:
+    """Walk esprima AST to find functions and extract their inner blocks."""
+
+    def walk(node: object) -> Iterator[CodeUnit]:
+        if node is None or not hasattr(node, "type"):
+            return
+        node_type = getattr(node, "type", None)
+
+        if node_type in _ESPRIMA_FUNCTION_TYPES:
+            # Determine function name
+            node_id = getattr(node, "id", None)
+            func_name = getattr(node_id, "name", None) if node_id else None
+            if func_name is None:
+                func_name = "<anonymous>"
+
+            body = getattr(node, "body", None)
+            if body is not None:
+                block_counters: dict[str, int] = {}
+                yield from _esprima_extract_blocks(
+                    body,
+                    source_lines,
+                    file_path,
+                    func_name,
+                    func_name,
+                    1,
+                    max_depth,
+                    block_counters,
+                    language,
+                )
+
+        if node_type == "MethodDefinition":
+            key = getattr(node, "key", None)
+            func_name = getattr(key, "name", None) if key else None
+            if func_name is None:
+                func_name = "<anonymous>"
+            value = getattr(node, "value", None)
+            if value is not None:
+                body = getattr(value, "body", None)
+                if body is not None:
+                    block_counters = {}
+                    yield from _esprima_extract_blocks(
+                        body,
+                        source_lines,
+                        file_path,
+                        func_name,
+                        func_name,
+                        1,
+                        max_depth,
+                        block_counters,
+                        language,
+                    )
+
+        # Continue walking into children (but don't re-enter function bodies)
+        for field_name in _ESPRIMA_CHILD_FIELDS:
+            child = getattr(node, field_name, None)
+            if child is None:
+                continue
+            if isinstance(child, list):
+                for item in child:
+                    yield from walk(item)
+            else:
+                yield from walk(child)
+
+    yield from walk(tree)
+
+
 class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
     """JavaScript support via LSP symbols + structural graphing."""
 
@@ -229,6 +422,48 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                     data["label"] = f"{prefix.rstrip(':')}:Op"
                     break
         return normalized
+
+    # ------------------------------------------------------------------
+    # Block extraction (esprima)
+    # ------------------------------------------------------------------
+
+    def extract_code_units(
+        self,
+        source: str,
+        file_path: str = "<unknown>",
+        include_blocks: bool = True,
+        max_block_depth: int = 3,
+    ) -> Iterator[CodeUnit]:
+        """Extract units via LSP, then optionally extract inner blocks via esprima."""
+        yield from super().extract_code_units(
+            source,
+            file_path,
+            include_blocks=False,
+            max_block_depth=max_block_depth,
+        )
+
+        if not include_blocks:
+            return
+
+        tree = None
+        for parser in (esprima.parseScript, esprima.parseModule):
+            try:
+                tree = parser(source, loc=True)
+                break
+            except esprima.Error:
+                continue
+
+        if tree is None:
+            return
+
+        source_lines = source.splitlines()
+        yield from _esprima_extract_function_blocks(
+            tree,
+            source_lines,
+            file_path,
+            max_depth=max_block_depth,
+            language=self.LANGUAGE_ID,
+        )
 
     # ------------------------------------------------------------------
     # Semantic profiling helpers (regex-based)
@@ -326,17 +561,9 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
         """Extract decorator names from @decorator patterns."""
         return {m.group(1) for m in _DECORATOR_RE.finditer(source)}
 
-    def extract_semantic_profile(
-        self,
-        source: str,
-        file_path: str = "<unknown>",
-    ) -> SemanticProfile:
-        """Extract JavaScript-specific semantic signals via regex."""
-        base_profile = super().extract_semantic_profile(source=source, file_path=file_path)
-        signals = list(base_profile.signals)
-        notes = list(base_profile.notes)
-
-        extra_coverage = 0.0
+    def _language_signals(self, source: str) -> list[SemanticSignal]:
+        """JavaScript-specific signals from regex analysis."""
+        signals = super()._language_signals(source)
 
         # 1. Async (always emitted)
         has_async = self._detect_async(source)
@@ -348,7 +575,6 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.10
 
         # 2. Type system (always emitted)
         type_system = self._detect_type_system(source)
@@ -360,7 +586,6 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.10
 
         # 3. Plus binding
         plus_result = self._infer_plus_binding(source)
@@ -374,7 +599,6 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                     origin="syntax",
                 )
             )
-            extra_coverage += 0.15
 
         # 4. Module system (always emitted)
         module_system = self._detect_module_system(source)
@@ -386,7 +610,6 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                 origin="syntax",
             )
         )
-        extra_coverage += 0.10
 
         # 5. Class pattern
         class_pattern = self._detect_class_pattern(source)
@@ -399,7 +622,6 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                     origin="syntax",
                 )
             )
-            extra_coverage += 0.10
 
         # 6. Decorators
         decorators = self._collect_decorators(source)
@@ -412,11 +634,5 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                     origin="syntax",
                 )
             )
-            extra_coverage += 0.10
 
-        return SemanticProfile(
-            signals=tuple(signals),
-            coverage=min(1.0, base_profile.coverage + extra_coverage),
-            notes=tuple(notes),
-            extractor="javascript_lsp:syntax",
-        )
+        return signals

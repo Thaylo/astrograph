@@ -17,6 +17,11 @@ from typing import Any, BinaryIO
 
 from ..lsp_setup import parse_attach_endpoint, resolve_lsp_command
 from ._lsp_base import LSPClient, LSPPosition, LSPRange, LSPSymbol
+from ._semantic_tokens import (
+    SemanticTokenLegend,
+    SemanticTokenResult,
+    decode_semantic_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,8 @@ class SubprocessLSPClient(LSPClient):
         self._proc: subprocess.Popen[bytes] | None = None
         self._initialized = False
         self._disabled = False
+        self._semantic_token_legend: SemanticTokenLegend | None = None
+        self._server_name: str | None = None
 
         self._next_id = 1
         self._lock = threading.RLock()
@@ -235,7 +242,43 @@ class SubprocessLSPClient(LSPClient):
                 "textDocument": {
                     "documentSymbol": {
                         "hierarchicalDocumentSymbolSupport": True,
-                    }
+                    },
+                    "semanticTokens": {
+                        "requests": {"full": True},
+                        "tokenTypes": [
+                            "namespace",
+                            "type",
+                            "class",
+                            "enum",
+                            "interface",
+                            "struct",
+                            "typeParameter",
+                            "parameter",
+                            "variable",
+                            "property",
+                            "function",
+                            "method",
+                            "macro",
+                            "keyword",
+                            "modifier",
+                            "comment",
+                            "string",
+                            "number",
+                            "regexp",
+                            "operator",
+                            "decorator",
+                        ],
+                        "tokenModifiers": [
+                            "declaration",
+                            "definition",
+                            "readonly",
+                            "static",
+                            "deprecated",
+                            "abstract",
+                            "async",
+                        ],
+                        "formats": ["relative"],
+                    },
                 }
             },
             "initializationOptions": self._initialization_options,
@@ -245,7 +288,7 @@ class SubprocessLSPClient(LSPClient):
         }
 
         try:
-            self._request(
+            result = self._request(
                 "initialize",
                 init_params,
                 timeout=self._request_timeout,
@@ -257,8 +300,29 @@ class SubprocessLSPClient(LSPClient):
             self.close(force=True)
             return False
 
+        # Capture server identity and semantic token legend from capabilities
+        self._semantic_token_legend = None
+        self._server_name = None
+        if isinstance(result, dict):
+            server_info = result.get("serverInfo")
+            if isinstance(server_info, dict):
+                self._server_name = server_info.get("name")
+            legend_data = (
+                result.get("capabilities", {}).get("semanticTokensProvider", {}).get("legend")
+            )
+            if isinstance(legend_data, dict):
+                self._semantic_token_legend = SemanticTokenLegend(
+                    token_types=tuple(legend_data.get("tokenTypes", ())),
+                    token_modifiers=tuple(legend_data.get("tokenModifiers", ())),
+                )
+
         self._initialized = True
         return True
+
+    @property
+    def server_name(self) -> str | None:
+        """The server name from ``serverInfo.name`` in the initialize response."""
+        return self._server_name
 
     def _parse_position(self, data: Any) -> LSPPosition:
         if not isinstance(data, dict):
@@ -349,6 +413,57 @@ class SubprocessLSPClient(LSPClient):
         except Exception as exc:
             logger.debug("LSP document symbols failed for %s: %s", file_path, exc)
             return []
+        finally:
+            with contextlib.suppress(Exception):
+                self._notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+
+    def semantic_tokens(
+        self,
+        *,
+        source: str,
+        file_path: str,
+        language_id: str,
+    ) -> SemanticTokenResult | None:
+        """Request ``textDocument/semanticTokens/full`` and decode the result.
+
+        Returns ``None`` if the server does not support semantic tokens or on
+        any error.
+        """
+        if self._disabled or self._semantic_token_legend is None:
+            return None
+
+        if not self._start_process():
+            return None
+
+        if not self._initialized and not self._initialize(file_path):
+            return None
+
+        uri = self._path_to_uri(file_path)
+
+        did_open_params = {
+            "textDocument": {
+                "uri": uri,
+                "languageId": language_id,
+                "version": 1,
+                "text": source,
+            }
+        }
+        request_params = {"textDocument": {"uri": uri}}
+
+        try:
+            self._notify("textDocument/didOpen", did_open_params)
+            result = self._request("textDocument/semanticTokens/full", request_params)
+            if not isinstance(result, dict):
+                return None
+            data = result.get("data")
+            if not isinstance(data, list):
+                return None
+            source_lines = source.splitlines()
+            tokens = decode_semantic_tokens(data, self._semantic_token_legend, source_lines)
+            return SemanticTokenResult(tokens=tokens, legend=self._semantic_token_legend)
+        except Exception as exc:
+            logger.debug("LSP semantic tokens failed for %s: %s", file_path, exc)
+            return None
         finally:
             with contextlib.suppress(Exception):
                 self._notify("textDocument/didClose", {"textDocument": {"uri": uri}})

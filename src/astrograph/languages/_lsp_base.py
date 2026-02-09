@@ -16,6 +16,8 @@ from typing import Protocol
 
 import networkx as nx
 
+from ._semantic_tokens import SemanticTokenResult, TokenIndex
+from ._server_profiles import ServerProfile, resolve_server_profile
 from .base import BaseLanguagePlugin, CodeUnit, SemanticProfile, SemanticSignal
 
 _KEYWORD_LABELS = {
@@ -34,6 +36,8 @@ _KEYWORD_LABELS = {
     "finally": "FinallyStmt",
     "with": "WithStmt",
     "return": "ReturnStmt",
+    "match": "MatchStmt",
+    "except": "ExceptStmt",
 }
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _STRING_RE = re.compile(r"'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\"")
@@ -106,6 +110,11 @@ class LSPSymbol:
 class LSPClient(Protocol):
     """Protocol for LSP clients used by LSPLanguagePluginBase."""
 
+    @property
+    def server_name(self) -> str | None:
+        """Server name from ``serverInfo.name`` in the initialize response."""
+        ...
+
     def document_symbols(
         self,
         *,
@@ -116,9 +125,23 @@ class LSPClient(Protocol):
         """Return document symbols for a source document."""
         ...
 
+    def semantic_tokens(
+        self,
+        *,
+        source: str,
+        file_path: str,
+        language_id: str,
+    ) -> SemanticTokenResult | None:
+        """Return semantic tokens for a source document, or None."""
+        ...
+
 
 class NullLSPClient:
     """Fallback LSP client when no backend is configured."""
+
+    @property
+    def server_name(self) -> str | None:
+        return None
 
     def document_symbols(
         self,
@@ -129,6 +152,16 @@ class NullLSPClient:
     ) -> list[LSPSymbol]:
         del source, file_path, language_id
         return []
+
+    def semantic_tokens(
+        self,
+        *,
+        source: str,
+        file_path: str,
+        language_id: str,
+    ) -> SemanticTokenResult | None:
+        del source, file_path, language_id
+        return None
 
 
 class LSPLanguagePluginBase(BaseLanguagePlugin):
@@ -288,6 +321,50 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
                 language=self.language_id,
             )
 
+    def _get_semantic_tokens(self, source: str, file_path: str) -> SemanticTokenResult | None:
+        """Request semantic tokens from the LSP client, returning None on failure."""
+        try:
+            return self._lsp_client.semantic_tokens(
+                source=source,
+                file_path=file_path,
+                language_id=self.lsp_language_id,
+            )
+        except (AttributeError, Exception):
+            return None
+
+    def _resolve_server_profile(self) -> ServerProfile | None:
+        """Resolve the server profile for the connected LSP server."""
+        server_name = getattr(self._lsp_client, "server_name", None)
+        return resolve_server_profile(server_name)
+
+    def _language_signals(self, source: str) -> list[SemanticSignal]:
+        """Language-specific signals from regex/AST analysis.
+
+        Override in subclasses to provide language-specific signals.
+        Subclasses should call ``super()._language_signals(source)`` to
+        include base-class signals (type hints, operator plus).
+        """
+        signals: list[SemanticSignal] = []
+        if self._has_type_hints(source):
+            signals.append(
+                SemanticSignal(
+                    key="typing.channel", value="annotated", confidence=0.65, origin="syntax"
+                )
+            )
+        if _PLUS_EXPR_RE.search(source):
+            signals.append(
+                SemanticSignal(
+                    key="operator.plus.present", value="yes", confidence=0.8, origin="syntax"
+                )
+            )
+        if _OPERATOR_PLUS_DECL_RE.search(source):
+            signals.append(
+                SemanticSignal(
+                    key="operator.plus.declared", value="yes", confidence=0.95, origin="syntax"
+                )
+            )
+        return signals
+
     def _strip_literals(self, line: str) -> str:
         no_strings = _STRING_RE.sub("STR", line)
         return _NUMBER_RE.sub("NUM", no_strings)
@@ -371,33 +448,40 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
         source: str,
         file_path: str = "<unknown>",
     ) -> SemanticProfile:
-        """Extract lightweight semantic hints from source text.
+        """Assemble semantic profile from server profile + language signals.
 
-        This intentionally does not require a live LSP backend; it provides a
-        deterministic baseline that language-specific plugins can enrich.
+        Server profile extracts what the connected LSP server can reliably
+        provide via semantic tokens.  Language signals fill remaining keys
+        with regex/AST analysis.  When no LSP server is available, only
+        language signals are used.
         """
-        del file_path
+        language_signals = self._language_signals(source)
 
-        signals: list[SemanticSignal] = []
-        notes: list[str] = []
+        server_signals: list[SemanticSignal] = []
+        token_result = self._get_semantic_tokens(source, file_path)
+        if token_result is not None and token_result.tokens:
+            token_index = TokenIndex(token_result.tokens)
+            profile = self._resolve_server_profile()
+            if profile is not None:
+                server_signals = profile.extract_signals(token_index, source)
 
-        _signal_checks: list[tuple[bool, str, str, float]] = [
-            (self._has_type_hints(source), "typing.channel", "annotated", 0.65),
-            (bool(_PLUS_EXPR_RE.search(source)), "operator.plus.present", "yes", 0.8),
-            (bool(_OPERATOR_PLUS_DECL_RE.search(source)), "operator.plus.declared", "yes", 0.95),
-        ]
-        for condition, key, value, confidence in _signal_checks:
-            if condition:
-                signals.append(
-                    SemanticSignal(key=key, value=value, confidence=confidence, origin="syntax")
-                )
+        if server_signals:
+            covered_keys = {s.key for s in server_signals}
+            all_signals = server_signals + [
+                s for s in language_signals if s.key not in covered_keys
+            ]
+            extractor = f"{self.language_id}:lsp+syntax"
+        else:
+            all_signals = language_signals
+            extractor = f"{self.language_id}:syntax"
 
-        if not signals:
-            notes.append("No stable semantic hints found in source.")
+        notes: tuple[str, ...] = ()
+        if not all_signals:
+            notes = ("No stable semantic hints found in source.",)
 
         return SemanticProfile(
-            signals=tuple(signals),
-            coverage=min(1.0, 0.3 * len(signals)),
-            notes=tuple(notes),
-            extractor=f"{self.language_id}:syntax",
+            signals=tuple(all_signals),
+            coverage=min(1.0, 0.15 * len(all_signals)),
+            notes=notes,
+            extractor=extractor,
         )
