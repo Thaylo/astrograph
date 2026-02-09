@@ -90,37 +90,26 @@ _ESPRIMA_CHILD_FIELDS = (
 )
 
 
+_OPERATOR_EXPR_TYPES = frozenset(
+    {
+        "BinaryExpression",
+        "UnaryExpression",
+        "UpdateExpression",
+        "AssignmentExpression",
+        "LogicalExpression",
+    }
+)
+
+
 def _esprima_node_label(node: object, normalize_ops: bool = False) -> str:
     """Compute a structural label for an esprima AST node."""
     node_type = getattr(node, "type", None)
     if node_type is None:
         return "Unknown"
 
-    if node_type == "BinaryExpression":
+    if node_type in _OPERATOR_EXPR_TYPES:
         op = getattr(node, "operator", "")
-        if normalize_ops:
-            return "BinaryExpression:Op"
-        return f"BinaryExpression:{op}"
-    if node_type == "UnaryExpression":
-        op = getattr(node, "operator", "")
-        if normalize_ops:
-            return "UnaryExpression:Op"
-        return f"UnaryExpression:{op}"
-    if node_type == "UpdateExpression":
-        op = getattr(node, "operator", "")
-        if normalize_ops:
-            return "UpdateExpression:Op"
-        return f"UpdateExpression:{op}"
-    if node_type == "AssignmentExpression":
-        op = getattr(node, "operator", "")
-        if normalize_ops:
-            return "AssignmentExpression:Op"
-        return f"AssignmentExpression:{op}"
-    if node_type == "LogicalExpression":
-        op = getattr(node, "operator", "")
-        if normalize_ops:
-            return "LogicalExpression:Op"
-        return f"LogicalExpression:{op}"
+        return f"{node_type}:Op" if normalize_ops else f"{node_type}:{op}"
     if node_type == "VariableDeclaration":
         kind = getattr(node, "kind", "var")
         return f"VariableDeclaration:{kind}"

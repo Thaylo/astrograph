@@ -28,6 +28,34 @@ class ServerProfile(Protocol):
         ...
 
 
+def _lsp_type_signal(
+    signals: list[SemanticSignal],
+    token_index: TokenIndex,
+    token_type: str,
+    key: str,
+    value: str = "yes",
+    confidence: float = 0.95,
+) -> None:
+    """Append an ``origin='lsp'`` signal if *token_type* is present."""
+    if token_index.has_type(token_type):
+        signals.append(SemanticSignal(key=key, value=value, confidence=confidence, origin="lsp"))
+
+
+def _lsp_texts_signal(
+    signals: list[SemanticSignal],
+    token_index: TokenIndex,
+    token_type: str,
+    key: str,
+    confidence: float = 0.95,
+) -> None:
+    """Append a comma-joined signal from sorted texts of *token_type*, if any."""
+    texts = sorted(token_index.texts_of_type(token_type))
+    if texts:
+        signals.append(
+            SemanticSignal(key=key, value=",".join(texts), confidence=confidence, origin="lsp")
+        )
+
+
 # ---------------------------------------------------------------------------
 # clangd  (C / C++)
 # ---------------------------------------------------------------------------
@@ -62,27 +90,10 @@ class ClangdProfile:
             )
 
         # Namespace names
-        namespaces = sorted(token_index.texts_of_type("namespace"))
-        if namespaces:
-            signals.append(
-                SemanticSignal(
-                    key="cpp.namespace",
-                    value=",".join(namespaces),
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_texts_signal(signals, token_index, "namespace", "cpp.namespace")
 
         # Template parameters → template presence
-        if token_index.has_type("typeParameter"):
-            signals.append(
-                SemanticSignal(
-                    key="cpp.template.present",
-                    value="yes",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(signals, token_index, "typeParameter", "cpp.template.present")
 
         # Spaceship operator (clangd emits operator tokens)
         if token_index.has_text("<=>", token_type="operator"):
@@ -138,15 +149,7 @@ class ClangdProfile:
             )
 
         # Macro presence
-        if token_index.has_type("macro"):
-            signals.append(
-                SemanticSignal(
-                    key="c.has_macros",
-                    value="yes",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(signals, token_index, "macro", "c.has_macros")
 
         return signals
 
@@ -306,49 +309,16 @@ class TypeScriptLanguageServerProfile:
         )
 
         # Class pattern (ES6 class via class token type)
-        if token_index.has_type("class"):
-            signals.append(
-                SemanticSignal(
-                    key="javascript.class_pattern",
-                    value="class",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(signals, token_index, "class", "javascript.class_pattern", value="class")
 
         # Generic usage (TypeScript)
-        if token_index.has_type("typeParameter"):
-            signals.append(
-                SemanticSignal(
-                    key="typescript.generic.present",
-                    value="yes",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(signals, token_index, "typeParameter", "typescript.generic.present")
 
         # Namespace detection
-        namespaces = sorted(token_index.texts_of_type("namespace"))
-        if namespaces:
-            signals.append(
-                SemanticSignal(
-                    key="javascript.namespaces",
-                    value=",".join(namespaces),
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_texts_signal(signals, token_index, "namespace", "javascript.namespaces")
 
         # Enum detection
-        if token_index.has_type("enum"):
-            signals.append(
-                SemanticSignal(
-                    key="typescript.has_enum",
-                    value="yes",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(signals, token_index, "enum", "typescript.has_enum")
 
         return signals
 
@@ -375,16 +345,7 @@ class BasedPyrightProfile:
         signals: list[SemanticSignal] = []
 
         # Decorators (basedpyright emits "decorator" token type)
-        decorators = sorted(token_index.texts_of_type("decorator"))
-        if decorators:
-            signals.append(
-                SemanticSignal(
-                    key="python.decorators.present",
-                    value=",".join(decorators),
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_texts_signal(signals, token_index, "decorator", "python.decorators.present")
 
         # Async detection (via modifier or keyword)
         has_async = token_index.has_modifier("async") or token_index.has_text(
@@ -400,15 +361,7 @@ class BasedPyrightProfile:
         )
 
         # Type parameter usage (Python 3.12+ generics)
-        if token_index.has_type("typeParameter"):
-            signals.append(
-                SemanticSignal(
-                    key="python.has_type_parameters",
-                    value="yes",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(signals, token_index, "typeParameter", "python.has_type_parameters")
 
         return signals
 
