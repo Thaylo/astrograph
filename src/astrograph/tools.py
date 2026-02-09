@@ -1236,25 +1236,24 @@ class CodeStructureTools(CloseOnExitMixin):
             return wl_hash
         return wl_hash
 
-    @_requires_index
-    def suppress(self, wl_hash: str | list[str] | None = None) -> ToolResult:
-        """Suppress one or more hashes. Accepts a string or list of strings."""
+    def _suppress_dispatch(self, wl_hash: str | list[str] | None, suppress: bool) -> ToolResult:
+        """Shared dispatch for suppress/unsuppress."""
         normalized = self._normalize_hash_input(wl_hash)
         if isinstance(normalized, ToolResult):
             return normalized
         if isinstance(normalized, list):
-            return self._batch_toggle_suppression(normalized, suppress=True)
-        return self._toggle_suppression(normalized, suppress=True)
+            return self._batch_toggle_suppression(normalized, suppress=suppress)
+        return self._toggle_suppression(normalized, suppress=suppress)
+
+    @_requires_index
+    def suppress(self, wl_hash: str | list[str] | None = None) -> ToolResult:
+        """Suppress one or more hashes. Accepts a string or list of strings."""
+        return self._suppress_dispatch(wl_hash, suppress=True)
 
     @_requires_index
     def unsuppress(self, wl_hash: str | list[str] | None = None) -> ToolResult:
         """Unsuppress one or more hashes. Accepts a string or list of strings."""
-        normalized = self._normalize_hash_input(wl_hash)
-        if isinstance(normalized, ToolResult):
-            return normalized
-        if isinstance(normalized, list):
-            return self._batch_toggle_suppression(normalized, suppress=False)
-        return self._toggle_suppression(normalized, suppress=False)
+        return self._suppress_dispatch(wl_hash, suppress=False)
 
     @_requires_index
     def _batch_toggle_suppression(self, wl_hashes: list[str], suppress: bool) -> ToolResult:

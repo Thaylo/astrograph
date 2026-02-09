@@ -121,14 +121,10 @@ class ClangdProfile:
             )
 
         # Const correctness via readonly modifier
-        has_readonly = token_index.has_modifier("readonly")
-        if has_readonly:
+        if token_index.has_modifier("readonly"):
             signals.append(
                 SemanticSignal(
-                    key="cpp.const_correctness",
-                    value="const_method",
-                    confidence=0.85,
-                    origin="lsp",
+                    key="cpp.const_correctness", value="const_method", confidence=0.85, origin="lsp"
                 )
             )
 
@@ -391,28 +387,12 @@ class GoplsProfile:
         )
 
         # Struct types
-        has_struct = token_index.has_type("struct")
-        if has_struct:
-            signals.append(
-                SemanticSignal(
-                    key="typing.user_types.present",
-                    value="yes",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(signals, token_index, "struct", "typing.user_types.present")
 
         # Type parameters → generics
-        has_type_param = token_index.has_type("typeParameter")
-        if has_type_param:
-            signals.append(
-                SemanticSignal(
-                    key="go.modern_features",
-                    value="generics",
-                    confidence=0.95,
-                    origin="lsp",
-                )
-            )
+        _lsp_type_signal(
+            signals, token_index, "typeParameter", "go.modern_features", value="generics"
+        )
 
         # Namespace names (package names)
         _lsp_texts_signal(signals, token_index, "namespace", "go.packages")
@@ -421,21 +401,12 @@ class GoplsProfile:
         keyword_texts = token_index.texts_of_type("keyword")
         if "defer" in keyword_texts:
             signals.append(
-                SemanticSignal(
-                    key="go.defer_recover",
-                    value="defer",
-                    confidence=0.95,
-                    origin="lsp",
-                )
+                SemanticSignal(key="go.defer_recover", value="defer", confidence=0.95, origin="lsp")
             )
-
         if "go" in keyword_texts:
             signals.append(
                 SemanticSignal(
-                    key="go.concurrency",
-                    value="goroutine",
-                    confidence=0.95,
-                    origin="lsp",
+                    key="go.concurrency", value="goroutine", confidence=0.95, origin="lsp"
                 )
             )
 
