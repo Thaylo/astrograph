@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ._semantic_tokens import TokenIndex
-from .base import SemanticSignal
+from .base import SemanticSignal, binary_signal_value
 
 
 class ServerProfile(Protocol):
@@ -100,16 +100,10 @@ class ClangdProfile:
         has_virtual = any("virtual" in t.modifiers for t in _methods)
         has_abstract = any("abstract" in t.modifiers for t in _methods)
         if has_virtual or has_abstract:
-            if has_virtual and has_abstract:
-                val = "both"
-            elif has_virtual:
-                val = "virtual"
-            else:
-                val = "override"
             signals.append(
                 SemanticSignal(
                     key="cpp.virtual_override",
-                    value=val,
+                    value=binary_signal_value(has_virtual, "virtual", has_abstract, "override"),
                     confidence=0.95,
                     origin="lsp",
                 )
@@ -226,18 +220,10 @@ class JdtlsProfile:
         has_try = "try" in keyword_texts
         has_catch = "catch" in keyword_texts
         has_try_catch = has_try or has_catch
-        if has_throws and has_try_catch:
-            exception_val = "both"
-        elif has_throws:
-            exception_val = "throws"
-        elif has_try_catch:
-            exception_val = "try_catch"
-        else:
-            exception_val = "none"
         signals.append(
             SemanticSignal(
                 key="java.exception_handling",
-                value=exception_val,
+                value=binary_signal_value(has_throws, "throws", has_try_catch, "try_catch"),
                 confidence=0.95,
                 origin="lsp",
             )

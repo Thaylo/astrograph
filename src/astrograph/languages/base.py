@@ -51,6 +51,23 @@ class SemanticSignal:
     origin: str = "syntax"
 
 
+def binary_signal_value(
+    has_a: bool,
+    label_a: str,
+    has_b: bool,
+    label_b: str,
+    both_label: str = "both",
+) -> str:
+    """Resolve a two-flag check into both_label, label_a, label_b, or 'none'."""
+    if has_a and has_b:
+        return both_label
+    if has_a:
+        return label_a
+    if has_b:
+        return label_b
+    return "none"
+
+
 @dataclass(frozen=True)
 class SemanticProfile:
     """Best-effort semantic profile for a source snippet."""

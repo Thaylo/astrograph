@@ -6,7 +6,6 @@ import logging
 import re
 from collections.abc import Iterator
 
-import esprima
 import networkx as nx
 
 from .base import CodeUnit, SemanticSignal
@@ -14,6 +13,7 @@ from .javascript_lsp_plugin import (
     JavaScriptLSPPlugin,
     _esprima_ast_to_graph,
     _esprima_extract_function_blocks,
+    _esprima_try_parse,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,14 +156,7 @@ class TypeScriptLSPPlugin(JavaScriptLSPPlugin):
             return
 
         stripped = _strip_ts_annotations(source)
-        tree = None
-        for parser in (esprima.parseScript, esprima.parseModule):
-            try:
-                tree = parser(stripped, loc=True)
-                break
-            except esprima.Error:
-                continue
-
+        tree = _esprima_try_parse(stripped, loc=True)
         if tree is None:
             return
 

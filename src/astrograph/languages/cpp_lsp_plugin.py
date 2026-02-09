@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from ._configured_lsp_plugin import BraceLanguageLSPPlugin
-from .base import SemanticSignal
+from .base import SemanticSignal, binary_signal_value
 
 _CPP_USER_TYPE_RE = re.compile(r"\b(?:class|struct)\s+([A-Za-z_][A-Za-z0-9_]*)")
 _CPP_OPERATOR_PLUS_DECL_RE = re.compile(r"\boperator\s*\+\s*\(")
@@ -238,18 +238,10 @@ class CppLSPPlugin(BraceLanguageLSPPlugin):
         # 4. Virtual / override (always emitted)
         has_virtual = bool(_CPP_VIRTUAL_RE.search(source))
         has_override = bool(_CPP_OVERRIDE_RE.search(source))
-        if has_virtual and has_override:
-            virtual_val = "both"
-        elif has_virtual:
-            virtual_val = "virtual"
-        elif has_override:
-            virtual_val = "override"
-        else:
-            virtual_val = "none"
         signals.append(
             SemanticSignal(
                 key="cpp.virtual_override",
-                value=virtual_val,
+                value=binary_signal_value(has_virtual, "virtual", has_override, "override"),
                 confidence=0.90,
                 origin="syntax",
             )
@@ -269,18 +261,12 @@ class CppLSPPlugin(BraceLanguageLSPPlugin):
         # 6. Const correctness (always emitted)
         has_const_method = bool(_CPP_CONST_METHOD_RE.search(source))
         has_constexpr = bool(_CPP_CONSTEXPR_RE.search(source))
-        if has_const_method and has_constexpr:
-            const_val = "both"
-        elif has_const_method:
-            const_val = "const_method"
-        elif has_constexpr:
-            const_val = "constexpr"
-        else:
-            const_val = "none"
         signals.append(
             SemanticSignal(
                 key="cpp.const_correctness",
-                value=const_val,
+                value=binary_signal_value(
+                    has_const_method, "const_method", has_constexpr, "constexpr"
+                ),
                 confidence=0.85,
                 origin="syntax",
             )

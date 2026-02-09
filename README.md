@@ -1,14 +1,8 @@
 # ASTrograph
 
-```
-    █ █ █
-  █ █ █ █ █
-  █       █
-  █ █ █ █ █
-    █ █ █
-  █ █   █ █
-  █       █
-```
+<p align="center">
+  <img src="astrograph_poster.jpg" alt="ASTrograph" width="400">
+</p>
 
 [![Docker](https://img.shields.io/badge/Docker-Hub-blue?logo=docker)](https://hub.docker.com/r/thaylo/astrograph)
 [![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue?logo=linux)](https://hub.docker.com/r/thaylo/astrograph)

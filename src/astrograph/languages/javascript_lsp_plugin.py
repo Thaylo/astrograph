@@ -143,13 +143,7 @@ def _esprima_ast_to_graph(source: str, normalize_ops: bool = False) -> nx.DiGrap
 
     Returns None if esprima cannot parse the source.
     """
-    tree = None
-    for parser in (esprima.parseScript, esprima.parseModule):
-        try:
-            tree = parser(source)
-            break
-        except esprima.Error:
-            continue
+    tree = _esprima_try_parse(source)
     if tree is None:
         return None
 
@@ -304,6 +298,17 @@ def _esprima_extract_blocks(
                 )
 
 
+def _esprima_try_parse(source: str, *, loc: bool = False) -> object | None:
+    """Try parseScript then parseModule, return AST or None."""
+    for parser in (esprima.parseScript, esprima.parseModule):
+        try:
+            tree: object = parser(source, loc=loc) if loc else parser(source)
+            return tree
+        except esprima.Error:
+            continue
+    return None
+
+
 def _esprima_extract_function_blocks(
     tree: object,
     source_lines: list[str],
@@ -445,14 +450,7 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
         if not include_blocks:
             return
 
-        tree = None
-        for parser in (esprima.parseScript, esprima.parseModule):
-            try:
-                tree = parser(source, loc=True)
-                break
-            except esprima.Error:
-                continue
-
+        tree = _esprima_try_parse(source, loc=True)
         if tree is None:
             return
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from ._configured_lsp_plugin import BraceLanguageLSPPlugin
-from .base import SemanticSignal
+from .base import SemanticSignal, binary_signal_value
 
 # -- Annotation patterns --
 _JAVA_ANNOTATION_RE = re.compile(r"^\s*@([A-Za-z_]\w*)", re.MULTILINE)
@@ -102,18 +102,10 @@ class JavaLSPPlugin(BraceLanguageLSPPlugin):
         # 4. Exception handling
         has_throws = bool(_JAVA_THROWS_RE.search(source))
         has_try_catch = bool(_JAVA_TRY_CATCH_RE.search(source))
-        if has_throws and has_try_catch:
-            exception_val = "both"
-        elif has_throws:
-            exception_val = "throws"
-        elif has_try_catch:
-            exception_val = "try_catch"
-        else:
-            exception_val = "none"
         signals.append(
             SemanticSignal(
                 key="java.exception_handling",
-                value=exception_val,
+                value=binary_signal_value(has_throws, "throws", has_try_catch, "try_catch"),
                 confidence=0.90,
                 origin="syntax",
             )
@@ -122,18 +114,12 @@ class JavaLSPPlugin(BraceLanguageLSPPlugin):
         # 5. Stream / lambda style
         has_stream = bool(_JAVA_STREAM_RE.search(source))
         has_lambda = bool(_JAVA_LAMBDA_RE.search(source))
-        if has_stream and has_lambda:
-            functional_val = "stream_lambda"
-        elif has_stream:
-            functional_val = "stream"
-        elif has_lambda:
-            functional_val = "lambda"
-        else:
-            functional_val = "none"
         signals.append(
             SemanticSignal(
                 key="java.functional_style",
-                value=functional_val,
+                value=binary_signal_value(
+                    has_stream, "stream", has_lambda, "lambda", both_label="stream_lambda"
+                ),
                 confidence=0.85,
                 origin="syntax",
             )
