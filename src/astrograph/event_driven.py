@@ -347,6 +347,29 @@ class EventDrivenIndex(CloseOnExitMixin):
     # Index Operations
     # =========================================================================
 
+    def index_file(self, file_path: str | Path) -> int:
+        """
+        Index a single file with persistence, watching, and cache warming.
+
+        Watches the file's parent directory so the index stays current.
+        Returns the number of entries indexed.
+        """
+        file_path = Path(file_path).resolve()
+        parent = file_path.parent
+
+        self.index.clear()
+        self.index.index_file(str(file_path))
+
+        # Persist (full save — clears stale DB from prior sessions)
+        if self._persistence is not None:
+            self._persistence.save_full_index(self.index)
+
+        self._maybe_start_watching(parent)
+        self._invalidate_cache_and_recompute()
+
+        logger.info(f"Indexed {len(self.index.entries)} entries from {file_path}")
+        return len(self.index.entries)
+
     def index_directory(
         self,
         path: str | Path,
@@ -508,6 +531,11 @@ class EventDrivenIndex(CloseOnExitMixin):
     # =========================================================================
     # Stats
     # =========================================================================
+
+    @property
+    def is_watching(self) -> bool:
+        """Whether file watching is actively keeping the index current."""
+        return self._watcher is not None and self._watcher.is_watching
 
     def get_stats(self) -> dict:
         """Get comprehensive statistics."""

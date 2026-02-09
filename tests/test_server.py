@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from astrograph.index import IndexEntry, SimilarityResult
+from astrograph.index import CodeStructureIndex, IndexEntry, SimilarityResult
 from astrograph.languages.base import CodeUnit
 from astrograph.languages.registry import LanguageRegistry
 from astrograph.server import create_server, get_tools, set_tools
@@ -2655,46 +2655,30 @@ class TestIncrementalIndexing:
             assert "Indexed" in result.text
 
 
-class TestAnalyzeStalenessWarning:
-    """Tests for staleness warning in analyze output."""
+class TestAnalyzeEventDriven:
+    """Tests for event-driven analyze (no staleness fallback)."""
 
-    @staticmethod
-    def _analyze_with_stale_index(tools, auto_reindex: bool) -> "ToolResult":
-        """Index a file, modify it to make index stale, then analyze."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write("def foo(): pass\ndef bar(): pass")
-            f.flush()
-            tools.index_codebase(f.name)
-
-            time.sleep(0.01)
-            _overwrite_file(f.name, "def baz(): pass")
-
-            result = tools.analyze(auto_reindex=auto_reindex)
-        os.unlink(f.name)
-        return result
-
-    def test_analyze_warns_on_stale_index(self, tools):
-        """Test analyze shows warning when index is stale."""
-        result = self._analyze_with_stale_index(tools, auto_reindex=False)
-        assert "WARNING" in result.text or "stale" in result.text.lower()
-
-    def test_analyze_auto_reindex_on_stale(self, tools):
-        """Test analyze auto-reindexes when stale and auto_reindex=True."""
-        result = self._analyze_with_stale_index(tools, auto_reindex=True)
-        assert "Auto-reindexed" in result.text
-        assert "WARNING" not in result.text
-
-    def test_analyze_no_warning_fresh_index(self, tools):
-        """Test analyze has no warning when index is fresh."""
+    def test_analyze_no_staleness_warning(self, tools):
+        """analyze() never emits staleness warnings — EDI keeps index current."""
         result = _with_indexed_temp_file(
             tools,
             "def unique_function_abc123(): return 42",
             tools.analyze,
         )
+        assert "Stale:" not in result.text
+        assert "Auto-reindexed" not in result.text
 
-        # No staleness warning for fresh index
-        if "No significant duplicates" in result.text:
-            assert "WARNING" not in result.text
+    def test_single_file_indexing_starts_watcher(self, tools):
+        """Single-file indexing routes through EDI and starts the watcher."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write("def foo(): pass\ndef bar(): pass")
+            f.flush()
+            tools.index_codebase(f.name)
+
+            edi = tools._event_driven_index
+            assert edi is not None
+            assert edi.is_watching, "Watcher should be active after single-file indexing"
+        os.unlink(f.name)
 
 
 class TestPersistence:
@@ -3830,3 +3814,80 @@ class TestGenerateIgnore:
             result = tools.call_tool("generate_ignore", {})
             assert "Created" in result.text
             tools.close()
+
+
+class TestAnalyzeCache:
+    """Tests for analyze() cache-first architecture."""
+
+    _DUPLICATE_CODE = """
+def process_items(items):
+    results = []
+    for item in items:
+        if item > 0:
+            results.append(item * 2)
+    return results
+
+def transform_data(data):
+    output = []
+    for element in data:
+        if element > 0:
+            output.append(element * 2)
+    return output
+"""
+
+    def test_analyze_uses_cache_on_second_call(self):
+        """Second analyze() call should hit the cache."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "dup.py")
+            Path(py_file).write_text(self._DUPLICATE_CODE)
+            tools.index_codebase(tmpdir)
+
+            # First call warms the cache
+            tools.analyze()
+            edi = tools._event_driven_index
+            assert edi is not None
+            hits_before = edi._cache_hits
+
+            # Second call should hit the cache
+            tools.analyze()
+            assert edi._cache_hits > hits_before
+            tools.close()
+
+    def test_analyze_never_reports_staleness(self):
+        """analyze() never emits staleness warnings — EDI handles freshness."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "dup.py")
+            Path(py_file).write_text(self._DUPLICATE_CODE)
+            tools.index_codebase(tmpdir)
+
+            result = tools.analyze()
+            assert "Stale:" not in result.text
+            assert "Auto-reindexed" not in result.text
+            tools.close()
+
+    def test_analyze_without_event_driven_index(self):
+        """analyze() works via direct find_* calls when no EDI is present."""
+        index = CodeStructureIndex()
+        tools = CodeStructureTools(index=index)
+        assert tools._event_driven_index is None
+
+        _index_temp_code_file(tools, self._DUPLICATE_CODE)
+        result = tools.analyze()
+        # Should work — either finds duplicates or reports none
+        assert result.text
+
+    def test_single_file_watcher_active(self):
+        """Single-file indexing goes through EDI and starts the watcher."""
+        tools = CodeStructureTools()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(self._DUPLICATE_CODE)
+            f.flush()
+            tools.index_codebase(f.name)
+
+            edi = tools._event_driven_index
+            assert edi is not None
+            assert edi.is_watching, "Watcher should be active after single-file indexing"
+            tools.close()
+        os.unlink(f.name)

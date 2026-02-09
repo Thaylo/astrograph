@@ -1,6 +1,6 @@
 [project]
 name = "astrograph"
-version = "0.5.46"
+version = "0.5.47"
 description = "Detect structural code duplication using AST graph isomorphism"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -132,4 +132,4 @@ min_confidence = 80
 paths = ["src/astrograph"]
 exclude = ["tests/"]
 # FileSystemEvent is used in type annotations
-ignore_names = ["FileSystemEvent"]
+ignore_names = ["FileSystemEvent", "auto_reindex"]

@@ -433,8 +433,8 @@ class CodeStructureTools(CloseOnExitMixin):
 
         # Index the path (loads from cache if available)
         if os.path.isfile(path):
-            # Single file: index directly, watch its parent directory
-            self.index.index_file(path)
+            # Single file: route through EDI for watching + cache
+            self._event_driven_index.index_file(path)
         else:
             self._event_driven_index.index_directory(path, recursive=recursive)
 
@@ -561,13 +561,13 @@ class CodeStructureTools(CloseOnExitMixin):
                 pass
 
     @_requires_index
-    def analyze(self, auto_reindex: bool = True) -> ToolResult:
+    def analyze(self, auto_reindex: bool = True) -> ToolResult:  # noqa: ARG002
         """
         Analyze the indexed codebase for duplicates and similar patterns.
 
         Args:
-            auto_reindex: If True and index is stale, automatically re-index before
-                         analyzing. Default True for convenience.
+            auto_reindex: Kept for API compatibility. The event-driven index
+                         keeps the index current via file watching automatically.
 
         Returns findings sorted by relevance:
         - Exact duplicates (verified via graph isomorphism)
@@ -577,33 +577,27 @@ class CodeStructureTools(CloseOnExitMixin):
         # Check for invalidated suppressions (proactive notification)
         invalidation_warning = self._check_invalidated_suppressions()
 
-        # Check for staleness and auto-reindex if enabled
-        staleness_warning = ""
-        report = self.index.get_staleness_report(ignore_spec=self._ignore_spec)
-        if report.is_stale:
-            if auto_reindex and self._last_indexed_path:
-                # Auto-reindex for accurate results
-                self.index_codebase(self._last_indexed_path)
-                staleness_warning = "[Auto-reindexed]\n"
-            else:
-                counts = [
-                    f"{len(items)} {label}"
-                    for items, label in [
-                        (report.modified_files, "modified"),
-                        (report.deleted_files, "deleted"),
-                        (report.stale_suppressions, "stale suppressions"),
-                    ]
-                    if items
-                ]
-                staleness_warning = f"Stale: {', '.join(counts)}. Re-index recommended.\n"
+        # Event-driven index keeps things current via file watching + cache.
+        edi = self._event_driven_index
+        if edi is not None:
+            exact_groups, pattern_groups, block_groups = edi.get_cached_analysis()
+        else:
+            # Testing path: direct compute (no EventDrivenIndex)
+            exact_groups = self.index.find_all_duplicates(min_node_count=5)
+            pattern_groups = self.index.find_pattern_duplicates(min_node_count=5)
+            block_groups = self.index.find_block_duplicates(
+                min_node_count=self._MIN_BLOCK_DUPLICATE_NODES
+            )
+
+        # Filter block groups by analyze threshold (cache uses min_node_count=5,
+        # analyze wants _MIN_BLOCK_DUPLICATE_NODES=10)
+        block_groups = [
+            g for g in block_groups if g.entries[0].node_count >= self._MIN_BLOCK_DUPLICATE_NODES
+        ]
 
         findings: list[dict[str, Any]] = []
 
-        min_nodes = 5
-
-        # Find exact duplicates
-        groups = self.index.find_all_duplicates(min_node_count=min_nodes)
-        for group in groups:
+        for group in exact_groups:
             locations = self._format_locations(group.entries)
             first = group.entries[0]
             line_count = first.code_unit.line_end - first.code_unit.line_start + 1
@@ -630,10 +624,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 }
             )
 
-        # Find block duplicates (duplicate code blocks within functions)
-        block_groups = self.index.find_block_duplicates(
-            min_node_count=self._MIN_BLOCK_DUPLICATE_NODES
-        )
+        # Block duplicates (duplicate code blocks within functions)
         for group in block_groups:
             block_type = group.entries[0].code_unit.block_type or "block"
             first = group.entries[0]
@@ -656,8 +647,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 }
             )
 
-        # Find pattern duplicates (same structure, different operators)
-        pattern_groups = self.index.find_pattern_duplicates(min_node_count=min_nodes)
+        # Pattern duplicates (same structure, different operators)
         for group in pattern_groups:
             first = group.entries[0]
             line_count = first.code_unit.line_end - first.code_unit.line_start + 1
@@ -682,7 +672,7 @@ class CodeStructureTools(CloseOnExitMixin):
             msg = "No significant duplicates."
             if suppressed_count:
                 msg += f" {suppressed_count} suppressed."
-            return ToolResult(invalidation_warning + staleness_warning + msg)
+            return ToolResult(invalidation_warning + msg)
 
         # Classify findings as source or test
         def _is_test_location(loc: str) -> bool:
@@ -776,10 +766,10 @@ class CodeStructureTools(CloseOnExitMixin):
                 f"Details: {PERSISTENCE_DIR}/{report_path.name} ({line_count_report} lines)"
             )
             summary_parts.append("Read the file to see locations and suppress commands.")
-            return ToolResult(invalidation_warning + staleness_warning + "\n".join(summary_parts))
+            return ToolResult(invalidation_warning + "\n".join(summary_parts))
 
         # Fallback: file write failed or no indexed path — return full output inline
-        return ToolResult(invalidation_warning + staleness_warning + full_output)
+        return ToolResult(invalidation_warning + full_output)
 
     @_requires_index
     def check(self, code: str, language: str = "python") -> ToolResult:
