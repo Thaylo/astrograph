@@ -1,5 +1,6 @@
 """Tests for the consolidated MCP server tools."""
 
+import asyncio
 import json
 import os
 import re
@@ -2253,20 +2254,20 @@ def transform_data(data):
             details = _get_analyze_details(tools, result)
             assert "suppress(wl_hash=" in details
 
-    def test_suppress_batch_valid(self, tools, _indexed_with_duplicates):
-        """Test batch suppress with valid hashes."""
+    def test_suppress_accepts_list(self, tools, _indexed_with_duplicates):
+        """Test suppress with a list of valid hashes."""
         import re
 
         analyze_result = tools.analyze()
         details = _get_analyze_details(tools, analyze_result)
         hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
-            result = tools.suppress_batch(hashes)
+            result = tools.suppress(wl_hash=hashes)
             assert "Suppressed" in result.text
             assert str(len(hashes)) in result.text
 
-    def test_suppress_batch_mixed(self, tools, _indexed_with_duplicates):
-        """Test batch suppress with mix of valid and invalid hashes."""
+    def test_suppress_list_mixed(self, tools, _indexed_with_duplicates):
+        """Test suppress with list containing valid and invalid hashes."""
         import re
 
         analyze_result = tools.analyze()
@@ -2274,46 +2275,60 @@ def transform_data(data):
         hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
             mixed = hashes + ["nonexistent_hash_abc"]
-            result = tools.suppress_batch(mixed)
+            result = tools.suppress(wl_hash=mixed)
             assert "Suppressed" in result.text
             assert "not found" in result.text
 
-    @pytest.mark.parametrize("method_name", ["suppress_batch", "unsuppress_batch"])
-    def test_batch_toggle_empty(self, tools, _indexed_with_duplicates, method_name):
+    @pytest.mark.parametrize("action", ["suppress", "unsuppress"])
+    def test_batch_toggle_empty(self, tools, _indexed_with_duplicates, action):
         """Batch toggle with empty list returns a helpful message."""
-        result = getattr(tools, method_name)([])
+        result = getattr(tools, action)(wl_hash=[])
         assert "No hashes provided" in result.text
 
-    @pytest.mark.parametrize("tool_name", ["suppress_batch", "unsuppress_batch"])
-    def test_call_tool_batch_toggle(self, tools, _indexed_with_duplicates, tool_name):
-        """call_tool dispatch for batch toggle with unknown hash reports not found."""
-        result = tools.call_tool(tool_name, {"wl_hashes": ["fake_hash"]})
+    def test_suppress_no_args_error(self, tools, _indexed_with_duplicates):
+        """Suppress with no arguments returns an error."""
+        result = tools.suppress()
+        assert "Error" in result.text
+
+    def test_unsuppress_no_args_error(self, tools, _indexed_with_duplicates):
+        """Unsuppress with no arguments returns an error."""
+        result = tools.unsuppress()
+        assert "Error" in result.text
+
+    def test_call_tool_suppress_with_list(self, tools, _indexed_with_duplicates):
+        """call_tool dispatch for suppress with list of unknown hashes reports not found."""
+        result = tools.call_tool("suppress", {"wl_hash": ["fake_hash"]})
         assert "not found" in result.text
 
-    def test_unsuppress_batch_valid(self, tools, _indexed_with_duplicates):
-        """Test batch unsuppress with valid hashes."""
+    def test_call_tool_unsuppress_with_list(self, tools, _indexed_with_duplicates):
+        """call_tool dispatch for unsuppress with list of unknown hashes reports not found."""
+        result = tools.call_tool("unsuppress", {"wl_hash": ["fake_hash"]})
+        assert "not found" in result.text
+
+    def test_unsuppress_accepts_list(self, tools, _indexed_with_duplicates):
+        """Test unsuppress with a list of valid hashes."""
         import re
 
         analyze_result = tools.analyze()
         details = _get_analyze_details(tools, analyze_result)
         hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
-            tools.suppress_batch(hashes)
-            result = tools.unsuppress_batch(hashes)
+            tools.suppress(wl_hash=hashes)
+            result = tools.unsuppress(wl_hash=hashes)
             assert "Unsuppressed" in result.text
             assert str(len(hashes)) in result.text
 
-    def test_unsuppress_batch_mixed(self, tools, _indexed_with_duplicates):
-        """Test batch unsuppress with mix of valid and invalid hashes."""
+    def test_unsuppress_list_mixed(self, tools, _indexed_with_duplicates):
+        """Test unsuppress with list containing valid and invalid hashes."""
         import re
 
         analyze_result = tools.analyze()
         details = _get_analyze_details(tools, analyze_result)
         hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
         if hashes:
-            tools.suppress_batch(hashes)
+            tools.suppress(wl_hash=hashes)
             mixed = hashes + ["nonexistent_hash_abc"]
-            result = tools.unsuppress_batch(mixed)
+            result = tools.unsuppress(wl_hash=mixed)
             assert "Unsuppressed" in result.text
             assert "not found" in result.text
 
@@ -3294,8 +3309,8 @@ def {name}(data):
                 assert "in source" in result.text
                 assert "in tests" in result.text
 
-    def test_suppress_batch_response_includes_refresh_hint(self, tools):
-        """suppress_batch response should include 'Run analyze' hint."""
+    def test_suppress_list_response_includes_refresh_hint(self, tools):
+        """suppress with list response should include 'Run analyze' hint."""
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_files(
                 tmpdir,
@@ -3314,7 +3329,7 @@ def {name}(data):
 
             hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
             if hashes:
-                batch_result = tools.suppress_batch(hashes)
+                batch_result = tools.suppress(wl_hash=hashes)
                 assert "Run analyze" in batch_result.text
 
 
@@ -3762,3 +3777,263 @@ def transform_data(data):
             assert edi.is_watching, "Watcher should be active after single-file indexing"
             tools.close()
         os.unlink(f.name)
+
+
+class TestMCPResources:
+    """Tests for MCP resource handlers."""
+
+    def test_list_resources_returns_three(self):
+        """list_resources returns exactly 3 resources."""
+        from mcp.types import ListResourcesRequest
+
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        result = asyncio.run(
+            server.request_handlers[ListResourcesRequest](
+                ListResourcesRequest(method="resources/list")
+            )
+        )
+        resources = result.root.resources
+        assert len(resources) == 3
+        uris = {str(r.uri) for r in resources}
+        assert "astrograph://status" in uris
+        assert "astrograph://analysis/latest" in uris
+        assert "astrograph://suppressions" in uris
+
+    def test_read_resource_status(self):
+        """Reading status resource returns status text."""
+        tools = CodeStructureTools()
+        text = tools.read_resource_status()
+        assert "Status:" in text or "idle" in text
+
+    def test_read_resource_analysis_no_index(self):
+        """Reading analysis resource before indexing returns appropriate message."""
+        tools = CodeStructureTools()
+        text = tools.read_resource_analysis()
+        assert "No codebase indexed" in text or "No analysis reports" in text
+
+    def test_read_resource_analysis_after_analyze(self, tools):
+        """Reading analysis resource after analysis returns report content."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            code = """
+def process_items(items):
+    results = []
+    for item in items:
+        if item > 0:
+            results.append(item * 2)
+    return results
+
+def transform_data(data):
+    output = []
+    for element in data:
+        if element > 0:
+            output.append(element * 2)
+    return output
+"""
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text(code)
+            tools.index_codebase(tmpdir)
+            tools.analyze()
+
+            text = tools.read_resource_analysis()
+            # Should contain actual analysis content (not the "no reports" message)
+            assert "No analysis reports" not in text
+
+    def test_read_resource_suppressions_empty(self):
+        """Reading suppressions resource when none suppressed."""
+        tools = CodeStructureTools()
+        text = tools.read_resource_suppressions()
+        assert "No hashes" in text
+
+
+class TestMCPPrompts:
+    """Tests for MCP prompt handlers."""
+
+    def test_list_prompts_returns_two(self):
+        """list_prompts returns exactly 2 prompts."""
+        from mcp.types import ListPromptsRequest
+
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        result = asyncio.run(
+            server.request_handlers[ListPromptsRequest](ListPromptsRequest(method="prompts/list"))
+        )
+        prompts = result.root.prompts
+        assert len(prompts) == 2
+        names = {p.name for p in prompts}
+        assert "review-duplicates" in names
+        assert "setup-lsp" in names
+
+    def test_get_prompt_review_duplicates(self):
+        """get_prompt for review-duplicates returns structured result."""
+        from mcp.types import GetPromptRequest, GetPromptRequestParams
+
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        result = asyncio.run(
+            server.request_handlers[GetPromptRequest](
+                GetPromptRequest(
+                    method="prompts/get",
+                    params=GetPromptRequestParams(name="review-duplicates"),
+                )
+            )
+        )
+        prompt_result = result.root
+        assert prompt_result.description is not None
+        assert "all" in prompt_result.description
+        assert len(prompt_result.messages) == 1
+        assert "SUPPRESS" in prompt_result.messages[0].content.text
+
+    def test_get_prompt_review_duplicates_with_focus(self):
+        """get_prompt for review-duplicates with focus arg."""
+        from mcp.types import GetPromptRequest, GetPromptRequestParams
+
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        result = asyncio.run(
+            server.request_handlers[GetPromptRequest](
+                GetPromptRequest(
+                    method="prompts/get",
+                    params=GetPromptRequestParams(
+                        name="review-duplicates", arguments={"focus": "source"}
+                    ),
+                )
+            )
+        )
+        prompt_result = result.root
+        assert "source" in prompt_result.description
+
+    def test_get_prompt_setup_lsp(self):
+        """get_prompt for setup-lsp returns structured result."""
+        from mcp.types import GetPromptRequest, GetPromptRequestParams
+
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        result = asyncio.run(
+            server.request_handlers[GetPromptRequest](
+                GetPromptRequest(
+                    method="prompts/get",
+                    params=GetPromptRequestParams(name="setup-lsp"),
+                )
+            )
+        )
+        prompt_result = result.root
+        assert prompt_result.description is not None
+        assert len(prompt_result.messages) == 1
+        assert "LSP" in prompt_result.messages[0].content.text
+
+    def test_get_prompt_setup_lsp_with_language(self):
+        """get_prompt for setup-lsp with language arg."""
+        from mcp.types import GetPromptRequest, GetPromptRequestParams
+
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        result = asyncio.run(
+            server.request_handlers[GetPromptRequest](
+                GetPromptRequest(
+                    method="prompts/get",
+                    params=GetPromptRequestParams(
+                        name="setup-lsp", arguments={"language": "python"}
+                    ),
+                )
+            )
+        )
+        prompt_result = result.root
+        assert "python" in prompt_result.description
+
+    def test_get_prompt_unknown_raises(self):
+        """get_prompt for unknown name raises ValueError."""
+        from mcp.types import GetPromptRequest, GetPromptRequestParams
+
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        with pytest.raises(ValueError, match="Unknown prompt"):
+            asyncio.run(
+                server.request_handlers[GetPromptRequest](
+                    GetPromptRequest(
+                        method="prompts/get",
+                        params=GetPromptRequestParams(name="nonexistent"),
+                    )
+                )
+            )
+
+
+class TestMCPCompletions:
+    """Tests for MCP completion handlers."""
+
+    def _complete(self, server, prompt_name, arg_name, prefix=""):
+        from mcp.types import (
+            CompleteRequest,
+            CompleteRequestParams,
+            CompletionArgument,
+            PromptReference,
+        )
+
+        result = asyncio.run(
+            server.request_handlers[CompleteRequest](
+                CompleteRequest(
+                    method="completion/complete",
+                    params=CompleteRequestParams(
+                        ref=PromptReference(type="ref/prompt", name=prompt_name),
+                        argument=CompletionArgument(name=arg_name, value=prefix),
+                    ),
+                )
+            )
+        )
+        return result.root.completion
+
+    def test_review_duplicates_focus_all(self):
+        """Completion for review-duplicates focus returns all options."""
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        completion = self._complete(server, "review-duplicates", "focus")
+        assert set(completion.values) == {"all", "source", "tests"}
+
+    def test_review_duplicates_focus_prefix(self):
+        """Completion for review-duplicates focus with prefix filters."""
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        completion = self._complete(server, "review-duplicates", "focus", "s")
+        assert completion.values == ["source"]
+
+    def test_setup_lsp_language_all(self):
+        """Completion for setup-lsp language returns all options."""
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        completion = self._complete(server, "setup-lsp", "language")
+        assert len(completion.values) == 6
+        assert "python" in completion.values
+
+    def test_setup_lsp_language_prefix(self):
+        """Completion for setup-lsp language with prefix filters."""
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        completion = self._complete(server, "setup-lsp", "language", "c")
+        assert set(completion.values) == {"c_lsp", "cpp_lsp"}
+
+    def test_unknown_prompt_returns_none(self):
+        """Completion for unknown prompt returns empty."""
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        completion = self._complete(server, "nonexistent", "arg")
+        assert completion.values == []
+
+    def test_unknown_argument_returns_none(self):
+        """Completion for unknown argument returns empty."""
+        server = create_server()
+        tools = CodeStructureTools()
+        set_tools(tools)
+        completion = self._complete(server, "review-duplicates", "nonexistent")
+        assert completion.values == []

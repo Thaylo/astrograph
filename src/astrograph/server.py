@@ -3,19 +3,19 @@ MCP server for code structure analysis.
 
 Auto-indexes the codebase at startup and maintains the index via file watching.
 
-Provides 12 tools (all prefixed with astrograph_):
+Provides 10 tools (all prefixed with astrograph_):
 - astrograph_analyze: Find duplicates and similar patterns
 - astrograph_write: Write file with duplicate detection (blocks if duplicate exists)
 - astrograph_edit: Edit file with duplicate detection (blocks if duplicate exists)
-- astrograph_suppress: Suppress a duplicate group by hash
-- astrograph_suppress_batch: Suppress multiple duplicates by hash list
-- astrograph_unsuppress: Remove suppression from a hash
-- astrograph_unsuppress_batch: Remove suppression from multiple hashes
+- astrograph_suppress: Suppress one or more duplicates by WL hash (string or array)
+- astrograph_unsuppress: Unsuppress one or more hashes (string or array)
 - astrograph_list_suppressions: List all suppressed hashes
 - astrograph_status: Check server readiness (returns instantly even during indexing)
 - astrograph_lsp_setup: Inspect/bind LSP commands or attach endpoints for bundled language plugins
 - astrograph_metadata_erase: Erase all persisted metadata
 - astrograph_metadata_recompute_baseline: Erase metadata and re-index from scratch
+
+Also exposes 3 MCP resources, 2 prompts, and prompt argument completions.
 """
 
 import asyncio
@@ -24,7 +24,21 @@ import signal
 import sys
 
 from mcp.server import Server
-from mcp.types import TextContent, Tool
+from mcp.server.lowlevel.server import ReadResourceContents
+from mcp.types import (
+    AnyUrl,
+    Completion,
+    CompletionArgument,
+    GetPromptResult,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    PromptReference,
+    Resource,
+    ResourceTemplateReference,
+    TextContent,
+    Tool,
+)
 
 from .stdio_transport import dual_stdio_server
 from .tools import CodeStructureTools
@@ -82,26 +96,14 @@ def create_server() -> Server:
                     "type": "object",
                     "properties": {
                         "wl_hash": {
-                            "type": "string",
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ],
                             "description": "WL hash from analyze output",
                         },
                     },
                     "required": ["wl_hash"],
-                },
-            ),
-            Tool(
-                name="astrograph_suppress_batch",
-                description="Suppress multiple duplicates by WL hash list.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "wl_hashes": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "WL hashes from analyze output",
-                        },
-                    },
-                    "required": ["wl_hashes"],
                 },
             ),
             Tool(
@@ -111,26 +113,14 @@ def create_server() -> Server:
                     "type": "object",
                     "properties": {
                         "wl_hash": {
-                            "type": "string",
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ],
                             "description": "The WL hash to unsuppress",
                         },
                     },
                     "required": ["wl_hash"],
-                },
-            ),
-            Tool(
-                name="astrograph_unsuppress_batch",
-                description="Unsuppress multiple hashes.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "wl_hashes": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "WL hashes to unsuppress",
-                        },
-                    },
-                    "required": ["wl_hashes"],
                 },
             ),
             Tool(
@@ -299,9 +289,7 @@ def create_server() -> Server:
         "astrograph_write": "write",
         "astrograph_edit": "edit",
         "astrograph_suppress": "suppress",
-        "astrograph_suppress_batch": "suppress_batch",
         "astrograph_unsuppress": "unsuppress",
-        "astrograph_unsuppress_batch": "unsuppress_batch",
         "astrograph_list_suppressions": "list_suppressions",
         "astrograph_status": "status",
         "astrograph_lsp_setup": "lsp_setup",
@@ -316,11 +304,178 @@ def create_server() -> Server:
         result = _tools.call_tool(internal_name, arguments)
         return [TextContent(type="text", text=result.text)]
 
-    async def list_resources() -> list:
+    # --- MCP Resources ---
+
+    _RESOURCE_URIS = {
+        "astrograph://status": ("Server Status", "Current server readiness and statistics"),
+        "astrograph://analysis/latest": (
+            "Latest Analysis",
+            "Most recent duplicate analysis report",
+        ),
+        "astrograph://suppressions": (
+            "Suppressions",
+            "Currently suppressed duplicate hashes",
+        ),
+    }
+
+    @server.list_resources()
+    async def list_resources() -> list[Resource]:
+        return [
+            Resource(name=name, uri=uri, description=desc, mimeType="text/plain")
+            for uri, (name, desc) in _RESOURCE_URIS.items()
+        ]
+
+    @server.list_resource_templates()
+    async def list_resource_templates() -> list:
         return []
 
-    server.list_resources()(list_resources)
-    server.list_resource_templates()(list_resources)
+    @server.read_resource()
+    async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
+        uri_str = str(uri)
+        if uri_str == "astrograph://status":
+            return [ReadResourceContents(content=_tools.read_resource_status())]
+        elif uri_str == "astrograph://analysis/latest":
+            return [ReadResourceContents(content=_tools.read_resource_analysis())]
+        elif uri_str == "astrograph://suppressions":
+            return [ReadResourceContents(content=_tools.read_resource_suppressions())]
+        else:
+            raise ValueError(f"Unknown resource URI: {uri_str}")
+
+    # --- MCP Prompts ---
+
+    _AVAILABLE_PROMPTS = [
+        Prompt(
+            name="review-duplicates",
+            description=(
+                "Review duplicate code findings and decide whether to suppress, "
+                "refactor, or skip each group."
+            ),
+            arguments=[
+                PromptArgument(
+                    name="focus",
+                    description="Filter findings: all, source, or tests",
+                    required=False,
+                ),
+            ],
+        ),
+        Prompt(
+            name="setup-lsp",
+            description="Guided workflow to install and configure LSP servers for language support.",
+            arguments=[
+                PromptArgument(
+                    name="language",
+                    description=(
+                        "Target language (python, javascript_lsp, typescript_lsp, "
+                        "c_lsp, cpp_lsp, java_lsp)"
+                    ),
+                    required=False,
+                ),
+            ],
+        ),
+    ]
+
+    @server.list_prompts()
+    async def list_prompts() -> list[Prompt]:
+        return _AVAILABLE_PROMPTS
+
+    def _build_review_duplicates_prompt(focus: str | None) -> GetPromptResult:
+        analysis_text = _tools.read_resource_analysis()
+        focus_label = focus or "all"
+        return GetPromptResult(
+            description=f"Review duplicates (focus: {focus_label})",
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            f"Here is the latest ASTrograph duplicate analysis report "
+                            f"(focus: {focus_label}):\n\n{analysis_text}\n\n"
+                            "For each duplicate group, decide one of:\n"
+                            "- SUPPRESS: acceptable duplication, suppress with "
+                            "astrograph_suppress(wl_hash=...)\n"
+                            "- REFACTOR: extract shared logic to eliminate the duplication\n"
+                            "- SKIP: needs more context before deciding\n\n"
+                            "Provide your decision and reasoning for each group."
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+    def _build_setup_lsp_prompt(language: str | None) -> GetPromptResult:
+        lsp_args: dict = {"mode": "inspect"}
+        if language:
+            lsp_args["language"] = language
+        inspect_result = _tools.call_tool("lsp_setup", lsp_args)
+        lang_label = language or "all languages"
+        return GetPromptResult(
+            description=f"LSP setup guide ({lang_label})",
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            f"Here is the current LSP setup status for {lang_label}:\n\n"
+                            f"{inspect_result.text}\n\n"
+                            "Follow the recommended_actions to complete LSP setup:\n"
+                            "1. Run any host_search_commands to find installed servers\n"
+                            "2. Install missing servers using the suggested commands\n"
+                            "3. Bind discovered servers with astrograph_lsp_setup(mode='bind', ...)\n"
+                            "4. Verify with astrograph_lsp_setup(mode='inspect')\n\n"
+                            "Work through each missing language until all are resolved."
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+    @server.get_prompt()
+    async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+        args = arguments or {}
+        if name == "review-duplicates":
+            return _build_review_duplicates_prompt(args.get("focus"))
+        elif name == "setup-lsp":
+            return _build_setup_lsp_prompt(args.get("language"))
+        else:
+            raise ValueError(f"Unknown prompt: {name}")
+
+    # --- MCP Completions ---
+
+    _COMPLETION_VALUES = {
+        "review-duplicates": {
+            "focus": ["all", "source", "tests"],
+        },
+        "setup-lsp": {
+            "language": [
+                "python",
+                "javascript_lsp",
+                "typescript_lsp",
+                "c_lsp",
+                "cpp_lsp",
+                "java_lsp",
+            ],
+        },
+    }
+
+    @server.completion()
+    async def completion(
+        ref: PromptReference | ResourceTemplateReference,
+        argument: CompletionArgument,
+        _context: object | None = None,
+    ) -> Completion | None:
+        if not isinstance(ref, PromptReference):
+            return None
+        prompt_completions = _COMPLETION_VALUES.get(ref.name)
+        if prompt_completions is None:
+            return None
+        values = prompt_completions.get(argument.name)
+        if values is None:
+            return None
+        prefix = argument.value or ""
+        filtered = [v for v in values if v.startswith(prefix)]
+        return Completion(values=filtered, total=len(filtered), hasMore=False)
 
     return server
 

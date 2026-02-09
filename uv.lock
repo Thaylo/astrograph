@@ -31,7 +31,7 @@ wheels = [
 
 [[package]]
 name = "astrograph"
-version = "0.5.43"
+version = "0.5.49"
 source = { editable = "." }
 dependencies = [
     { name = "esprima" },

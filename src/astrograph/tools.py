@@ -19,7 +19,7 @@ import shutil
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime
-from functools import partialmethod, wraps
+from functools import wraps
 from pathlib import Path
 from typing import Any, cast
 
@@ -67,9 +67,7 @@ _MUTATING_TOOL_NAMES = frozenset(
         "metadata_erase",
         "metadata_recompute_baseline",
         "suppress",
-        "suppress_batch",
         "unsuppress",
-        "unsuppress_batch",
         "write",
     }
 )
@@ -1218,8 +1216,34 @@ class CodeStructureTools(CloseOnExitMixin):
 
         return ToolResult(prefix + (success_msg if success else failure_msg))
 
-    suppress = partialmethod(_toggle_suppression, suppress=True)
-    unsuppress = partialmethod(_toggle_suppression, suppress=False)
+    @staticmethod
+    def _normalize_hash_input(wl_hash: str | list[str] | None) -> str | list[str] | ToolResult:
+        """Normalize wl_hash input: str stays str, list stays list, None returns error."""
+        if wl_hash is None:
+            return ToolResult("Error: wl_hash is required.")
+        if isinstance(wl_hash, list):
+            return wl_hash
+        return wl_hash
+
+    @_requires_index
+    def suppress(self, wl_hash: str | list[str] | None = None) -> ToolResult:
+        """Suppress one or more hashes. Accepts a string or list of strings."""
+        normalized = self._normalize_hash_input(wl_hash)
+        if isinstance(normalized, ToolResult):
+            return normalized
+        if isinstance(normalized, list):
+            return self._batch_toggle_suppression(normalized, suppress=True)
+        return self._toggle_suppression(normalized, suppress=True)
+
+    @_requires_index
+    def unsuppress(self, wl_hash: str | list[str] | None = None) -> ToolResult:
+        """Unsuppress one or more hashes. Accepts a string or list of strings."""
+        normalized = self._normalize_hash_input(wl_hash)
+        if isinstance(normalized, ToolResult):
+            return normalized
+        if isinstance(normalized, list):
+            return self._batch_toggle_suppression(normalized, suppress=False)
+        return self._toggle_suppression(normalized, suppress=False)
 
     @_requires_index
     def _batch_toggle_suppression(self, wl_hashes: list[str], suppress: bool) -> ToolResult:
@@ -1242,9 +1266,6 @@ class CodeStructureTools(CloseOnExitMixin):
             parts.append("Run analyze to refresh.")
         return ToolResult(prefix + " ".join(parts))
 
-    suppress_batch = partialmethod(_batch_toggle_suppression, suppress=True)
-    unsuppress_batch = partialmethod(_batch_toggle_suppression, suppress=False)
-
     def list_suppressions(self) -> ToolResult:
         """List all suppressed hashes."""
         prefix = self._check_invalidated_suppressions()
@@ -1257,6 +1278,28 @@ class CodeStructureTools(CloseOnExitMixin):
                 text += f"\n... +{len(suppressed) - max_shown} more"
             return ToolResult(text)
         return ToolResult(prefix + "No hashes are currently suppressed.")
+
+    # --- MCP Resource readers ---
+
+    def read_resource_status(self) -> str:
+        """Return server status text for the MCP resource."""
+        return self.status().text
+
+    def read_resource_analysis(self) -> str:
+        """Return the latest analysis report text for the MCP resource."""
+        if self._last_indexed_path is None:
+            return "No codebase indexed yet."
+        persistence_path = _get_persistence_path(self._last_indexed_path)
+        if not persistence_path.exists():
+            return "No analysis reports available."
+        reports = sorted(persistence_path.glob("analysis_report_*.txt"), reverse=True)
+        if not reports:
+            return "No analysis reports available."
+        return reports[0].read_text()
+
+    def read_resource_suppressions(self) -> str:
+        """Return suppression list text for the MCP resource."""
+        return self.list_suppressions().text
 
     def status(self) -> ToolResult:
         """Return current server status without blocking."""
@@ -2443,13 +2486,9 @@ class CodeStructureTools(CloseOnExitMixin):
                 semantic_mode=arguments.get("semantic_mode", "off"),
             )
         elif name == "suppress":
-            return cast(ToolResult, self.suppress(wl_hash=arguments["wl_hash"]))
-        elif name == "suppress_batch":
-            return cast(ToolResult, self.suppress_batch(wl_hashes=arguments["wl_hashes"]))
+            return self.suppress(wl_hash=arguments.get("wl_hash"))
         elif name == "unsuppress":
-            return cast(ToolResult, self.unsuppress(wl_hash=arguments["wl_hash"]))
-        elif name == "unsuppress_batch":
-            return cast(ToolResult, self.unsuppress_batch(wl_hashes=arguments["wl_hashes"]))
+            return self.unsuppress(wl_hash=arguments.get("wl_hash"))
         elif name == "list_suppressions":
             return self.list_suppressions()
         elif name == "status":
