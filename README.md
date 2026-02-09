@@ -11,7 +11,7 @@
 
 **Structural duplicate detection for codebases under AI-assisted development.**
 
-ASTrograph is an [MCP server](https://modelcontextprotocol.io) that intercepts code writes and edits, compares them against every function and block already in your codebase using AST graph isomorphism, and blocks the operation when a structural duplicate is found. Variable names, formatting, and comments are irrelevant -- if two pieces of code compile to the same abstract structure, ASTrograph treats them as duplicates.
+ASTrograph is an [MCP server](https://modelcontextprotocol.io) that offers enhanced write and edit tools which compare new code against every function and block already in your codebase using AST graph isomorphism and semantic analysis to rule out false positives of duplication, blocking the operation when a structural duplicate is found. Variable names, formatting, and comments are irrelevant -- if two pieces of code compile to the same abstract structure, ASTrograph treats them as duplicates.
 
 The problem it solves is specific and measurable: AI coding agents operate under limited context windows. They cannot see the entire codebase. They rewrite what already exists. The duplicates inflate the codebase, which means an even smaller percentage fits in context, which produces more duplicates. ASTrograph breaks that cycle.
 
@@ -179,6 +179,10 @@ New languages can be added via plugins. See [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Claude Code** -- project-level `.mcp.json`
 - **Codex** -- stdio framing, `resources/list` compatible
 - **Any MCP client** -- standard stdio protocol
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Thaylo/astrograph&type=date&legend=top-left)](https://www.star-history.com/#Thaylo/astrograph&type=date&legend=top-left)
 
 ## License
 
