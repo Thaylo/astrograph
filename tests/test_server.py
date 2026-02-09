@@ -1702,6 +1702,141 @@ class TestEsprimaGraph:
         assert sig_map["typescript.dependency_injection"] == "none"
         assert sig_map["typescript.reactive_rxjs"] == "none"
 
+    def test_js_semantic_signals_include_all(self):
+        """JS plugin emits all 5 microservices signal keys."""
+        from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
+
+        plugin = JavaScriptLSPPlugin.__new__(JavaScriptLSPPlugin)
+        source = (
+            "const app = express();\n"
+            "app.use(cors());\n"
+            "mongoose.connect('mongodb://localhost');\n"
+            "jwt.sign(payload, secret);\n"
+            "const io = require('socket.io');\n"
+            "io.on('connection', (socket) => {});\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "app.js")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        expected_keys = [
+            "javascript.http_framework",
+            "javascript.middleware_patterns",
+            "javascript.database_client",
+            "javascript.auth_patterns",
+            "javascript.realtime_messaging",
+        ]
+        for key in expected_keys:
+            assert key in sig_map, f"Missing signal key: {key}"
+
+    def test_js_semantic_signals_express_microservice(self):
+        """Full Express app fires all 5 signals with correct parts."""
+        from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
+
+        plugin = JavaScriptLSPPlugin.__new__(JavaScriptLSPPlugin)
+        source = (
+            "const express = require('express');\n"
+            "const app = express();\n"
+            "const mongoose = require('mongoose');\n"
+            "const jwt = require('jsonwebtoken');\n"
+            "const bcrypt = require('bcrypt');\n"
+            "const passport = require('passport');\n"
+            "const http = require('http');\n"
+            "const { Server } = require('socket.io');\n\n"
+            "app.use(express.json());\n"
+            "app.use(express.urlencoded({ extended: true }));\n"
+            "app.use(cors());\n"
+            "app.use(helmet());\n"
+            "app.use(morgan('dev'));\n"
+            "app.use(express.static('public'));\n"
+            "app.use((err, req, res, next) => { res.status(500).send(); });\n\n"
+            "const UserSchema = new mongoose.Schema({ name: String });\n"
+            "const User = mongoose.model('User', UserSchema);\n\n"
+            "app.post('/login', async (req, res) => {\n"
+            "    const user = await User.findOne({ email: req.body.email });\n"
+            "    const match = await bcrypt.compare(req.body.password, user.password);\n"
+            "    const token = jwt.sign({ id: user._id }, secret);\n"
+            "    res.json({ token });\n"
+            "});\n\n"
+            "app.get('/profile', passport.authenticate('jwt'), (req, res) => {\n"
+            "    res.json(req.user);\n"
+            "});\n\n"
+            "const server = http.createServer(app);\n"
+            "const io = new Server(server);\n"
+            "io.on('connection', (socket) => {\n"
+            "    socket.join('room1');\n"
+            "    io.to('room1').emit('hello');\n"
+            "});\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "server.js")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        # HTTP framework
+        assert "express" in sig_map["javascript.http_framework"]
+        assert "native_http" in sig_map["javascript.http_framework"]
+
+        # Middleware
+        assert "body_parser" in sig_map["javascript.middleware_patterns"]
+        assert "cors" in sig_map["javascript.middleware_patterns"]
+        assert "helmet" in sig_map["javascript.middleware_patterns"]
+        assert "morgan" in sig_map["javascript.middleware_patterns"]
+        assert "error_handler" in sig_map["javascript.middleware_patterns"]
+        assert "static_files" in sig_map["javascript.middleware_patterns"]
+
+        # Database
+        assert "mongoose" in sig_map["javascript.database_client"]
+
+        # Auth
+        assert "jwt" in sig_map["javascript.auth_patterns"]
+        assert "bcrypt" in sig_map["javascript.auth_patterns"]
+        assert "passport" in sig_map["javascript.auth_patterns"]
+
+        # Realtime
+        assert "socketio" in sig_map["javascript.realtime_messaging"]
+
+    def test_js_semantic_signals_fastify_only(self):
+        """Fastify app fires http_framework with fastify, other 4 signals = none."""
+        from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
+
+        plugin = JavaScriptLSPPlugin.__new__(JavaScriptLSPPlugin)
+        source = (
+            "const fastify = Fastify({ logger: true });\n"
+            "fastify.get('/health', async (req, reply) => {\n"
+            "    return { status: 'ok' };\n"
+            "});\n"
+            "fastify.listen({ port: 3000 });\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "server.js")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert "fastify" in sig_map["javascript.http_framework"]
+        assert sig_map["javascript.middleware_patterns"] == "none"
+        assert sig_map["javascript.database_client"] == "none"
+        assert sig_map["javascript.auth_patterns"] == "none"
+        assert sig_map["javascript.realtime_messaging"] == "none"
+
+    def test_js_semantic_signals_absent_microservices(self):
+        """Plain utility emits none for all 5 microservices signals."""
+        from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
+
+        plugin = JavaScriptLSPPlugin.__new__(JavaScriptLSPPlugin)
+        source = (
+            "function add(a, b) {\n"
+            "    return a + b;\n"
+            "}\n\n"
+            "function multiply(a, b) {\n"
+            "    return a * b;\n"
+            "}\n\n"
+            "module.exports = { add, multiply };\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "math.js")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert sig_map["javascript.http_framework"] == "none"
+        assert sig_map["javascript.middleware_patterns"] == "none"
+        assert sig_map["javascript.database_client"] == "none"
+        assert sig_map["javascript.auth_patterns"] == "none"
+        assert sig_map["javascript.realtime_messaging"] == "none"
+
     def test_go_semantic_signals_emitted(self):
         """Go plugin emits all 12 semantic signals for Go code."""
         from astrograph.languages.go_lsp_plugin import GoLSPPlugin

@@ -52,6 +52,60 @@ _DECORATOR_RE = re.compile(r"^\s*@([A-Za-z_$][A-Za-z0-9_$]*)", re.MULTILINE)
 
 _JS_NUMERIC_TYPES = frozenset({"number", "bigint", "Number", "BigInt"})
 
+# -- HTTP framework patterns --
+_JS_EXPRESS_RE = re.compile(
+    r"\bexpress\s*\(\)" r"|\bRouter\s*\(\)" r"|\b(?:app|router)\.(?:get|post|put|delete|patch)\s*\("
+)
+_JS_FASTIFY_RE = re.compile(
+    r"\b[Ff]astify\s*\(" r"|\bfastify\.(?:get|post|register|decorate|addHook)\s*\("
+)
+_JS_KOA_RE = re.compile(r"\bnew\s+Koa\s*\(")
+_JS_HAPI_RE = re.compile(r"\bHapi\.(?:server|Server)\s*\(")
+_JS_NATIVE_HTTP_RE = re.compile(r"\bhttps?\.createServer\s*\(")
+
+# -- Middleware patterns --
+_JS_BODY_PARSER_RE = re.compile(
+    r"\bbodyParser\.(?:json|urlencoded)\s*\(" r"|\bexpress\.(?:json|urlencoded)\s*\("
+)
+_JS_CORS_RE = re.compile(r"\bcors\s*\(")
+_JS_HELMET_RE = re.compile(r"\bhelmet\s*\(")
+_JS_MORGAN_RE = re.compile(r"\bmorgan\s*\(")
+_JS_ERROR_HANDLER_RE = re.compile(r"\(\s*err\s*,\s*req\s*,\s*res\s*,\s*next\s*\)")
+_JS_STATIC_FILES_RE = re.compile(r"\bexpress\.static\s*\(")
+
+# -- Database client patterns --
+_JS_MONGOOSE_SCHEMA_RE = re.compile(
+    r"\bmongoose\.(?:Schema|model|connect)\b" r"|\bnew\s+Schema\s*\("
+)
+_JS_SEQUELIZE_RE = re.compile(
+    r"\bnew\s+Sequelize\s*\(" r"|\bsequelize\.define\s*\(" r"|\bDataTypes\."
+)
+_JS_KNEX_RE = re.compile(r"\bknex\s*\(" r"|\bknex\.schema\." r"|\bknex\.migrate\.")
+_JS_MONGODB_NATIVE_RE = re.compile(r"\bMongoClient\b")
+_JS_REDIS_RE = re.compile(r"\bnew\s+Redis\s*\(" r"|\bredis\.createClient\s*\(")
+_JS_PRISMA_RE = re.compile(
+    r"\bPrismaClient\b" r"|prisma\.\w+\.(?:findMany|create|update|delete)\s*\("
+)
+
+# -- Auth patterns --
+_JS_JWT_RE = re.compile(r"\bjwt\.(?:sign|verify|decode)\s*\(")
+_JS_PASSPORT_RE = re.compile(r"\bpassport\.(?:authenticate|use|initialize|session)\s*\(")
+_JS_BCRYPT_RE = re.compile(r"\bbcrypt\.(?:hash|compare|genSalt|hashSync|compareSync)\s*\(")
+_JS_OAUTH_RE = re.compile(r"\bOAuth2(?:Client|Strategy)\b")
+_JS_SESSION_AUTH_RE = re.compile(r"\breq\.session\b" r"|\breq\.isAuthenticated\s*\(")
+
+# -- Realtime / messaging patterns --
+_JS_SOCKETIO_RE = re.compile(
+    r"\bsocket\.(?:join|leave)\s*\("
+    r"|\bio\.(?:of|to|emit)\s*\("
+    r"|\bio\.on\s*\(\s*['\"]connection['\"]"
+)
+_JS_WEBSOCKET_RE = re.compile(r"\bnew\s+WebSocket\s*\(" r"|\bWebSocketServer\b")
+_JS_EVENT_EMITTER_RE = re.compile(r"\bEventEmitter\b")
+_JS_MESSAGE_QUEUE_RE = re.compile(
+    r"\bchannel\.(?:sendToQueue|consume|assertQueue)\s*\(" r"|\bamqp\.connect\s*\("
+)
+
 # -- Esprima AST child fields (order matters for graph structure) --
 _ESPRIMA_CHILD_FIELDS = (
     "body",
@@ -621,5 +675,112 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
                     origin="syntax",
                 )
             )
+
+        # 7. HTTP framework
+        http_parts: list[str] = []
+        if _JS_EXPRESS_RE.search(source):
+            http_parts.append("express")
+        if _JS_FASTIFY_RE.search(source):
+            http_parts.append("fastify")
+        if _JS_KOA_RE.search(source):
+            http_parts.append("koa")
+        if _JS_HAPI_RE.search(source):
+            http_parts.append("hapi")
+        if _JS_NATIVE_HTTP_RE.search(source):
+            http_parts.append("native_http")
+        signals.append(
+            SemanticSignal(
+                key="javascript.http_framework",
+                value=",".join(http_parts) if http_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 8. Middleware patterns
+        mw_parts: list[str] = []
+        if _JS_BODY_PARSER_RE.search(source):
+            mw_parts.append("body_parser")
+        if _JS_CORS_RE.search(source):
+            mw_parts.append("cors")
+        if _JS_HELMET_RE.search(source):
+            mw_parts.append("helmet")
+        if _JS_MORGAN_RE.search(source):
+            mw_parts.append("morgan")
+        if _JS_ERROR_HANDLER_RE.search(source):
+            mw_parts.append("error_handler")
+        if _JS_STATIC_FILES_RE.search(source):
+            mw_parts.append("static_files")
+        signals.append(
+            SemanticSignal(
+                key="javascript.middleware_patterns",
+                value=",".join(mw_parts) if mw_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 9. Database client
+        db_parts: list[str] = []
+        if _JS_MONGOOSE_SCHEMA_RE.search(source):
+            db_parts.append("mongoose")
+        if _JS_SEQUELIZE_RE.search(source):
+            db_parts.append("sequelize")
+        if _JS_KNEX_RE.search(source):
+            db_parts.append("knex")
+        if _JS_MONGODB_NATIVE_RE.search(source):
+            db_parts.append("mongodb_native")
+        if _JS_REDIS_RE.search(source):
+            db_parts.append("redis")
+        if _JS_PRISMA_RE.search(source):
+            db_parts.append("prisma")
+        signals.append(
+            SemanticSignal(
+                key="javascript.database_client",
+                value=",".join(db_parts) if db_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 10. Auth patterns
+        auth_parts: list[str] = []
+        if _JS_JWT_RE.search(source):
+            auth_parts.append("jwt")
+        if _JS_PASSPORT_RE.search(source):
+            auth_parts.append("passport")
+        if _JS_BCRYPT_RE.search(source):
+            auth_parts.append("bcrypt")
+        if _JS_OAUTH_RE.search(source):
+            auth_parts.append("oauth")
+        if _JS_SESSION_AUTH_RE.search(source):
+            auth_parts.append("session_auth")
+        signals.append(
+            SemanticSignal(
+                key="javascript.auth_patterns",
+                value=",".join(auth_parts) if auth_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 11. Realtime / messaging
+        rt_parts: list[str] = []
+        if _JS_SOCKETIO_RE.search(source):
+            rt_parts.append("socketio")
+        if _JS_WEBSOCKET_RE.search(source):
+            rt_parts.append("websocket")
+        if _JS_EVENT_EMITTER_RE.search(source):
+            rt_parts.append("event_emitter")
+        if _JS_MESSAGE_QUEUE_RE.search(source):
+            rt_parts.append("message_queue")
+        signals.append(
+            SemanticSignal(
+                key="javascript.realtime_messaging",
+                value=",".join(rt_parts) if rt_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
 
         return signals
