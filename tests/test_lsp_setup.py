@@ -35,6 +35,31 @@ def _write_compile_commands(path, *, file_name: str = "src/main.cpp") -> None:
     path.write_text(json.dumps(payload))
 
 
+def _make_fake_probe(endpoint: str):
+    """Return a probe function that reports *endpoint* as available and everything else as not."""
+
+    def _probe(command):
+        parsed = lsp_setup.parse_command(command)
+        if parsed == [endpoint]:
+            host_port = endpoint.split("://", 1)[1]
+            return {
+                "command": parsed,
+                "available": True,
+                "executable": host_port,
+                "transport": "tcp",
+                "endpoint": host_port,
+            }
+        return {
+            "command": parsed,
+            "available": False,
+            "executable": None,
+            "transport": "subprocess",
+            "endpoint": None,
+        }
+
+    return _probe
+
+
 @pytest.mark.parametrize(
     ("binding", "env_command", "expected_source", "expected_command"),
     [
@@ -233,40 +258,25 @@ def test_language_variant_policy_scoped():
     assert "supported" in scoped["cpp_lsp"]
 
 
-def test_evaluate_version_status_cpp_clangd_supported():
+@pytest.mark.parametrize(
+    ("detected", "expected_state", "reason_substring"),
+    [
+        ("clangd version 17.0.6", "supported", "clangd"),
+        ("ccls version 0.20250117", "best_effort", "ccls"),
+        ("mycpp-lsp 2.4.1", "best_effort", "Non-clangd C/C++ language server"),
+    ],
+    ids=["clangd_supported", "ccls_best_effort", "non_clangd_best_effort"],
+)
+def test_evaluate_version_status_cpp(detected, expected_state, reason_substring):
     status = lsp_setup._evaluate_version_status(
         language_id="cpp_lsp",
-        detected="clangd version 17.0.6",
+        detected=detected,
         probe_kind="server",
         transport="subprocess",
         available=True,
     )
-    assert status["state"] == "supported"
-    assert "clangd" in status["reason"]
-
-
-def test_evaluate_version_status_cpp_ccls_best_effort():
-    status = lsp_setup._evaluate_version_status(
-        language_id="cpp_lsp",
-        detected="ccls version 0.20250117",
-        probe_kind="server",
-        transport="subprocess",
-        available=True,
-    )
-    assert status["state"] == "best_effort"
-    assert "ccls" in status["reason"]
-
-
-def test_evaluate_version_status_cpp_non_clangd_best_effort():
-    status = lsp_setup._evaluate_version_status(
-        language_id="cpp_lsp",
-        detected="mycpp-lsp 2.4.1",
-        probe_kind="server",
-        transport="subprocess",
-        available=True,
-    )
-    assert status["state"] == "best_effort"
-    assert "Non-clangd C/C++ language server" in status["reason"]
+    assert status["state"] == expected_state
+    assert reason_substring in status["reason"]
 
 
 def test_collect_lsp_statuses_cpp_fail_closed_when_reachable_only_in_production(
@@ -277,25 +287,7 @@ def test_collect_lsp_statuses_cpp_fail_closed_when_reachable_only_in_production(
 
     monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "production")
 
-    def _fake_probe(command):
-        parsed = lsp_setup.parse_command(command)
-        if parsed == [endpoint]:
-            return {
-                "command": parsed,
-                "available": True,
-                "executable": "127.0.0.1:2088",
-                "transport": "tcp",
-                "endpoint": "127.0.0.1:2088",
-            }
-        return {
-            "command": parsed,
-            "available": False,
-            "executable": None,
-            "transport": "subprocess",
-            "endpoint": None,
-        }
-
-    monkeypatch.setattr(lsp_setup, "probe_command", _fake_probe)
+    monkeypatch.setattr(lsp_setup, "probe_command", _make_fake_probe(endpoint))
     monkeypatch.setattr(
         lsp_setup,
         "_probe_attach_lsp_semantics",
@@ -380,25 +372,7 @@ def test_collect_lsp_statuses_cpp_reachable_only_allowed_in_bootstrap_mode(tmp_p
 
     monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "bootstrap")
 
-    def _fake_probe(command):
-        parsed = lsp_setup.parse_command(command)
-        if parsed == [endpoint]:
-            return {
-                "command": parsed,
-                "available": True,
-                "executable": "127.0.0.1:2088",
-                "transport": "tcp",
-                "endpoint": "127.0.0.1:2088",
-            }
-        return {
-            "command": parsed,
-            "available": False,
-            "executable": None,
-            "transport": "subprocess",
-            "endpoint": None,
-        }
-
-    monkeypatch.setattr(lsp_setup, "probe_command", _fake_probe)
+    monkeypatch.setattr(lsp_setup, "probe_command", _make_fake_probe(endpoint))
     monkeypatch.setattr(
         lsp_setup,
         "_probe_attach_lsp_semantics",
@@ -496,20 +470,17 @@ def test_relaxed_alias_resolves_to_bootstrap(monkeypatch):
     assert mode == "bootstrap"
 
 
-def test_per_call_validation_mode_overrides_env(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("env_mode", "call_mode"),
+    [("production", "bootstrap"), ("bootstrap", "production")],
+    ids=["override_to_bootstrap", "override_to_production"],
+)
+def test_per_call_validation_mode_overrides_env(tmp_path, monkeypatch, env_mode, call_mode):
     """Per-call validation_mode takes priority over ASTROGRAPH_LSP_VALIDATION_MODE."""
-    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "production")
-    statuses = collect_lsp_statuses(tmp_path, validation_mode="bootstrap")
+    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", env_mode)
+    statuses = collect_lsp_statuses(tmp_path, validation_mode=call_mode)
     for status in statuses:
-        assert status["validation_mode"] == "bootstrap"
-
-
-def test_per_call_validation_mode_production(tmp_path, monkeypatch):
-    """Per-call production mode overrides env bootstrap."""
-    monkeypatch.setenv("ASTROGRAPH_LSP_VALIDATION_MODE", "bootstrap")
-    statuses = collect_lsp_statuses(tmp_path, validation_mode="production")
-    for status in statuses:
-        assert status["validation_mode"] == "production"
+        assert status["validation_mode"] == call_mode
 
 
 def test_compile_db_path_overrides_env_and_discovery(tmp_path, monkeypatch):
@@ -552,8 +523,18 @@ def test_project_root_scopes_compile_commands_search(tmp_path):
     assert "project_a" in status["selected_path"]
 
 
-def test_subprocess_version_unsupported_production_downgrades(tmp_path, monkeypatch):
-    """Subprocess with unsupported version is unavailable in production mode."""
+@pytest.mark.parametrize(
+    ("validation_mode", "expect_available", "expect_state"),
+    [
+        ("production", False, "reachable_only"),
+        ("bootstrap", True, "verified"),
+    ],
+    ids=["production_downgrades", "bootstrap_still_available"],
+)
+def test_subprocess_version_unsupported(
+    tmp_path, monkeypatch, validation_mode, expect_available, expect_state
+):
+    """Unsupported version behaviour depends on validation mode."""
     monkeypatch.setattr(
         lsp_setup,
         "_run_version_probe",
@@ -577,38 +558,7 @@ def test_subprocess_version_unsupported_production_downgrades(tmp_path, monkeypa
         command=["pylsp"],
         probe=probe,
         workspace=tmp_path,
-        validation_mode="production",
+        validation_mode=validation_mode,
     )
-    assert result["available"] is False
-    assert result["verification"]["state"] == "reachable_only"
-
-
-def test_subprocess_version_unsupported_bootstrap_still_available(tmp_path, monkeypatch):
-    """Subprocess with unsupported version remains available in bootstrap mode."""
-    monkeypatch.setattr(
-        lsp_setup,
-        "_run_version_probe",
-        lambda _lang, _cmd: {"detected": "pylsp 0.1.0", "probe_kind": "server"},
-    )
-    monkeypatch.setattr(
-        lsp_setup,
-        "_evaluate_version_status",
-        lambda **_kwargs: {
-            "state": "unsupported",
-            "detected": "pylsp 0.1.0",
-            "probe_kind": "server",
-            "reason": "python-lsp-server version is below supported baseline (1.11).",
-            "variant_policy": {},
-        },
-    )
-
-    probe = {"available": True, "executable": "/usr/bin/pylsp", "transport": "subprocess"}
-    result = lsp_setup._availability_validation(
-        language_id="python",
-        command=["pylsp"],
-        probe=probe,
-        workspace=tmp_path,
-        validation_mode="bootstrap",
-    )
-    assert result["available"] is True
-    assert result["verification"]["state"] == "verified"
+    assert result["available"] is expect_available
+    assert result["verification"]["state"] == expect_state

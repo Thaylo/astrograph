@@ -899,6 +899,13 @@ class TestCompare:
         assert "c.pointer_usage" in result.text
 
 
+def _extract_signal_map(plugin_cls: type, source: str, filename: str) -> dict:
+    """Create a plugin via __new__ and return its semantic signal map."""
+    plugin = plugin_cls.__new__(plugin_cls)
+    profile = plugin.extract_semantic_profile(source, filename)
+    return {s.key: s.value for s in profile.signals}
+
+
 class TestEsprimaGraph:
     """Unit tests for esprima AST graph builder and TS annotation stripping."""
 
@@ -1015,7 +1022,6 @@ class TestEsprimaGraph:
         """C plugin detects C23 features in source code."""
         from astrograph.languages.c_lsp_plugin import CLSPPlugin
 
-        plugin = CLSPPlugin.__new__(CLSPPlugin)
         source = (
             "#include <stddef.h>\n"
             "constexpr int MAX = 100;\n"
@@ -1025,8 +1031,7 @@ class TestEsprimaGraph:
             "typeof(MAX) val = 42;\n"
             "[[nodiscard]] int compute(void) { return 0; }\n"
         )
-        profile = plugin.extract_semantic_profile(source, "test.c")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(CLSPPlugin, source, "test.c")
         assert "c.c23_features" in sig_map
         c23_val = sig_map["c.c23_features"]
         assert "constexpr" in c23_val
@@ -1040,7 +1045,6 @@ class TestEsprimaGraph:
         """C plugin emits 'none' for C23 features on plain C99 code."""
         from astrograph.languages.c_lsp_plugin import CLSPPlugin
 
-        plugin = CLSPPlugin.__new__(CLSPPlugin)
         source = (
             "#include <stdio.h>\n"
             "int main(void) {\n"
@@ -1048,8 +1052,7 @@ class TestEsprimaGraph:
             "  return 0;\n"
             "}"
         )
-        profile = plugin.extract_semantic_profile(source, "test.c")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(CLSPPlugin, source, "test.c")
         assert sig_map["c.c23_features"] == "none"
 
     # -- C++20/23 feature detection tests --
@@ -1058,15 +1061,13 @@ class TestEsprimaGraph:
         """C++ plugin detects C++20/23 features in source code."""
         from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
 
-        plugin = CppLSPPlugin.__new__(CppLSPPlugin)
         source = (
             "template<typename T>\n"
             "concept Addable = requires(T a, T b) { a + b; };\n"
             "consteval int square(int n) { return n * n; }\n"
             "auto result = a <=> b;\n"
         )
-        profile = plugin.extract_semantic_profile(source, "test.cpp")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(CppLSPPlugin, source, "test.cpp")
         assert "cpp.modern_features" in sig_map
         modern = sig_map["cpp.modern_features"]
         assert "concept" in modern
@@ -1078,15 +1079,13 @@ class TestEsprimaGraph:
         """C++ plugin detects coroutine keywords."""
         from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
 
-        plugin = CppLSPPlugin.__new__(CppLSPPlugin)
         source = (
             "task<int> compute() {\n"
             "  auto val = co_await fetch_value();\n"
             "  co_return val * 2;\n"
             "}"
         )
-        profile = plugin.extract_semantic_profile(source, "test.cpp")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(CppLSPPlugin, source, "test.cpp")
         assert "coroutine" in sig_map["cpp.modern_features"]
 
     # -- Java 25 feature detection tests --
@@ -1095,7 +1094,6 @@ class TestEsprimaGraph:
         """Java plugin detects record declarations."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
         source = (
             "public record Point(int x, int y) {\n"
             "  public double distance() {\n"
@@ -1103,8 +1101,7 @@ class TestEsprimaGraph:
             "  }\n"
             "}"
         )
-        profile = plugin.extract_semantic_profile(source, "Point.java")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Point.java")
         assert "java.modern_features" in sig_map
         assert "record" in sig_map["java.modern_features"]
 
@@ -1112,21 +1109,18 @@ class TestEsprimaGraph:
         """Java plugin detects sealed classes."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
         source = (
             "public sealed class Shape permits Circle, Rectangle {\n"
             "  abstract double area();\n"
             "}"
         )
-        profile = plugin.extract_semantic_profile(source, "Shape.java")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Shape.java")
         assert "sealed" in sig_map["java.modern_features"]
 
     def test_java_pattern_instanceof_detected(self):
         """Java plugin detects pattern matching instanceof."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
         source = (
             "void process(Object obj) {\n"
             "  if (obj instanceof String s) {\n"
@@ -1134,15 +1128,13 @@ class TestEsprimaGraph:
             "  }\n"
             "}"
         )
-        profile = plugin.extract_semantic_profile(source, "Test.java")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Test.java")
         assert "pattern_instanceof" in sig_map["java.modern_features"]
 
     def test_java_switch_expression_detected(self):
         """Java plugin detects switch expressions with arrow syntax."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
         source = (
             "int result = switch (day) {\n"
             "  case MONDAY -> 1;\n"
@@ -1150,18 +1142,15 @@ class TestEsprimaGraph:
             "  default -> 0;\n"
             "};"
         )
-        profile = plugin.extract_semantic_profile(source, "Test.java")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Test.java")
         assert "switch_expression" in sig_map["java.modern_features"]
 
     def test_java_text_block_and_var_detected(self):
         """Java plugin detects text blocks and var keyword."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
         source = 'var greeting = """\n' "    Hello,\n" '    World!""";\n'
-        profile = plugin.extract_semantic_profile(source, "Test.java")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(JavaLSPPlugin, source, "Test.java")
         modern = sig_map["java.modern_features"]
         assert "text_block" in modern
         assert "var" in modern
@@ -1170,7 +1159,6 @@ class TestEsprimaGraph:
         """Java plugin emits 'none' for modern features on Java 8 style code."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
-        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
         source = (
             "public class App {\n"
             "  public static void main(String[] args) {\n"
@@ -1178,8 +1166,7 @@ class TestEsprimaGraph:
             "  }\n"
             "}"
         )
-        profile = plugin.extract_semantic_profile(source, "App.java")
-        sig_map = {s.key: s.value for s in profile.signals}
+        sig_map = _extract_signal_map(JavaLSPPlugin, source, "App.java")
         assert sig_map["java.modern_features"] == "none"
 
     # -- Updated signal count tests --
@@ -1596,6 +1583,21 @@ class TestEsprimaGraph:
         assert result_too_old["state"] == "unsupported"
 
 
+class _RecordingLock:
+    """Context manager that records enter/exit events for testing."""
+
+    def __init__(self):
+        self.events: list[str] = []
+
+    def __enter__(self):
+        self.events.append("enter")
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.events.append("exit")
+        return False
+
+
 class TestCallTool:
     """Tests for tool dispatch."""
 
@@ -1649,19 +1651,7 @@ class TestCallTool:
         assert tools._is_mutating_tool_call("lsp_setup", {"mode": "unbind"}) is True
 
     def test_call_tool_uses_mutation_lock_for_mutating_calls(self, tools):
-        class RecordingLock:
-            def __init__(self):
-                self.events = []
-
-            def __enter__(self):
-                self.events.append("enter")
-                return self
-
-            def __exit__(self, _exc_type, _exc, _tb):
-                self.events.append("exit")
-                return False
-
-        lock = RecordingLock()
+        lock = _RecordingLock()
         with patch.object(tools, "_mutation_lock", lock), patch.object(
             tools, "_call_tool_unlocked", return_value=ToolResult("ok")
         ) as dispatch:
@@ -1672,19 +1662,7 @@ class TestCallTool:
         dispatch.assert_called_once_with("metadata_erase", {})
 
     def test_call_tool_skips_mutation_lock_for_read_only_calls(self, tools):
-        class RecordingLock:
-            def __init__(self):
-                self.events = []
-
-            def __enter__(self):
-                self.events.append("enter")
-                return self
-
-            def __exit__(self, _exc_type, _exc, _tb):
-                self.events.append("exit")
-                return False
-
-        lock = RecordingLock()
+        lock = _RecordingLock()
         with patch.object(tools, "_mutation_lock", lock), patch.object(
             tools, "_call_tool_unlocked", return_value=ToolResult("ok")
         ) as dispatch:
@@ -2854,6 +2832,63 @@ def transform_data(data):
             tools.close()
 
 
+class _FakeCppPlugin:
+    """Stub C++ plugin for write/edit tool tests."""
+
+    language_id = "cpp_lsp"
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def extract_code_units(
+        self,
+        source: str,
+        file_path: str = "<unknown>",
+        include_blocks: bool = True,
+        max_block_depth: int = 3,
+    ):
+        del source, include_blocks, max_block_depth
+        yield CodeUnit(
+            name="accumulate_positive",
+            code=self._entry.code_unit.code,
+            file_path=file_path,
+            line_start=3,
+            line_end=11,
+            unit_type="function",
+            language="cpp_lsp",
+        )
+
+
+def _fake_cpp_exact_matches(entry):
+    """Return a matcher closure that recognises the given entry."""
+
+    def _match(code: str, language: str = "python"):
+        if language == "cpp_lsp" and code.strip().startswith("int accumulate_positive"):
+            return [entry]
+        return []
+
+    return _match
+
+
+def _assert_metadata_op_reports_removed_bindings(method_name: str, expected_msg: str):
+    """Shared helper: metadata erase/recompute should report removed LSP bindings."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file1 = os.path.join(tmpdir, "file1.py")
+        Path(file1).write_text("def foo(): pass")
+
+        tools = CodeStructureTools()
+        tools.index_codebase(tmpdir)
+
+        bindings_path = _get_persistence_path(tmpdir) / "lsp_bindings.json"
+        bindings_path.write_text(
+            json.dumps({"cpp_lsp": ["tcp://host.docker.internal:2088"]}, indent=2)
+        )
+
+        result = getattr(tools, method_name)()
+        assert expected_msg in result.text
+        tools.close()
+
+
 class TestWriteTool:
     """Tests for the astrograph_write tool."""
 
@@ -2993,32 +3028,6 @@ def compute_total(x, y):
             ),
         ).entry
 
-        class _FakeCppPlugin:
-            language_id = "cpp_lsp"
-
-            def extract_code_units(
-                self,
-                source: str,
-                file_path: str = "<unknown>",
-                include_blocks: bool = True,
-                max_block_depth: int = 3,
-            ):
-                del source, include_blocks, max_block_depth
-                yield CodeUnit(
-                    name="accumulate_positive",
-                    code=cpp_exact_entry.code_unit.code,
-                    file_path=file_path,
-                    line_start=3,
-                    line_end=11,
-                    unit_type="function",
-                    language="cpp_lsp",
-                )
-
-        def _fake_exact_matches(code: str, language: str = "python"):
-            if language == "cpp_lsp" and code.strip().startswith("int accumulate_positive"):
-                return [cpp_exact_entry]
-            return []
-
         cpp_file = os.path.join(tmpdir, "new_duplicate.cpp")
         cpp_content = (
             "#include <vector>\n\n"
@@ -3036,11 +3045,11 @@ def compute_total(x, y):
         with patch.object(
             LanguageRegistry.get(),
             "get_plugin_for_file",
-            return_value=_FakeCppPlugin(),
+            return_value=_FakeCppPlugin(cpp_exact_entry),
         ), patch.object(
             tools.index,
             "find_exact_matches",
-            side_effect=_fake_exact_matches,
+            side_effect=_fake_cpp_exact_matches(cpp_exact_entry),
         ), patch.object(
             tools.index,
             "find_similar",
@@ -3194,32 +3203,6 @@ def placeholder():
             ),
         ).entry
 
-        class _FakeCppPlugin:
-            language_id = "cpp_lsp"
-
-            def extract_code_units(
-                self,
-                source: str,
-                file_path: str = "<unknown>",
-                include_blocks: bool = True,
-                max_block_depth: int = 3,
-            ):
-                del source, include_blocks, max_block_depth
-                yield CodeUnit(
-                    name="accumulate_positive",
-                    code=cpp_exact_entry.code_unit.code,
-                    file_path=file_path,
-                    line_start=3,
-                    line_end=11,
-                    unit_type="function",
-                    language="cpp_lsp",
-                )
-
-        def _fake_exact_matches(code: str, language: str = "python"):
-            if language == "cpp_lsp" and code.strip().startswith("int accumulate_positive"):
-                return [cpp_exact_entry]
-            return []
-
         target_cpp = os.path.join(tmpdir, "target.cpp")
         old_block = "int placeholder() {\n    return 0;\n}\n"
         Path(target_cpp).write_text(old_block)
@@ -3239,11 +3222,11 @@ def placeholder():
         with patch.object(
             LanguageRegistry.get(),
             "get_plugin_for_file",
-            return_value=_FakeCppPlugin(),
+            return_value=_FakeCppPlugin(cpp_exact_entry),
         ), patch.object(
             tools.index,
             "find_exact_matches",
-            side_effect=_fake_exact_matches,
+            side_effect=_fake_cpp_exact_matches(cpp_exact_entry),
         ), patch.object(
             tools.index,
             "find_similar",
@@ -3591,21 +3574,7 @@ def transform_data(data):
 
     def test_erase_reports_removed_lsp_bindings(self):
         """Erase should nudge users when lsp_bindings.json is removed."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file1 = os.path.join(tmpdir, "file1.py")
-            Path(file1).write_text("def foo(): pass")
-
-            tools = CodeStructureTools()
-            tools.index_codebase(tmpdir)
-
-            bindings_path = _get_persistence_path(tmpdir) / "lsp_bindings.json"
-            bindings_path.write_text(
-                json.dumps({"cpp_lsp": ["tcp://host.docker.internal:2088"]}, indent=2)
-            )
-
-            result = tools.metadata_erase()
-            assert "LSP bindings were removed" in result.text
-            tools.close()
+        _assert_metadata_op_reports_removed_bindings("metadata_erase", "LSP bindings were removed")
 
 
 class TestMetadataRecomputeBaseline:
@@ -3669,21 +3638,10 @@ def transform_data(data):
 
     def test_recompute_reports_removed_lsp_bindings(self):
         """Recompute should nudge users that bindings are reset and need rebind."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file1 = os.path.join(tmpdir, "file1.py")
-            Path(file1).write_text("def foo(): pass")
-
-            tools = CodeStructureTools()
-            tools.index_codebase(tmpdir)
-
-            bindings_path = _get_persistence_path(tmpdir) / "lsp_bindings.json"
-            bindings_path.write_text(
-                json.dumps({"cpp_lsp": ["tcp://host.docker.internal:2088"]}, indent=2)
-            )
-
-            result = tools.metadata_recompute_baseline()
-            assert "LSP bindings were reset during recompute" in result.text
-            tools.close()
+        _assert_metadata_op_reports_removed_bindings(
+            "metadata_recompute_baseline",
+            "LSP bindings were reset during recompute",
+        )
 
 
 class TestResourceHandlers:
