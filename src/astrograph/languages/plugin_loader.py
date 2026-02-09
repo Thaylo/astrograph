@@ -102,6 +102,7 @@ def discover_language_plugins() -> list[LanguagePlugin]:
     discovered.extend(_iter_entry_point_plugins(PLUGIN_ENTRYPOINT_GROUP))
 
     # Deduplicate by language_id while preserving first-registered precedence.
+    # Close discarded plugins to avoid leaking LSP subprocess handles.
     deduped: list[LanguagePlugin] = []
     seen_language_ids: set[str] = set()
     for plugin in discovered:
@@ -111,8 +112,19 @@ def discover_language_plugins() -> list[LanguagePlugin]:
                 "Duplicate language plugin '%s' discovered; keeping first instance",
                 language_id,
             )
+            _close_plugin_quietly(plugin)
             continue
         deduped.append(plugin)
         seen_language_ids.add(language_id)
 
     return deduped
+
+
+def _close_plugin_quietly(plugin: LanguagePlugin) -> None:
+    """Close a plugin's resources if it has a close method."""
+    close = getattr(plugin, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            logger.debug("Error closing discarded plugin '%s'", plugin.language_id)

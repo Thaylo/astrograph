@@ -78,32 +78,41 @@ class SubprocessLSPClient(LSPClient):
             return f"file://{path.as_posix()}"
 
     def _start_process(self) -> bool:
-        if self._disabled:
-            return False
+        with self._lock:
+            if self._disabled:
+                return False
 
-        if self._proc and self._proc.poll() is None:
+            if self._proc and self._proc.poll() is None:
+                return True
+
+            # Clean up stale process (exited) before creating a new one
+            old_proc = self._proc
+            if old_proc is not None:
+                self._close_quietly(old_proc.stdin)
+                self._close_quietly(old_proc.stdout)
+                with contextlib.suppress(Exception):
+                    old_proc.wait(timeout=0.1)
+
+            if not self._command:
+                self._disabled = True
+                logger.warning("Cannot start LSP process: empty command")
+                return False
+
+            try:
+                self._proc = subprocess.Popen(
+                    self._command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as exc:
+                self._disabled = True
+                logger.warning("Failed to start LSP process %s: %s", self._command, exc)
+                return False
+
+            self._initialized = False
+            self._next_id = 1
             return True
-
-        if not self._command:
-            self._disabled = True
-            logger.warning("Cannot start LSP process: empty command")
-            return False
-
-        try:
-            self._proc = subprocess.Popen(
-                self._command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            self._disabled = True
-            logger.warning("Failed to start LSP process %s: %s", self._command, exc)
-            return False
-
-        self._initialized = False
-        self._next_id = 1
-        return True
 
     def _send_message(self, payload: dict[str, Any]) -> None:
         if self._proc is None or self._proc.stdin is None:
@@ -477,7 +486,8 @@ class SubprocessLSPClient(LSPClient):
             proc.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=1.0)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=1.0)
 
     def close(self, *, force: bool = False) -> None:
         with self._lock:
@@ -489,6 +499,8 @@ class SubprocessLSPClient(LSPClient):
 
             self._proc = None
             self._initialized = False
+            self._close_quietly(proc.stdin)
+            self._close_quietly(proc.stdout)
             self._terminate_process(proc)
 
     def __enter__(self) -> SubprocessLSPClient:
@@ -523,36 +535,37 @@ class SocketLSPClient(SubprocessLSPClient):
         self._stdout: BinaryIO | None = None
 
     def _start_process(self) -> bool:
-        if self._disabled:
-            return False
+        with self._lock:
+            if self._disabled:
+                return False
 
-        if self._sock is not None:
-            return True
+            if self._sock is not None:
+                return True
 
-        try:
-            transport = self._endpoint["transport"]
-            if transport == "tcp":
-                sock = socket.create_connection(
-                    (self._endpoint["host"], self._endpoint["port"]),
-                    timeout=self._request_timeout,
-                )
-            else:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                transport = self._endpoint["transport"]
+                if transport == "tcp":
+                    sock = socket.create_connection(
+                        (self._endpoint["host"], self._endpoint["port"]),
+                        timeout=self._request_timeout,
+                    )
+                else:
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    sock.settimeout(self._request_timeout)
+                    sock.connect(str(self._endpoint["path"]))
+
                 sock.settimeout(self._request_timeout)
-                sock.connect(str(self._endpoint["path"]))
+                self._sock = sock
+                self._stdin = sock.makefile("wb")
+                self._stdout = sock.makefile("rb")
+            except OSError as exc:
+                self._disabled = True
+                logger.warning("Failed to attach to LSP endpoint %s: %s", self._command[0], exc)
+                return False
 
-            sock.settimeout(self._request_timeout)
-            self._sock = sock
-            self._stdin = sock.makefile("wb")
-            self._stdout = sock.makefile("rb")
-        except OSError as exc:
-            self._disabled = True
-            logger.warning("Failed to attach to LSP endpoint %s: %s", self._command[0], exc)
-            return False
-
-        self._initialized = False
-        self._next_id = 1
-        return True
+            self._initialized = False
+            self._next_id = 1
+            return True
 
     def _send_message(self, payload: dict[str, Any]) -> None:
         if self._stdin is None:

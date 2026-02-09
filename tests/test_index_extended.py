@@ -213,10 +213,14 @@ class TestCodeStructureIndexExtended:
         assert file_paths[0].endswith("app.py")
 
     def test_index_directory_does_not_skip_similar_names(self, tmp_path):
-        """Directories like 'vendor', 'environment', 'envoy' should NOT be skipped."""
+        """Directories like 'environment', 'envoy', 'vengeance' should NOT be skipped.
+
+        Note: 'vendor' IS a legitimate skip dir (Go plugin), so we use
+        other names that merely look like venv prefixes but aren't.
+        """
         index = CodeStructureIndex()
 
-        for normal_dir in ["vendor", "environment", "envoy"]:
+        for normal_dir in ["environment", "envoy", "vengeance"]:
             d = tmp_path / normal_dir
             d.mkdir()
             (d / "module.py").write_text("def f(): pass")

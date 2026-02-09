@@ -72,8 +72,11 @@ def _expand_pattern(pattern: str) -> list[Path]:
         # Use glob for wildcard patterns
         parent = Path(expanded).parent
         name_pattern = Path(expanded).name
-        if parent.exists():
-            return list(parent.glob(name_pattern))
+        try:
+            if parent.exists():
+                return list(parent.glob(name_pattern))
+        except OSError:
+            pass
         return []
     else:
         path = Path(expanded)
@@ -127,7 +130,10 @@ def get_cloud_storage_paths() -> dict[str, list[Path]]:
         unique_paths = []
         seen = set()
         for p in paths:
-            resolved = p.resolve()
+            try:
+                resolved = p.resolve()
+            except OSError:
+                continue
             if resolved not in seen:
                 seen.add(resolved)
                 unique_paths.append(resolved)

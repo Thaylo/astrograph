@@ -60,27 +60,43 @@ class LanguageRegistry:
 
     @classmethod
     def reset(cls) -> None:
-        """Reset the singleton (for testing)."""
+        """Reset the singleton (for testing). Closes all plugin resources."""
         with cls._lock:
+            inst = cls._instance
             cls._instance = None
+        if inst is not None:
+            inst._close_plugins()
+
+    def _close_plugins(self) -> None:
+        """Close all registered plugins that have a close() method."""
+        for plugin in self._plugins.values():
+            close = getattr(plugin, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    self._logger.debug("Error closing plugin '%s'", plugin.language_id)
 
     def _ensure_plugins(self) -> None:
         """Discover and register plugins on first access."""
-        if self._initialized:
-            return
+        with self._lock:
+            if self._initialized:
+                return
 
-        discovered = discover_language_plugins()
-        for plugin in discovered:
-            try:
-                self.register(plugin)
-            except ValueError as exc:
-                self._logger.warning("Skipping language plugin '%s': %s", plugin.language_id, exc)
+            discovered = discover_language_plugins()
+            for plugin in discovered:
+                try:
+                    self.register(plugin)
+                except ValueError as exc:
+                    self._logger.warning(
+                        "Skipping language plugin '%s': %s", plugin.language_id, exc
+                    )
 
-        if self._plugins:
-            self._initialized = True
-            return
+            if self._plugins:
+                self._initialized = True
+                return
 
-        self._logger.warning("No language plugins were discovered; will retry on next access")
+            self._logger.warning("No language plugins were discovered; will retry on next access")
 
     def register(self, plugin: LanguagePlugin) -> None:
         """

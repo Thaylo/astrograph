@@ -282,9 +282,10 @@ class CodeStructureTools(CloseOnExitMixin):
             self._bg_index_progress = "starting"
             self.index_codebase(path)
             self._bg_index_progress = "done"
-        except Exception:
+        except Exception as exc:
             logger.exception(f"Background indexing failed for {path}")
             self._bg_index_progress = "error"
+            self._bg_index_error = str(exc)
         finally:
             self._bg_index_done.set()
 
@@ -302,11 +303,12 @@ class CodeStructureTools(CloseOnExitMixin):
         tool has its own non-blocking path for quick readiness checks.
         """
         self._wait_for_background_index()
-        return (
-            None
-            if self.index.entries
-            else ToolResult("No code indexed. Call index_codebase first.")
-        )
+        if self.index.entries:
+            return None
+        if self._bg_index_progress == "error":
+            error_detail = getattr(self, "_bg_index_error", "unknown error")
+            return ToolResult(f"Background indexing failed: {error_detail}")
+        return ToolResult("No code indexed. Call index_codebase first.")
 
     def _active_index(self) -> CodeStructureIndex | EventDrivenIndex:
         """Return event-driven index when enabled, otherwise in-memory index."""
@@ -467,10 +469,11 @@ class CodeStructureTools(CloseOnExitMixin):
         return ToolResult(output)
 
     def _verify_group(self, group: DuplicateGroup) -> bool:
-        """Verify a duplicate group via graph isomorphism."""
-        if len(group.entries) >= 2:
-            return self.index.verify_isomorphism(group.entries[0], group.entries[1])
-        return False
+        """Verify a duplicate group via graph isomorphism (checks all pairs against first)."""
+        if len(group.entries) < 2:
+            return False
+        first = group.entries[0]
+        return all(self.index.verify_isomorphism(first, entry) for entry in group.entries[1:])
 
     def _relative_path(self, file_path: str) -> str:
         """Strip the indexed root to produce a relative path."""
@@ -533,6 +536,9 @@ class CodeStructureTools(CloseOnExitMixin):
         suffix = container_path[len("/workspace") :]
         if suffix and host_path.endswith(suffix):
             self._host_root = host_path[: -len(suffix)]
+        elif not suffix:
+            # container_path is exactly "/workspace" — host_path IS the root
+            self._host_root = host_path
 
     def _format_locations(self, entries: list[IndexEntry]) -> list[str]:
         """Format entry locations for output."""
@@ -570,7 +576,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 pass
 
     @_requires_index
-    def analyze(self, auto_reindex: bool = True) -> ToolResult:  # noqa: ARG002
+    def analyze(self, auto_reindex: bool = True) -> ToolResult:
         """
         Analyze the indexed codebase for duplicates and similar patterns.
 
@@ -583,6 +589,7 @@ class CodeStructureTools(CloseOnExitMixin):
         - Pattern duplicates (same structure, different operators)
         - Block duplicates (duplicate for/while/if/try/with blocks within functions)
         """
+        del auto_reindex  # Kept for API compatibility; event-driven index auto-reindexes
         # Check for invalidated suppressions (proactive notification)
         invalidation_warning = self._check_invalidated_suppressions()
 
@@ -2557,9 +2564,14 @@ class CodeStructureTools(CloseOnExitMixin):
             # Add process memory usage (stdlib, no new deps)
             try:
                 import resource
+                import sys as _sys
 
                 rusage = resource.getrusage(resource.RUSAGE_SELF)
-                stats["process_rss_bytes"] = rusage.ru_maxrss * 1024  # macOS uses KB
+                # macOS reports ru_maxrss in bytes, Linux reports in KB
+                if _sys.platform == "darwin":
+                    stats["process_rss_bytes"] = rusage.ru_maxrss
+                else:
+                    stats["process_rss_bytes"] = rusage.ru_maxrss * 1024
             except (ImportError, AttributeError):
                 pass
             return stats

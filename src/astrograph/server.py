@@ -22,6 +22,7 @@ import asyncio
 import atexit
 import signal
 import sys
+import threading
 
 from mcp.server import Server
 from mcp.server.lowlevel.server import ReadResourceContents
@@ -316,7 +317,7 @@ def create_server() -> Server:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         internal_name = TOOL_NAME_MAP.get(name, name)
-        result = _tools.call_tool(internal_name, arguments)
+        result = await asyncio.to_thread(_tools.call_tool, internal_name, arguments)
         return [TextContent(type="text", text=result.text)]
 
     # --- MCP Resources ---
@@ -348,11 +349,14 @@ def create_server() -> Server:
     async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
         uri_str = str(uri)
         if uri_str == "astrograph://status":
-            return [ReadResourceContents(content=_tools.read_resource_status())]
+            content = await asyncio.to_thread(_tools.read_resource_status)
+            return [ReadResourceContents(content=content)]
         elif uri_str == "astrograph://analysis/latest":
-            return [ReadResourceContents(content=_tools.read_resource_analysis())]
+            content = await asyncio.to_thread(_tools.read_resource_analysis)
+            return [ReadResourceContents(content=content)]
         elif uri_str == "astrograph://suppressions":
-            return [ReadResourceContents(content=_tools.read_resource_suppressions())]
+            content = await asyncio.to_thread(_tools.read_resource_suppressions)
+            return [ReadResourceContents(content=content)]
         else:
             raise ValueError(f"Unknown resource URI: {uri_str}")
 
@@ -450,9 +454,9 @@ def create_server() -> Server:
     async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
         args = arguments or {}
         if name == "review-duplicates":
-            return _build_review_duplicates_prompt(args.get("focus"))
+            return await asyncio.to_thread(_build_review_duplicates_prompt, args.get("focus"))
         elif name == "setup-lsp":
-            return _build_setup_lsp_prompt(args.get("language"))
+            return await asyncio.to_thread(_build_setup_lsp_prompt, args.get("language"))
         else:
             raise ValueError(f"Unknown prompt: {name}")
 
@@ -503,16 +507,28 @@ async def run_server() -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
+_close_once = threading.Event()
+
+
 def _shutdown_handler(_signum: int, _frame: object) -> None:
     """Handle SIGTERM from Docker by flushing and closing resources."""
-    _tools.close()
+    if not _close_once.is_set():
+        _close_once.set()
+        _tools.close()
     sys.exit(0)
+
+
+def _atexit_close() -> None:
+    """Idempotent close for atexit — skips if signal handler already ran."""
+    if not _close_once.is_set():
+        _close_once.set()
+        _tools.close()
 
 
 def main() -> None:
     """Entry point for the MCP server."""
     signal.signal(signal.SIGTERM, _shutdown_handler)
-    atexit.register(_tools.close)
+    atexit.register(_atexit_close)
     asyncio.run(run_server())
 
 

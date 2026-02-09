@@ -332,9 +332,12 @@ def main() -> None:
                         loc = f"{entry.code_unit.file_path}:{entry.code_unit.line_start}"
                         print(f"  - {loc} ({entry.code_unit.name})")
 
-                        if args.verify and len(group.entries) >= 2:
-                            verified = index.verify_isomorphism(group.entries[0], group.entries[1])
-                            print(f"    [Verified isomorphic: {verified}]")
+                    if args.verify and len(group.entries) >= 2:
+                        first = group.entries[0]
+                        verified = all(
+                            index.verify_isomorphism(first, e) for e in group.entries[1:]
+                        )
+                        print(f"    [Verified isomorphic: {verified}]")
                     print()
 
     elif args.command == "check":
@@ -345,7 +348,7 @@ def main() -> None:
         else:
             index.index_directory(str(check_path))
 
-        code = Path(args.code_file).read_text()
+        code = Path(args.code_file).read_text(encoding="utf-8")
         plugin = LanguageRegistry.get().get_plugin_for_file(args.code_file)
         if plugin is None:
             print(
@@ -379,8 +382,8 @@ def main() -> None:
                     print(f"  [{r.similarity_type}] {loc} ({r.entry.code_unit.name})")
 
     elif args.command == "compare":
-        code1 = Path(args.file1).read_text()
-        code2 = Path(args.file2).read_text()
+        code1 = Path(args.file1).read_text(encoding="utf-8")
+        code2 = Path(args.file2).read_text(encoding="utf-8")
 
         registry = LanguageRegistry.get()
         if args.language:

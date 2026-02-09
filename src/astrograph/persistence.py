@@ -103,7 +103,7 @@ class SQLitePersistence:
             with contextlib.suppress(OSError):
                 candidate.replace(backup)
 
-    def _ensure_schema(self) -> None:
+    def _ensure_schema(self, *, _depth: int = 0) -> None:
         """Create tables if they don't exist, resetting on version mismatch."""
         self.conn.executescript(
             """
@@ -152,7 +152,7 @@ class SQLitePersistence:
             # Fresh database — set current versions
             self.conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
         elif row[0] != SCHEMA_VERSION:
-            self._reset_database(f"schema version {row[0]} != {SCHEMA_VERSION}")
+            self._reset_database(f"schema version {row[0]} != {SCHEMA_VERSION}", _depth=_depth)
             return
 
         # Check astrograph package version
@@ -161,10 +161,14 @@ class SQLitePersistence:
         )
         row = cursor.fetchone()
         if row is not None and row[0] != _ASTROGRAPH_VERSION:
-            self._reset_database(f"astrograph version {row[0]} != {_ASTROGRAPH_VERSION}")
+            self._reset_database(
+                f"astrograph version {row[0]} != {_ASTROGRAPH_VERSION}", _depth=_depth
+            )
 
-    def _reset_database(self, reason: str) -> None:
+    def _reset_database(self, reason: str, *, _depth: int = 0) -> None:
         """Drop all data and recreate schema (incompatible version)."""
+        if _depth > 1:
+            raise RuntimeError("Persistence schema reset recursion detected")
         logger.info("Resetting persistence: %s", reason)
         self.conn.executescript(
             """
@@ -175,7 +179,7 @@ class SQLitePersistence:
             DROP TABLE IF EXISTS schema_version;
         """
         )
-        self._ensure_schema()
+        self._ensure_schema(_depth=_depth + 1)
 
     def close(self) -> None:
         """Close the database connection."""
@@ -253,7 +257,8 @@ class SQLitePersistence:
 
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
                 raise
 
     def delete_file_entries(self, file_path: str) -> None:
@@ -269,7 +274,8 @@ class SQLitePersistence:
                 conn.execute("DELETE FROM file_metadata WHERE file_path = ?", (file_path,))
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
                 raise
 
     def get_entries_for_file(self, file_path: str) -> list[dict]:
@@ -381,7 +387,8 @@ class SQLitePersistence:
 
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
                 raise
 
     def save_index_metadata(self, index: "CodeStructureIndex") -> None:
@@ -406,7 +413,8 @@ class SQLitePersistence:
                 )
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
                 raise
 
     def load_full_index(self, index: "CodeStructureIndex") -> bool:
@@ -548,10 +556,12 @@ class SQLitePersistence:
             cursor = self.conn.execute("SELECT COUNT(*) FROM suppressed_hashes")
             suppression_count = cursor.fetchone()[0]
 
-            # Get database file size
-            db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
+            # Get database file size (handle races with file deletion)
+            db_size = 0
+            with contextlib.suppress(OSError):
+                db_size = self.db_path.stat().st_size
             wal_path = Path(str(self.db_path) + "-wal")
-            if wal_path.exists():
+            with contextlib.suppress(OSError):
                 db_size += wal_path.stat().st_size
 
             return {
@@ -598,10 +608,8 @@ class SQLitePersistence:
             with self._conn_lock:
                 if self._closed:
                     return
-                cursor = self.conn.execute(
-                    f"SELECT id, data FROM entries WHERE id IN ({placeholders})",  # noqa: S608
-                    chunk,
-                )
+                query = "SELECT id, data FROM entries WHERE id IN (" + placeholders + ")"
+                cursor = self.conn.execute(query, chunk)
                 rows = cursor.fetchall()
             yield from self._iter_decoded_entries(rows)
 

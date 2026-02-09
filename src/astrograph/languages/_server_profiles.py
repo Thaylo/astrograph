@@ -106,10 +106,9 @@ class ClangdProfile:
                 )
             )
 
-        # Virtual / abstract modifiers on methods
-        _methods = token_index._by_type.get("method", [])
-        has_virtual = any("virtual" in t.modifiers for t in _methods)
-        has_abstract = any("abstract" in t.modifiers for t in _methods)
+        # Virtual / abstract modifiers (clangd only applies these to methods)
+        has_virtual = token_index.has_modifier("virtual")
+        has_abstract = token_index.has_modifier("abstract")
         if has_virtual or has_abstract:
             signals.append(
                 SemanticSignal(

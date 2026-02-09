@@ -721,7 +721,7 @@ class TestWatcherSkipPaths:
         assert _should_skip_path(Path("/project/.virtualenv/lib/site.py"))
 
         # Should NOT skip: directories that happen to start with prefix + alpha
-        assert not _should_skip_path(Path("/project/vendor/src/module.py"))
+        # Note: "vendor" IS a skip dir (Go plugin), so we don't test it here.
         assert not _should_skip_path(Path("/project/environment/src/module.py"))
         assert not _should_skip_path(Path("/project/envoy/src/module.py"))
 

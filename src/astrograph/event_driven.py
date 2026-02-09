@@ -212,9 +212,11 @@ class EventDrivenIndex(CloseOnExitMixin):
         self._shutdown.set()
         self.stop_watching()
 
-        if self._bg_thread is not None:
-            self._bg_thread.join(timeout=2.0)
+        with self._bg_lock:
+            bg = self._bg_thread
             self._bg_thread = None
+        if bg is not None:
+            bg.join(timeout=2.0)
 
         if self._persistence is not None:
             self._persistence.close()
@@ -328,19 +330,23 @@ class EventDrivenIndex(CloseOnExitMixin):
 
         Returns (exact_duplicates, pattern_duplicates, block_duplicates).
         """
-        # Try cache first
-        cached = self._cache.get()
-        if cached is not None:
-            self._cache_hits += 1
-            return cached
+        # Cache is always computed with min_node_count=5; only use it
+        # when the caller requests the same threshold.
+        if min_node_count == 5:
+            cached = self._cache.get()
+            if cached is not None:
+                self._cache_hits += 1
+                return cached
 
-        # Cache miss - compute synchronously
+        # Cache miss or different threshold - compute synchronously
         self._cache_misses += 1
         exact = self.index.find_all_duplicates(min_node_count=min_node_count)
         pattern = self.index.find_pattern_duplicates(min_node_count=min_node_count)
         blocks = self.index.find_block_duplicates(min_node_count=min_node_count)
 
-        self._cache.set(exact, pattern, blocks)
+        # Only populate cache when using the standard threshold
+        if min_node_count == 5:
+            self._cache.set(exact, pattern, blocks)
         return exact, pattern, blocks
 
     # =========================================================================

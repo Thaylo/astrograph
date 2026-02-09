@@ -71,6 +71,10 @@ def decode_semantic_tokens(
         else:
             current_char += delta_start
 
+        # Guard against corrupted data producing negative positions
+        if current_char < 0:
+            current_char = 0
+
         # Resolve token type
         if 0 <= type_index < len(legend.token_types):
             token_type = legend.token_types[type_index]

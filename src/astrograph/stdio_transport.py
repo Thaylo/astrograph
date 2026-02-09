@@ -69,8 +69,8 @@ class _StdioReader:
 
     async def read_message(self) -> bytes:
         """Read and return the next complete JSON-RPC message as bytes."""
-        mode = await self._detect_mode()
-        self.mode = mode
+        self.mode = await self._detect_mode()
+        mode = self.mode
 
         if mode == "newline":
             return await self._read_newline()
@@ -125,6 +125,13 @@ class _StdioReader:
 
         if content_length is None:
             raise ValueError("Missing Content-Length header in framed message")
+
+        # Guard against oversized Content-Length (max 256 MB)
+        _MAX_CONTENT_LENGTH = 256 * 1024 * 1024
+        if content_length > _MAX_CONTENT_LENGTH:
+            raise ValueError(
+                f"Content-Length {content_length} exceeds maximum {_MAX_CONTENT_LENGTH}"
+            )
 
         # Read body
         await self._fill(content_length)

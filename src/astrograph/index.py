@@ -499,16 +499,22 @@ class CodeStructureIndex:
                 entry = self.add_ast_graph(ast_graph)
                 entries.append(entry)
 
-            # Record file metadata for staleness detection
-            content_hash = self._compute_file_hash(file_path)
-            if content_hash:
-                self.file_metadata[file_path] = FileMetadata(
-                    file_path=file_path,
-                    mtime=os.path.getmtime(file_path),
-                    content_hash=content_hash,
-                    indexed_at=time.time(),
-                    entry_count=len(entries),
-                )
+            # Record file metadata for staleness detection.
+            # Compute hash from the already-read source to avoid TOCTOU:
+            # if the file changes between read and hash, we'd record a hash
+            # that doesn't match the content we actually parsed.
+            content_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            try:
+                current_mtime = os.path.getmtime(file_path)
+            except OSError:
+                current_mtime = time.time()
+            self.file_metadata[file_path] = FileMetadata(
+                file_path=file_path,
+                mtime=current_mtime,
+                content_hash=content_hash,
+                indexed_at=time.time(),
+                entry_count=len(entries),
+            )
 
             return entries
 

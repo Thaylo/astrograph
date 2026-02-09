@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -68,6 +69,7 @@ class EntryStore:
         if max_resident is None:
             max_resident = _get_max_resident()
         self._max_resident: int = max_resident
+        self._lock = threading.RLock()
         self._cache: OrderedDict[str, IndexEntry] = OrderedDict()
         self._persistence: SQLitePersistence | None = None
         self._all_ids: set[str] = set()
@@ -87,42 +89,48 @@ class EntryStore:
     # ------------------------------------------------------------------
 
     def __getitem__(self, eid: str) -> IndexEntry:
-        if eid in self._cache:
-            self._cache.move_to_end(eid)
-            return self._cache[eid]
-
-        # Not in cache – try SQLite
-        if self._persistence is not None and eid in self._all_ids:
-            entry = self._persistence.get_entry(eid)
-            if entry is not None:
-                # Re-admit to cache
-                self._cache[eid] = entry
+        with self._lock:
+            if eid in self._cache:
                 self._cache.move_to_end(eid)
-                self._maybe_evict()
-                return entry
+                return self._cache[eid]
 
-        raise KeyError(eid)
+            # Not in cache – try SQLite
+            if self._persistence is not None and eid in self._all_ids:
+                entry = self._persistence.get_entry(eid)
+                if entry is not None:
+                    # Re-admit to cache
+                    self._cache[eid] = entry
+                    self._cache.move_to_end(eid)
+                    self._maybe_evict()
+                    return entry
+
+            raise KeyError(eid)
 
     def __setitem__(self, eid: str, entry: IndexEntry) -> None:
-        self._cache[eid] = entry
-        self._cache.move_to_end(eid)
-        self._all_ids.add(eid)
-        self._meta[eid] = self._build_meta(entry)
-        self._maybe_evict()
+        with self._lock:
+            self._cache[eid] = entry
+            self._cache.move_to_end(eid)
+            self._all_ids.add(eid)
+            self._meta[eid] = self._build_meta(entry)
+            self._maybe_evict()
 
     def __delitem__(self, eid: str) -> None:
-        self._cache.pop(eid, None)
-        self._all_ids.discard(eid)
-        self._meta.pop(eid, None)
+        with self._lock:
+            self._cache.pop(eid, None)
+            self._all_ids.discard(eid)
+            self._meta.pop(eid, None)
 
     def __contains__(self, eid: object) -> bool:
-        return eid in self._all_ids
+        with self._lock:
+            return eid in self._all_ids
 
     def __len__(self) -> int:
-        return len(self._all_ids)
+        with self._lock:
+            return len(self._all_ids)
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._all_ids)
+        with self._lock:
+            return iter(set(self._all_ids))
 
     def get(self, eid: str, default: IndexEntry | None = None) -> IndexEntry | None:
         try:
@@ -132,15 +140,17 @@ class EntryStore:
 
     def items(self) -> Iterator[tuple[str, IndexEntry]]:
         """Yield all (id, entry) pairs: cached first, then evicted from SQLite."""
-        yielded: set[str] = set()
+        with self._lock:
+            # Snapshot the cache to avoid mutation during iteration
+            cached_items = list(self._cache.items())
+            yielded = {eid for eid, _ in cached_items}
+            evicted_ids = self._all_ids - yielded
+            persistence = self._persistence
 
-        for eid, entry in self._cache.items():
-            yielded.add(eid)
-            yield eid, entry
+        yield from cached_items
 
-        evicted_ids = self._all_ids - yielded
-        if evicted_ids and self._persistence is not None:
-            yield from self._persistence.get_entries_batch(evicted_ids)
+        if evicted_ids and persistence is not None:
+            yield from persistence.get_entries_batch(evicted_ids)
 
     def values(self) -> Iterator[IndexEntry]:
         """Yield all entries: cached first, then evicted from SQLite."""
@@ -149,7 +159,8 @@ class EntryStore:
 
     def keys(self) -> set[str]:
         """Return all entry IDs."""
-        return set(self._all_ids)
+        with self._lock:
+            return set(self._all_ids)
 
     def pop(self, eid: str, *args: IndexEntry | None) -> IndexEntry | None:
         """Remove and return entry, or default if not found."""
@@ -168,20 +179,20 @@ class EntryStore:
 
     def get_node_count(self, eid: str) -> int | None:
         """Get node_count from hot metadata without loading the full entry."""
-        meta = self._meta.get(eid)
-        return meta.node_count if meta else None
+        with self._lock:
+            meta = self._meta.get(eid)
+            return meta.node_count if meta else None
 
     def get_hierarchy_hashes(self, eid: str) -> list[str] | None:
         """Get hierarchy_hashes from hot metadata without loading the full entry."""
-        meta = self._meta.get(eid)
-        return meta.hierarchy_hashes if meta else None
+        with self._lock:
+            meta = self._meta.get(eid)
+            return meta.hierarchy_hashes if meta else None
 
     def get_meta(self, eid: str) -> EntryMeta | None:
         """Get full hot metadata for bucket cleanup in remove_file()."""
-        try:
-            return self._meta[eid]
-        except KeyError:
-            return None
+        with self._lock:
+            return self._meta.get(eid)
 
     # ------------------------------------------------------------------
     # Bulk loading
@@ -190,12 +201,14 @@ class EntryStore:
     @contextmanager
     def bulk_load(self) -> Iterator[None]:
         """Context manager: suppress eviction during bulk load, trim after."""
-        self._bulk_loading = True
+        with self._lock:
+            self._bulk_loading = True
         try:
             yield
         finally:
-            self._bulk_loading = False
-            self._trim_cache()
+            with self._lock:
+                self._bulk_loading = False
+                self._trim_cache()
 
     # ------------------------------------------------------------------
     # Cache stats
@@ -217,9 +230,10 @@ class EntryStore:
 
     def clear(self) -> None:
         """Remove all entries from the store."""
-        self._cache.clear()
-        self._all_ids.clear()
-        self._meta.clear()
+        with self._lock:
+            self._cache.clear()
+            self._all_ids.clear()
+            self._meta.clear()
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -162,6 +162,30 @@ def _doublestar_match(pattern: str, path: str) -> bool:
                     return True
         return False
 
-    # Multi-** patterns: chain matching
-    # This is rare and not worth optimizing heavily
-    return fnmatch.fnmatchcase(path, pattern.replace("**", "*"))
+    # Multi-** patterns: recursive segment matching
+    # Split on ** and match each segment against path components
+    segments = path.split("/")
+    n = len(segments)
+
+    def _match_parts(part_idx: int, seg_start: int) -> bool:
+        if part_idx == len(parts):
+            return seg_start == n
+        if part_idx == len(parts) - 1:
+            # Last part: must match remaining segments
+            part = parts[part_idx]
+            if not part:
+                return True  # trailing ** matches everything
+            remaining = "/".join(segments[seg_start:])
+            return fnmatch.fnmatchcase(remaining, part)
+        part = parts[part_idx]
+        if not part:
+            # Leading or consecutive ** — try all starting positions
+            return any(_match_parts(part_idx + 1, s) for s in range(seg_start, n + 1))
+        # Non-empty part between **s: try matching at each position
+        for s in range(seg_start, n + 1):
+            candidate = "/".join(segments[seg_start:s])
+            if fnmatch.fnmatchcase(candidate, part) and _match_parts(part_idx + 1, s):
+                return True
+        return False
+
+    return _match_parts(0, 0)

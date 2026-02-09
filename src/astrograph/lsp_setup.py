@@ -565,6 +565,10 @@ def _availability_validation(
     }
 
     if not endpoint_reachable:
+        verification["version_status"] = {
+            "state": "unknown",
+            "reason": "Endpoint not reachable; version check skipped.",
+        }
         return {
             "available": False,
             "verification": verification,
@@ -600,6 +604,12 @@ def _availability_validation(
             "available": True,
             "verification": verification,
         }
+
+    # Attach-mode endpoints don't have a subprocess to version-probe.
+    verification["version_status"] = {
+        "state": "unknown",
+        "reason": "Attach transport; no version probe available.",
+    }
 
     attach_probe = _probe_attach_lsp_semantics(
         language_id=language_id,
@@ -1073,7 +1083,24 @@ def save_lsp_bindings(
 
     path = lsp_bindings_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n")
+    import tempfile
+
+    content = json.dumps(normalized, indent=2, sort_keys=True) + "\n"
+    # Atomic write: write to temp file then rename to avoid corruption on interruption
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    fd_closed = False
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.close(fd)
+        fd_closed = True
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        if not fd_closed:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
     return path
 
 
@@ -1187,14 +1214,9 @@ def collect_lsp_statuses(
             project_root=project_root,
         )
         verification = validation["verification"]
-        version_probe = _run_version_probe(spec.language_id, effective_command)
-        version_status = _evaluate_version_status(
-            language_id=spec.language_id,
-            detected=version_probe["detected"],
-            probe_kind=version_probe["probe_kind"],
-            transport=str(probe.get("transport", "subprocess")),
-            available=bool(probe["available"]),
-        )
+        # Reuse version_status already computed inside _availability_validation
+        # to avoid spawning redundant subprocess probes.
+        version_status = verification.get("version_status", {})
         statuses.append(
             {
                 "language": spec.language_id,
