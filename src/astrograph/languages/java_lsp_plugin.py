@@ -44,6 +44,47 @@ _JAVA_SWITCH_EXPR_ARROW_RE = re.compile(r"\bcase\s+[^:]+\s*->")
 _JAVA_TEXT_BLOCK_RE = re.compile(r'"""')
 _JAVA_VAR_RE = re.compile(r"\bvar\s+\w+")
 
+# -- Spring stereotype annotations --
+_JAVA_SPRING_REST_CONTROLLER_RE = re.compile(r"@RestController\b")
+_JAVA_SPRING_CONTROLLER_RE = re.compile(r"@Controller\b")
+_JAVA_SPRING_SERVICE_RE = re.compile(r"@Service\b")
+_JAVA_SPRING_REPOSITORY_RE = re.compile(r"@Repository\b")
+_JAVA_SPRING_COMPONENT_RE = re.compile(r"@Component\b")
+_JAVA_SPRING_CONFIGURATION_RE = re.compile(r"@Configuration\b")
+
+# -- REST / HTTP patterns --
+_JAVA_REQUEST_MAPPING_RE = re.compile(r"@(?:Request|Get|Post|Put|Delete|Patch)Mapping\b")
+_JAVA_RESPONSE_ENTITY_RE = re.compile(r"\bResponseEntity\b")
+_JAVA_PATH_VARIABLE_RE = re.compile(r"@PathVariable\b")
+_JAVA_REQUEST_BODY_RE = re.compile(r"@RequestBody\b")
+_JAVA_REQUEST_PARAM_RE = re.compile(r"@RequestParam\b")
+
+# -- Persistence / JPA patterns --
+_JAVA_JPA_ENTITY_RE = re.compile(r"@Entity\b")
+_JAVA_JPA_TABLE_RE = re.compile(r"@Table\b")
+_JAVA_JPA_COLUMN_RE = re.compile(r"@Column\b")
+_JAVA_JPA_REPOSITORY_RE = re.compile(
+    r"\bextends\s+(?:JpaRepository|CrudRepository|PagingAndSortingRepository)\b"
+)
+_JAVA_ENTITY_MANAGER_RE = re.compile(r"\bEntityManager\b")
+_JAVA_TRANSACTIONAL_RE = re.compile(r"@Transactional\b")
+_JAVA_QUERY_RE = re.compile(r"@Query\b")
+
+# -- Dependency injection patterns --
+_JAVA_AUTOWIRED_RE = re.compile(r"@Autowired\b")
+_JAVA_INJECT_RE = re.compile(r"@Inject\b")
+_JAVA_BEAN_RE = re.compile(r"@Bean\b")
+_JAVA_QUALIFIER_RE = re.compile(r"@Qualifier\b")
+_JAVA_VALUE_ANNOTATION_RE = re.compile(r"@Value\s*\(")
+
+# -- Async / reactive patterns --
+_JAVA_COMPLETABLE_FUTURE_RE = re.compile(r"\bCompletableFuture\b")
+_JAVA_EXECUTOR_SERVICE_RE = re.compile(r"\bExecutorService\b")
+_JAVA_MONO_RE = re.compile(r"\bMono<")
+_JAVA_FLUX_RE = re.compile(r"\bFlux<")
+_JAVA_ASYNC_RE = re.compile(r"@Async\b")
+_JAVA_SCHEDULED_RE = re.compile(r"@Scheduled\b")
+
 
 class JavaLSPPlugin(BraceLanguageLSPPlugin):
     """Java support via an attached or spawned LSP backend."""
@@ -164,6 +205,119 @@ class JavaLSPPlugin(BraceLanguageLSPPlugin):
             SemanticSignal(
                 key="java.modern_features",
                 value=",".join(modern_parts) if modern_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 8. Spring stereotypes
+        stereo_parts = []
+        if _JAVA_SPRING_REST_CONTROLLER_RE.search(source):
+            stereo_parts.append("rest_controller")
+        if _JAVA_SPRING_CONTROLLER_RE.search(source):
+            stereo_parts.append("controller")
+        if _JAVA_SPRING_SERVICE_RE.search(source):
+            stereo_parts.append("service")
+        if _JAVA_SPRING_REPOSITORY_RE.search(source):
+            stereo_parts.append("repository")
+        if _JAVA_SPRING_COMPONENT_RE.search(source):
+            stereo_parts.append("component")
+        if _JAVA_SPRING_CONFIGURATION_RE.search(source):
+            stereo_parts.append("configuration")
+        signals.append(
+            SemanticSignal(
+                key="java.spring_stereotypes",
+                value=",".join(stereo_parts) if stereo_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 9. REST / HTTP patterns
+        rest_parts = []
+        if _JAVA_REQUEST_MAPPING_RE.search(source):
+            rest_parts.append("mapping")
+        if _JAVA_RESPONSE_ENTITY_RE.search(source):
+            rest_parts.append("response_entity")
+        if _JAVA_PATH_VARIABLE_RE.search(source):
+            rest_parts.append("path_variable")
+        if _JAVA_REQUEST_BODY_RE.search(source):
+            rest_parts.append("request_body")
+        if _JAVA_REQUEST_PARAM_RE.search(source):
+            rest_parts.append("request_param")
+        signals.append(
+            SemanticSignal(
+                key="java.rest_http_patterns",
+                value=",".join(rest_parts) if rest_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 10. Persistence / JPA
+        jpa_parts = []
+        if _JAVA_JPA_ENTITY_RE.search(source):
+            jpa_parts.append("entity")
+        if _JAVA_JPA_TABLE_RE.search(source):
+            jpa_parts.append("table")
+        if _JAVA_JPA_COLUMN_RE.search(source):
+            jpa_parts.append("column")
+        if _JAVA_JPA_REPOSITORY_RE.search(source):
+            jpa_parts.append("repository_interface")
+        if _JAVA_ENTITY_MANAGER_RE.search(source):
+            jpa_parts.append("entity_manager")
+        if _JAVA_TRANSACTIONAL_RE.search(source):
+            jpa_parts.append("transactional")
+        if _JAVA_QUERY_RE.search(source):
+            jpa_parts.append("query")
+        signals.append(
+            SemanticSignal(
+                key="java.persistence_jpa",
+                value=",".join(jpa_parts) if jpa_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 11. Dependency injection
+        di_parts = []
+        if _JAVA_AUTOWIRED_RE.search(source):
+            di_parts.append("autowired")
+        if _JAVA_INJECT_RE.search(source):
+            di_parts.append("inject")
+        if _JAVA_BEAN_RE.search(source):
+            di_parts.append("bean")
+        if _JAVA_QUALIFIER_RE.search(source):
+            di_parts.append("qualifier")
+        if _JAVA_VALUE_ANNOTATION_RE.search(source):
+            di_parts.append("value")
+        signals.append(
+            SemanticSignal(
+                key="java.dependency_injection",
+                value=",".join(di_parts) if di_parts else "none",
+                confidence=0.90,
+                origin="syntax",
+            )
+        )
+
+        # 12. Async / reactive
+        async_parts = []
+        if _JAVA_COMPLETABLE_FUTURE_RE.search(source):
+            async_parts.append("completable_future")
+        if _JAVA_EXECUTOR_SERVICE_RE.search(source):
+            async_parts.append("executor_service")
+        if _JAVA_MONO_RE.search(source):
+            async_parts.append("mono")
+        if _JAVA_FLUX_RE.search(source):
+            async_parts.append("flux")
+        if _JAVA_ASYNC_RE.search(source):
+            async_parts.append("async")
+        if _JAVA_SCHEDULED_RE.search(source):
+            async_parts.append("scheduled")
+        signals.append(
+            SemanticSignal(
+                key="java.async_reactive",
+                value=",".join(async_parts) if async_parts else "none",
                 confidence=0.90,
                 origin="syntax",
             )

@@ -1043,7 +1043,7 @@ class TestEsprimaGraph:
         assert expected.issubset(keys)
 
     def test_java_semantic_signals_include_modern(self):
-        """Java plugin emits all 7 signals including java.modern_features."""
+        """Java plugin emits all 12 signals including java.modern_features."""
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
         plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
@@ -1059,8 +1059,130 @@ class TestEsprimaGraph:
             "java.functional_style",
             "java.class_kind",
             "java.modern_features",
+            "java.spring_stereotypes",
+            "java.rest_http_patterns",
+            "java.persistence_jpa",
+            "java.dependency_injection",
+            "java.async_reactive",
         }
         assert expected.issubset(keys)
+
+    def test_java_semantic_signals_microservices(self):
+        """Java plugin detects Spring, REST, JPA, DI, and async signals."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "@RestController\n"
+            "@Configuration\n"
+            "public class UserController {\n"
+            "    @Autowired\n"
+            "    private UserService service;\n"
+            "    @Bean\n"
+            "    public ObjectMapper mapper() { return new ObjectMapper(); }\n"
+            '    @Value("${app.name}")\n'
+            "    private String appName;\n"
+            '    @GetMapping("/users")\n'
+            "    public ResponseEntity<List<User>> list(@RequestParam int page) {\n"
+            "        return ResponseEntity.ok(service.list(page));\n"
+            "    }\n"
+            '    @PostMapping("/users")\n'
+            "    public ResponseEntity<User> create(@RequestBody User u) {\n"
+            "        return ResponseEntity.ok(service.save(u));\n"
+            "    }\n"
+            '    @GetMapping("/users/{id}")\n'
+            "    public Mono<User> get(@PathVariable Long id) {\n"
+            "        return service.findById(id);\n"
+            "    }\n"
+            "    @Transactional\n"
+            '    @Query("SELECT u FROM User u")\n'
+            "    public CompletableFuture<Void> batch() {\n"
+            "        return CompletableFuture.completedFuture(null);\n"
+            "    }\n"
+            "}\n"
+            "@Entity\n"
+            '@Table(name = "users")\n'
+            "class User {\n"
+            '    @Column(name = "email")\n'
+            "    private String email;\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "UserController.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        # Spring stereotypes
+        assert "rest_controller" in sig_map["java.spring_stereotypes"]
+        assert "configuration" in sig_map["java.spring_stereotypes"]
+
+        # REST / HTTP
+        assert "mapping" in sig_map["java.rest_http_patterns"]
+        assert "response_entity" in sig_map["java.rest_http_patterns"]
+        assert "path_variable" in sig_map["java.rest_http_patterns"]
+        assert "request_body" in sig_map["java.rest_http_patterns"]
+        assert "request_param" in sig_map["java.rest_http_patterns"]
+
+        # Persistence / JPA
+        assert "entity" in sig_map["java.persistence_jpa"]
+        assert "table" in sig_map["java.persistence_jpa"]
+        assert "column" in sig_map["java.persistence_jpa"]
+        assert "transactional" in sig_map["java.persistence_jpa"]
+        assert "query" in sig_map["java.persistence_jpa"]
+
+        # Dependency injection
+        assert "autowired" in sig_map["java.dependency_injection"]
+        assert "bean" in sig_map["java.dependency_injection"]
+        assert "value" in sig_map["java.dependency_injection"]
+
+        # Async / reactive
+        assert "completable_future" in sig_map["java.async_reactive"]
+        assert "mono" in sig_map["java.async_reactive"]
+
+    def test_java_semantic_signals_spring_rest_only(self):
+        """Focused REST controller fires REST signals; non-REST signals are none."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "@RestController\n"
+            "public class HealthController {\n"
+            '    @GetMapping("/health")\n'
+            "    public ResponseEntity<String> health() {\n"
+            '        return ResponseEntity.ok("UP");\n'
+            "    }\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "HealthController.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert "rest_controller" in sig_map["java.spring_stereotypes"]
+        assert "mapping" in sig_map["java.rest_http_patterns"]
+        assert "response_entity" in sig_map["java.rest_http_patterns"]
+
+        # Non-REST microservices signals should be none
+        assert sig_map["java.persistence_jpa"] == "none"
+        assert sig_map["java.dependency_injection"] == "none"
+        assert sig_map["java.async_reactive"] == "none"
+
+    def test_java_semantic_signals_absent_microservices(self):
+        """Plain Java class emits none for all 5 microservices signals."""
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+
+        plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
+        source = (
+            "public class Calculator {\n"
+            "    public int add(int a, int b) {\n"
+            "        return a + b;\n"
+            "    }\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "Calculator.java")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert sig_map["java.spring_stereotypes"] == "none"
+        assert sig_map["java.rest_http_patterns"] == "none"
+        assert sig_map["java.persistence_jpa"] == "none"
+        assert sig_map["java.dependency_injection"] == "none"
+        assert sig_map["java.async_reactive"] == "none"
 
     def test_cpp_semantic_signals_include_modern(self):
         """C++ plugin emits all 5 always-emitted signals including cpp.modern_features."""
