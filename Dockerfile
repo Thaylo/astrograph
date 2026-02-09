@@ -5,7 +5,7 @@ FROM python:3.12-slim
 LABEL org.opencontainers.image.source="https://github.com/Thaylo/astrograph"
 LABEL org.opencontainers.image.url="https://github.com/Thaylo/astrograph"
 LABEL org.opencontainers.image.documentation="https://github.com/Thaylo/astrograph#readme"
-LABEL org.opencontainers.image.description="Detect structural code duplication using AST graph isomorphism"
+LABEL org.opencontainers.image.description="MCP server for structural code duplication detection and language-aware semantic analysis"
 LABEL org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app

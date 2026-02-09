@@ -1,7 +1,7 @@
 [project]
 name = "astrograph"
-version = "0.5.60"
-description = "Detect structural code duplication using AST graph isomorphism"
+version = "0.5.61"
+description = "MCP server for structural code duplication detection and language-aware semantic analysis"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,3 +1,3 @@
-"""ASTrograph - Detect structural code duplication using AST graph isomorphism."""
+"""ASTrograph - MCP server for structural code duplication detection and language-aware semantic analysis."""
 
-__version__ = "0.5.60"
+__version__ = "0.5.61"
