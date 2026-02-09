@@ -48,12 +48,15 @@ class LanguageRegistry:
     @classmethod
     def get(cls) -> "LanguageRegistry":
         """Get the singleton registry instance."""
-        if cls._instance is None:
+        inst = cls._instance
+        if inst is None:
             with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        cls._instance._ensure_plugins()
-        return cls._instance
+                inst = cls._instance
+                if inst is None:
+                    inst = cls()
+                    cls._instance = inst
+        inst._ensure_plugins()
+        return inst
 
     @classmethod
     def reset(cls) -> None:

@@ -66,6 +66,7 @@ _MUTATING_TOOL_NAMES = frozenset(
         "index_codebase",
         "metadata_erase",
         "metadata_recompute_baseline",
+        "set_workspace",
         "suppress",
         "unsuppress",
         "write",
@@ -402,6 +403,16 @@ class CodeStructureTools(CloseOnExitMixin):
 
         # Always include blocks - only 22% overhead for much better detection
         return self._index_codebase_event_driven(path, recursive)
+
+    def set_workspace(self, path: str) -> ToolResult:
+        """Switch to a new workspace directory and re-index."""
+        old_path = self._last_indexed_path or "(none)"
+        result = self.index_codebase(path, recursive=True)
+        new_path = self._last_indexed_path or path
+
+        # Prepend workspace transition info
+        header = f"Workspace changed: {old_path} -> {new_path}\n"
+        return ToolResult(header + result.text)
 
     def _index_codebase_event_driven(self, path: str, recursive: bool) -> ToolResult:
         """Index codebase using event-driven mode with SQLite and file watching."""
@@ -2469,6 +2480,8 @@ class CodeStructureTools(CloseOnExitMixin):
                 path=arguments["path"],
                 recursive=arguments.get("recursive", True),
             )
+        elif name == "set_workspace":
+            return self.set_workspace(path=arguments["path"])
         elif name == "analyze":
             return self.analyze(
                 auto_reindex=arguments.get("auto_reindex", True),

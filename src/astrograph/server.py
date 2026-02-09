@@ -242,6 +242,20 @@ def create_server() -> Server:
                 },
             ),
             Tool(
+                name="astrograph_set_workspace",
+                description="Set or change the workspace directory. Re-indexes the codebase at the new path.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute path to the new workspace directory",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            ),
+            Tool(
                 name="astrograph_write",
                 description="Write file. Blocks if duplicate exists, warns on similarity.",
                 inputSchema={
@@ -296,6 +310,7 @@ def create_server() -> Server:
         "astrograph_metadata_erase": "metadata_erase",
         "astrograph_metadata_recompute_baseline": "metadata_recompute_baseline",
         "astrograph_generate_ignore": "generate_ignore",
+        "astrograph_set_workspace": "set_workspace",
     }
 
     @server.call_tool()

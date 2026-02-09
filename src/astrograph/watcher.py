@@ -115,7 +115,10 @@ class SourceFileHandler(FileSystemEventHandler):
     def _is_supported_source_file(self, path: str) -> bool:
         """Check if path is a supported source file we should track."""
         p = Path(path)
-        if p.suffix not in LanguageRegistry.get().supported_extensions:
+        registry = LanguageRegistry.get()
+        if registry is None:
+            return False
+        if p.suffix not in registry.supported_extensions:
             return False
         if _should_skip_path(p):
             return False

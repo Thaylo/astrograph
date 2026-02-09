@@ -4191,3 +4191,74 @@ class TestMCPCompletions:
         set_tools(tools)
         completion = self._complete(server, "review-duplicates", "nonexistent")
         assert completion.values == []
+
+
+class TestSetWorkspace:
+    """Tests for the astrograph_set_workspace tool."""
+
+    def test_set_workspace_switches_and_reindexes(self):
+        """set_workspace indexes new directory and reports transition."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "hello.py")
+            with open(py_file, "w") as f:
+                f.write("def hello(): pass\n")
+            go_file = os.path.join(tmpdir, "main.go")
+            with open(go_file, "w") as f:
+                f.write("package main\nfunc main() {}\n")
+
+            result = tools.set_workspace(path=tmpdir)
+            assert "Workspace changed:" in result.text
+            assert "(none)" in result.text  # old path was unset
+            assert tmpdir in result.text or str(Path(tmpdir).resolve()) in result.text
+            tools.close()
+
+    def test_set_workspace_switches_between_directories(self):
+        """set_workspace shows old -> new transition."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as dir1, tempfile.TemporaryDirectory() as dir2:
+            with open(os.path.join(dir1, "a.py"), "w") as f:
+                f.write("def a(): pass\n")
+            with open(os.path.join(dir2, "b.py"), "w") as f:
+                f.write("def b(): pass\n")
+
+            tools.set_workspace(path=dir1)
+            result = tools.set_workspace(path=dir2)
+            assert "Workspace changed:" in result.text
+            # Old path should be dir1 (resolved)
+            assert str(Path(dir1).resolve()) in result.text
+            # New path should be dir2 (resolved)
+            assert str(Path(dir2).resolve()) in result.text
+            tools.close()
+
+    def test_set_workspace_invalid_path(self):
+        """set_workspace with non-existent path returns error."""
+        tools = CodeStructureTools()
+        result = tools.set_workspace(path="/nonexistent/path/xyz")
+        assert "Error" in result.text or "does not exist" in result.text
+        tools.close()
+
+    def test_set_workspace_in_server_tool_list(self):
+        """astrograph_set_workspace is registered in the MCP server."""
+        from mcp.types import ListToolsRequest
+
+        server = create_server()
+        handler = server.request_handlers[ListToolsRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(handler(ListToolsRequest(method="tools/list")))
+        finally:
+            loop.close()
+        tool_names = [t.name for t in result.root.tools]
+        assert "astrograph_set_workspace" in tool_names
+
+    def test_set_workspace_via_call_tool(self):
+        """set_workspace works through the call_tool dispatch."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "hello.py"), "w") as f:
+                f.write("def hello(): pass\n")
+
+            result = tools.call_tool("set_workspace", {"path": tmpdir})
+            assert "Workspace changed:" in result.text
+            tools.close()
