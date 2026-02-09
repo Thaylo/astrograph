@@ -9,15 +9,11 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Server-purple)](https://modelcontextprotocol.io)
 
-**Structural duplicate detection for codebases under AI-assisted development.**
-
-ASTrograph is an [MCP server](https://modelcontextprotocol.io) that offers enhanced write and edit tools which compare new code against every function and block already in your codebase using AST graph isomorphism and semantic analysis to rule out false positives of duplication, blocking the operation when a structural duplicate is found. Variable names, formatting, and comments are irrelevant -- if two pieces of code compile to the same abstract structure, ASTrograph treats them as duplicates.
-
-The problem it solves is specific and measurable: AI coding agents operate under limited context windows. They cannot see the entire codebase. They rewrite what already exists. The duplicates inflate the codebase, which means an even smaller percentage fits in context, which produces more duplicates. ASTrograph breaks that cycle.
+An [MCP server](https://modelcontextprotocol.io) that stops AI agents from writing duplicate code. It replaces the default write and edit tools with versions that compare new code against every function already in your codebase using AST graph isomorphism, blocking the operation when a structural duplicate is found. Variable names, formatting, and comments are irrelevant -- if two pieces of code have the same abstract structure, ASTrograph treats them as duplicates.
 
 ## Installation
 
-Add a `.mcp.json` file to your project root:
+Add `.mcp.json` to your project root:
 
 ```json
 {
@@ -36,9 +32,7 @@ Add a `.mcp.json` file to your project root:
 }
 ```
 
-That is the entire setup. The image is multi-arch (amd64, arm64). The codebase is indexed automatically at startup and re-indexed on file changes. Metadata is persisted to `.metadata_astrograph/` so restarts are fast.
-
-### Alternative configurations
+That's it. The image is multi-arch (amd64, arm64). The codebase is indexed at startup and re-indexed on file changes.
 
 <details>
 <summary><strong>Claude Desktop</strong></summary>
@@ -130,37 +124,13 @@ BLOCKED: Cannot write - identical code exists at src/math.py:calculate_sum (line
 Reuse the existing implementation instead.
 ```
 
-Different variable names, identical structure. ASTrograph converts source code into labeled directed graphs and compares them using Weisfeiler-Leman hashing with full VF2 isomorphism verification. Text similarity is not involved.
-
-## Tools
-
-Core operations:
-
-| Tool | Purpose |
-|------|---------|
-| `astrograph_write` | Write a file. Blocks if the new code duplicates existing code. |
-| `astrograph_edit` | Edit a file. Blocks if the replacement code duplicates existing code. |
-| `astrograph_analyze` | Scan the indexed codebase and report all structural duplicates. |
-
-Management:
-
-| Tool | Purpose |
-|------|---------|
-| `astrograph_status` | Check server readiness. Returns instantly, even during indexing. |
-| `astrograph_set_workspace` | Switch workspace directory at runtime. Triggers full re-index. |
-| `astrograph_suppress` | Suppress a known duplicate by its WL hash. |
-| `astrograph_unsuppress` | Re-enable a previously suppressed duplicate. |
-| `astrograph_list_suppressions` | List all suppressed hashes. |
-| `astrograph_lsp_setup` | Inspect and configure LSP bindings for language plugins. |
-| `astrograph_generate_ignore` | Generate `.astrographignore` with sensible defaults. |
-| `astrograph_metadata_erase` | Delete all persisted metadata. Resets to idle. |
-| `astrograph_metadata_recompute_baseline` | Erase metadata and re-index from scratch. |
+Different variable names, identical structure. Source code is converted into labeled directed graphs and compared using Weisfeiler-Leman hashing with VF2 isomorphism verification. Text similarity is not involved.
 
 ## Language support
 
-ASTrograph uses LSP-backed language plugins. Python, JavaScript, TypeScript, and Go are supported out of the box. C, C++, and Java work by attaching to an already-running language server over TCP.
+Python, JavaScript, TypeScript, and Go work out of the box. C, C++, and Java attach to an already-running language server over TCP.
 
-| Language | Versions | Mode | Default command |
+| Language | Versions | Mode | Default endpoint |
 |----------|----------|------|-----------------|
 | Python | 3.11 -- 3.14 | bundled | `pylsp` |
 | JavaScript | ES2021+, Node 20/22/24 LTS | bundled | `typescript-language-server --stdio` |
@@ -170,15 +140,7 @@ ASTrograph uses LSP-backed language plugins. Python, JavaScript, TypeScript, and
 | C++ | C++17, C++20, C++23 | attach | `tcp://127.0.0.1:2088` |
 | Java | 11, 17, 21, 25 | attach | `tcp://127.0.0.1:2089` |
 
-The Docker image bundles Python and JavaScript/TypeScript LSP runtimes. For attach-based languages, expose the language server on a TCP port and use `astrograph_lsp_setup` to bind.
-
-New languages can be added via plugins. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Tested with
-
-- **Claude Code** -- project-level `.mcp.json`
-- **Codex** -- stdio framing, `resources/list` compatible
-- **Any MCP client** -- standard stdio protocol
+The Docker image bundles Python and JS/TS LSP runtimes. For attach-based languages, expose the language server on a TCP port and use `astrograph_lsp_setup` to bind.
 
 ## Star History
 
