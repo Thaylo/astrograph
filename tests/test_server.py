@@ -1555,6 +1555,153 @@ class TestEsprimaGraph:
         )
         assert result_too_old["state"] == "unsupported"
 
+    def test_ts_semantic_signals_include_all(self):
+        """TypeScript plugin emits all 7 TS-specific signal keys."""
+        from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
+
+        plugin = TypeScriptLSPPlugin.__new__(TypeScriptLSPPlugin)
+        source = (
+            "import { Controller, Get, Body } from '@nestjs/common';\n"
+            "import { Observable } from 'rxjs';\n\n"
+            "@Controller('items')\n"
+            "export class ItemController {\n"
+            "    constructor(@Inject(ItemService) private svc: ItemService) {}\n"
+            "    @Get()\n"
+            "    findAll(): Observable<Item[]> {\n"
+            "        return this.svc.findAll().pipe(map(x => x));\n"
+            "    }\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "item.controller.ts")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        expected_keys = [
+            "typescript.strict_mode",
+            "typescript.generic.present",
+            "typescript.framework_decorators",
+            "typescript.rest_http_patterns",
+            "typescript.orm_persistence",
+            "typescript.dependency_injection",
+            "typescript.reactive_rxjs",
+        ]
+        for key in expected_keys:
+            assert key in sig_map, f"Missing signal key: {key}"
+
+    def test_ts_semantic_signals_nestjs_microservice(self):
+        """NestJS controller fires all 5 new microservices signals."""
+        from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
+
+        plugin = TypeScriptLSPPlugin.__new__(TypeScriptLSPPlugin)
+        source = (
+            "import { Controller, Get, Post, Body, Param, Inject, UseGuards } from '@nestjs/common';\n"
+            "import { Observable } from 'rxjs';\n"
+            "import { map, catchError } from 'rxjs/operators';\n"
+            "import { Repository } from 'typeorm';\n\n"
+            "@Entity()\n"
+            "class User {\n"
+            "    @PrimaryGeneratedColumn()\n"
+            "    id: number;\n"
+            "    @Column()\n"
+            "    name: string;\n"
+            "    @ManyToOne(() => Team)\n"
+            "    team: Team;\n"
+            "}\n\n"
+            "@Injectable()\n"
+            "class UserService {\n"
+            "    constructor(\n"
+            "        @InjectRepository(User)\n"
+            "        private repo: Repository<User>,\n"
+            "    ) {}\n"
+            "}\n\n"
+            "@Controller('users')\n"
+            "class UserController {\n"
+            "    constructor(@Inject(UserService) private svc: UserService) {}\n"
+            "    @UseGuards(AuthGuard)\n"
+            "    @Get(':id')\n"
+            "    findOne(@Param('id') id: string): Observable<User> {\n"
+            "        return this.svc.findOne(id).pipe(map(u => u), catchError(e => e));\n"
+            "    }\n"
+            "    @Post()\n"
+            "    create(@Body() dto: CreateUserDto): Observable<User> {\n"
+            "        return this.svc.create(dto);\n"
+            "    }\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "user.controller.ts")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        # Framework decorators
+        assert "controller" in sig_map["typescript.framework_decorators"]
+        assert "injectable" in sig_map["typescript.framework_decorators"]
+        assert "guard" in sig_map["typescript.framework_decorators"]
+
+        # REST / HTTP
+        assert "http_method" in sig_map["typescript.rest_http_patterns"]
+        assert "param_decorator" in sig_map["typescript.rest_http_patterns"]
+
+        # ORM / persistence
+        assert "typeorm_entity" in sig_map["typescript.orm_persistence"]
+        assert "typeorm_column" in sig_map["typescript.orm_persistence"]
+        assert "typeorm_relation" in sig_map["typescript.orm_persistence"]
+        assert "typeorm_repository" in sig_map["typescript.orm_persistence"]
+
+        # Dependency injection
+        assert "inject" in sig_map["typescript.dependency_injection"]
+        assert "nest_inject" in sig_map["typescript.dependency_injection"]
+
+        # Reactive / RxJS
+        assert "observable" in sig_map["typescript.reactive_rxjs"]
+        assert "pipe" in sig_map["typescript.reactive_rxjs"]
+        assert "operators" in sig_map["typescript.reactive_rxjs"]
+
+    def test_ts_semantic_signals_express_only(self):
+        """Express router fires rest_http_patterns but not NestJS/ORM signals."""
+        from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
+
+        plugin = TypeScriptLSPPlugin.__new__(TypeScriptLSPPlugin)
+        source = (
+            "import express from 'express';\n"
+            "const app = express();\n"
+            "const router = Router();\n\n"
+            "router.get('/items', (req, res) => {\n"
+            "    res.json([]);\n"
+            "});\n"
+            "router.post('/items', (req, res) => {\n"
+            "    res.status(201).json(req.body);\n"
+            "});\n"
+            "app.listen(3000);\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "server.ts")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert "express_router" in sig_map["typescript.rest_http_patterns"]
+        assert sig_map["typescript.framework_decorators"] == "none"
+        assert sig_map["typescript.orm_persistence"] == "none"
+        assert sig_map["typescript.dependency_injection"] == "none"
+        assert sig_map["typescript.reactive_rxjs"] == "none"
+
+    def test_ts_semantic_signals_absent_microservices(self):
+        """Plain utility function emits none for all 5 microservices signals."""
+        from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
+
+        plugin = TypeScriptLSPPlugin.__new__(TypeScriptLSPPlugin)
+        source = (
+            "export function add(a: number, b: number): number {\n"
+            "    return a + b;\n"
+            "}\n\n"
+            "export function multiply(a: number, b: number): number {\n"
+            "    return a * b;\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "math.ts")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert sig_map["typescript.framework_decorators"] == "none"
+        assert sig_map["typescript.rest_http_patterns"] == "none"
+        assert sig_map["typescript.orm_persistence"] == "none"
+        assert sig_map["typescript.dependency_injection"] == "none"
+        assert sig_map["typescript.reactive_rxjs"] == "none"
+
     def test_go_semantic_signals_emitted(self):
         """Go plugin emits all 12 semantic signals for Go code."""
         from astrograph.languages.go_lsp_plugin import GoLSPPlugin

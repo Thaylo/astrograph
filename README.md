@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Server-purple)](https://modelcontextprotocol.io)
 
-An [MCP server](https://modelcontextprotocol.io) that stops AI agents from writing duplicate code. It replaces the default write and edit tools with versions that compare new code against every function already in your codebase using AST graph isomorphism, blocking the operation when a structural duplicate is found. Variable names, formatting, and comments are irrelevant -- if two pieces of code have the same abstract structure, ASTrograph treats them as duplicates.
+An [MCP server](https://modelcontextprotocol.io) that stops AI agents from writing duplicate code. It offers improved write and edit tools that compare new code against every function already in your codebase using AST graph isomorphism, blocking the operation when a structural duplicate is found. Variable names, formatting, and comments are irrelevant -- if two pieces of code have the same abstract structure, ASTrograph treats them as duplicates.
 
 ## Installation
 
