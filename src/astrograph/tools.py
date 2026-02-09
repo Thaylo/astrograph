@@ -32,6 +32,7 @@ from .canonical_hash import (
 )
 from .context import CloseOnExitMixin
 from .event_driven import EventDrivenIndex
+from .ignorefile import ASTROGRAPHIGNORE_FILENAME, IgnoreSpec
 from .index import CodeStructureIndex, DuplicateGroup, IndexEntry, SimilarityResult
 from .languages.base import SemanticProfile, node_match
 from .languages.registry import LanguageRegistry
@@ -61,6 +62,7 @@ _SEMANTIC_MODES = frozenset({"off", "annotate", "differentiate"})
 _MUTATING_TOOL_NAMES = frozenset(
     {
         "edit",
+        "generate_ignore",
         "index_codebase",
         "metadata_erase",
         "metadata_recompute_baseline",
@@ -72,6 +74,75 @@ _MUTATING_TOOL_NAMES = frozenset(
     }
 )
 _MUTATING_LSP_SETUP_MODES = frozenset({"auto_bind", "bind", "unbind"})
+
+
+def _generate_default_ignore_content() -> str:
+    """Return default .astrographignore content."""
+    return """\
+# .astrographignore — files/directories excluded from ASTrograph indexing
+# Syntax: gitignore-like (globs, directory/, /anchored, **, !negation)
+
+# Vendored / third-party
+vendor/
+third_party/
+third-party/
+external/
+
+# Minified / generated code
+*.min.js
+*.min.css
+*.bundle.js
+*.chunk.js
+*.generated.*
+
+# Build output
+dist/
+build/
+out/
+target/
+_build/
+
+# Package managers
+node_modules/
+bower_components/
+jspm_packages/
+
+# Language caches
+__pycache__/
+*.pyc
+.tox/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.eggs/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Version control
+.git/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Test snapshots
+__snapshots__/
+*.snap
+
+# Large data files
+*.csv
+*.json
+*.xml
+*.yaml
+*.yml
+*.lock
+"""
 
 
 def _requires_index(func: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
@@ -160,6 +231,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
         self._last_indexed_path: str | None = None
         self._host_root: str | None = None
+        self._ignore_spec: IgnoreSpec | None = None
 
         # Background indexing state
         self._bg_index_thread: threading.Thread | None = None
@@ -347,10 +419,15 @@ class CodeStructureTools(CloseOnExitMixin):
         # Close old event-driven index (stops watcher, closes SQLite connection)
         self._close_event_driven_index()
 
+        # Load .astrographignore if present
+        ignore_dir = Path(path) if os.path.isdir(path) else Path(path).parent
+        self._ignore_spec = IgnoreSpec.from_file(str(ignore_dir / ASTROGRAPHIGNORE_FILENAME))
+
         # Create new event-driven index with persistence
         self._event_driven_index = EventDrivenIndex(
             persistence_path=sqlite_path,
             watch_enabled=True,
+            ignore_spec=self._ignore_spec,
         )
         self.index = self._event_driven_index.index
 
@@ -502,7 +579,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
         # Check for staleness and auto-reindex if enabled
         staleness_warning = ""
-        report = self.index.get_staleness_report()
+        report = self.index.get_staleness_report(ignore_spec=self._ignore_spec)
         if report.is_stale:
             if auto_reindex and self._last_indexed_path:
                 # Auto-reindex for accurate results
@@ -1271,21 +1348,38 @@ class CodeStructureTools(CloseOnExitMixin):
         return self._dedupe_preserve_order(candidates)
 
     @staticmethod
-    def _bridge_example(language_id: str, candidate: str) -> str | None:
-        """Return a bridge command template for attach-based adapters."""
+    def _server_bridge_info(language_id: str, candidate: str) -> dict[str, Any] | None:
+        """Return structured bridge info for attach-based adapters."""
         endpoint = parse_attach_endpoint(candidate)
         if endpoint is None or endpoint["transport"] != "tcp":
             return None
 
         port = int(endpoint["port"])
+        info: dict[str, Any] = {"requires": ["socat"], "port": port}
         if language_id in {"c_lsp", "cpp_lsp"}:
-            return (
-                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" '
-                '"EXEC:<c_or_cpp_lsp_server_command>",stderr'
+            info["server_binary"] = "clangd"
+            info["server_binary_alternatives"] = ["ccls"]
+            info["shared_with"] = "c_lsp" if language_id == "cpp_lsp" else "cpp_lsp"
+            info["socat_command"] = (
+                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" ' '"EXEC:clangd",stderr'
             )
-        if language_id == "java_lsp":
-            return f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" "EXEC:jdtls",stderr'
-        return None
+            info["install_hints"] = {
+                "macos": "brew install llvm",
+                "linux": "apt-get install -y clangd",
+            }
+        elif language_id == "java_lsp":
+            info["server_binary"] = "jdtls"
+            info["socat_command"] = (
+                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" '
+                '"EXEC:jdtls -data /tmp/jdtls-workspace",stderr'
+            )
+            info["install_hints"] = {
+                "macos": "brew install jdtls",
+                "linux": "See https://github.com/eclipse-jdtls/eclipse.jdt.ls#installation",
+            }
+        else:
+            return None
+        return info
 
     def _build_lsp_recommended_actions(
         self,
@@ -1506,12 +1600,15 @@ class CodeStructureTools(CloseOnExitMixin):
             port_hint = (
                 int(endpoint["port"]) if endpoint and endpoint["transport"] == "tcp" else None
             )
+            bridge_info = self._server_bridge_info(language, candidates[0]) if candidates else None
             endpoint_search_commands: list[str] = []
             if port_hint is not None:
                 endpoint_search_commands = [
                     f"lsof -nP -iTCP:{port_hint} -sTCP:LISTEN",
                     f"ss -ltnp | rg ':{port_hint}'",
                 ]
+            if bridge_info:
+                endpoint_search_commands.append(f"which {bridge_info['server_binary']}")
 
             action: dict[str, Any] = {
                 "id": f"discover_{language}_endpoint",
@@ -1534,8 +1631,8 @@ class CodeStructureTools(CloseOnExitMixin):
 
                 action["follow_up_tool"] = "astrograph_lsp_setup"
                 action["follow_up_arguments"] = follow_up_arguments
-                if bridge_example := self._bridge_example(language, candidates[0]):
-                    action["docker_bridge_example"] = bridge_example
+                if bridge_info:
+                    action["server_bridge_info"] = bridge_info
             actions.append(action)
 
         actions.append(
@@ -1572,6 +1669,7 @@ class CodeStructureTools(CloseOnExitMixin):
         payload["missing_languages"] = missing
         payload["missing_required_languages"] = missing_required
         payload["bindings"] = load_lsp_bindings(workspace)
+        payload["execution_context"] = "docker" if self._is_docker_runtime() else "host"
         scope_language = payload.get("scope_language")
         if not isinstance(scope_language, str):
             scope_language = None
@@ -1681,6 +1779,12 @@ class CodeStructureTools(CloseOnExitMixin):
             payload["agent_directive"] = (
                 "All bundled language servers are reachable. "
                 "Re-run inspect after environment changes."
+            )
+
+        if missing and self._is_docker_runtime():
+            payload["observation_note"] = (
+                "This MCP server runs inside Docker. When providing observations, "
+                "use host.docker.internal (not 127.0.0.1) to reach host-side servers."
             )
 
     def _lsp_setup_result(self, payload: dict[str, Any]) -> ToolResult:
@@ -1940,6 +2044,32 @@ class CodeStructureTools(CloseOnExitMixin):
             }
         )
 
+    def generate_ignore(self) -> ToolResult:
+        """Generate a .astrographignore file with sensible defaults."""
+        if not self._last_indexed_path:
+            return ToolResult(
+                "No indexed codebase. Run index_codebase first to establish a workspace root."
+            )
+
+        root = Path(self._last_indexed_path)
+        ignore_path = root / ASTROGRAPHIGNORE_FILENAME
+
+        if ignore_path.exists():
+            return ToolResult(
+                f".astrographignore already exists at {ignore_path}. "
+                "Edit it manually to change ignore patterns."
+            )
+
+        content = _generate_default_ignore_content()
+        result = self._write_file(
+            str(ignore_path),
+            content,
+            summary=f"Created {ASTROGRAPHIGNORE_FILENAME} with default ignore patterns. "
+            "Re-index to apply.",
+            display_path=ASTROGRAPHIGNORE_FILENAME,
+        )
+        return result
+
     def metadata_erase(self) -> ToolResult:
         """
         Erase all persisted metadata (.metadata_astrograph/).
@@ -2035,7 +2165,7 @@ class CodeStructureTools(CloseOnExitMixin):
         if path is not None:
             path = self._resolve_path(path)
 
-        report = self.index.get_staleness_report(path)
+        report = self.index.get_staleness_report(path, ignore_spec=self._ignore_spec)
 
         if not report.is_stale:
             return ToolResult(prefix + "Index up to date.")
@@ -2361,6 +2491,8 @@ class CodeStructureTools(CloseOnExitMixin):
                 old_string=arguments["old_string"],
                 new_string=arguments["new_string"],
             )
+        elif name == "generate_ignore":
+            return self.generate_ignore()
         else:
             return ToolResult(f"Unknown tool: {name}")
 

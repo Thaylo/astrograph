@@ -244,6 +244,14 @@ def create_server() -> Server:
                 },
             ),
             Tool(
+                name="astrograph_generate_ignore",
+                description="Auto-generate .astrographignore with reasonable defaults for excluding files from indexing.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
                 name="astrograph_write",
                 description="Write file. Blocks if duplicate exists, warns on similarity.",
                 inputSchema={
@@ -299,6 +307,7 @@ def create_server() -> Server:
         "astrograph_lsp_setup": "lsp_setup",
         "astrograph_metadata_erase": "metadata_erase",
         "astrograph_metadata_recompute_baseline": "metadata_recompute_baseline",
+        "astrograph_generate_ignore": "generate_ignore",
     }
 
     @server.call_tool()

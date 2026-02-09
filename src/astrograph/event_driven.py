@@ -15,6 +15,7 @@ from typing import Any, cast
 
 from .cloud_detect import check_and_warn_cloud_sync, is_cloud_synced_path
 from .context import CloseOnExitMixin
+from .ignorefile import IgnoreSpec
 from .index import CodeStructureIndex, DuplicateGroup, batch_hash_operation
 from .persistence import SQLitePersistence
 
@@ -116,6 +117,7 @@ class EventDrivenIndex(CloseOnExitMixin):
         persistence_path: str | Path | None = None,
         watch_enabled: bool = True,
         debounce_delay: float = 0.1,
+        ignore_spec: IgnoreSpec | None = None,
     ) -> None:
         """
         Initialize the event-driven index.
@@ -124,7 +126,9 @@ class EventDrivenIndex(CloseOnExitMixin):
             persistence_path: Path to SQLite database (None = no persistence)
             watch_enabled: Enable file system watching (requires watchdog)
             debounce_delay: Seconds to wait before processing rapid file changes
+            ignore_spec: Optional ignore patterns for file/directory exclusion
         """
+        self._ignore_spec = ignore_spec
         # In-memory index (always hot)
         self.index = CodeStructureIndex()
 
@@ -190,6 +194,7 @@ class EventDrivenIndex(CloseOnExitMixin):
             on_file_created=self._on_file_created,
             on_file_deleted=self._on_file_deleted,
             debounce_delay=self._debounce_delay,
+            ignore_spec=self._ignore_spec,
         )
         self._watcher.start()
         logger.info(f"Started file watching: {root}")
@@ -375,7 +380,10 @@ class EventDrivenIndex(CloseOnExitMixin):
                 changed_files,
                 removed_files,
             ) = self.index.index_directory_incremental(
-                str(path), recursive=recursive, include_blocks=include_blocks
+                str(path),
+                recursive=recursive,
+                include_blocks=include_blocks,
+                ignore_spec=self._ignore_spec,
             )
 
             # Persist only changed/removed files (delta), not the full index
@@ -405,7 +413,12 @@ class EventDrivenIndex(CloseOnExitMixin):
 
         # Full index
         self.index.clear()
-        self.index.index_directory(str(path), recursive=recursive, include_blocks=include_blocks)
+        self.index.index_directory(
+            str(path),
+            recursive=recursive,
+            include_blocks=include_blocks,
+            ignore_spec=self._ignore_spec,
+        )
 
         # Persist
         if self._persistence is not None:

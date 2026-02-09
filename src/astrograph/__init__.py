@@ -1,3 +1,3 @@
 """ASTrograph - Detect structural code duplication using AST graph isomorphism."""
 
-__version__ = "0.5.41"
+__version__ = "0.5.42"

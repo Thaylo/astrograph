@@ -18,6 +18,7 @@ from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
 from .context import CloseOnExitMixin, StartCloseOnExitMixin
+from .ignorefile import IgnoreSpec
 from .index import _is_skip_dir
 from .languages.registry import LanguageRegistry
 
@@ -101,16 +102,31 @@ class SourceFileHandler(FileSystemEventHandler):
         on_created: Callable[[str], None],
         on_deleted: Callable[[str], None],
         debounce_delay: float = 0.1,
+        ignore_spec: IgnoreSpec | None = None,
+        root_path: Path | None = None,
     ) -> None:
         super().__init__()
         self._on_modified = DebouncedCallback(on_modified, debounce_delay)
         self._on_created = DebouncedCallback(on_created, debounce_delay)
         self._on_deleted = on_deleted  # No debounce for deletes
+        self._ignore_spec = ignore_spec
+        self._root_path = root_path
 
     def _is_supported_source_file(self, path: str) -> bool:
         """Check if path is a supported source file we should track."""
         p = Path(path)
-        return p.suffix in LanguageRegistry.get().supported_extensions and not _should_skip_path(p)
+        if p.suffix not in LanguageRegistry.get().supported_extensions:
+            return False
+        if _should_skip_path(p):
+            return False
+        if self._ignore_spec is not None and self._root_path is not None:
+            try:
+                rel = str(p.relative_to(self._root_path))
+                if self._ignore_spec.is_file_ignored(rel):
+                    return False
+            except ValueError:
+                pass  # path not under root_path
+        return True
 
     def _handle_event(self, event: FileSystemEvent, event_type: str, handler: Callable) -> None:
         """Generic event handler to reduce duplication."""
@@ -164,6 +180,7 @@ class FileWatcher(StartCloseOnExitMixin):
         on_file_created: Callable[[str], None],
         on_file_deleted: Callable[[str], None],
         debounce_delay: float = 0.1,
+        ignore_spec: IgnoreSpec | None = None,
     ) -> None:
         """
         Initialize the file watcher.
@@ -174,6 +191,7 @@ class FileWatcher(StartCloseOnExitMixin):
             on_file_created: Callback when a source file is created
             on_file_deleted: Callback when a source file is deleted
             debounce_delay: Seconds to wait before processing rapid events
+            ignore_spec: Optional ignore patterns for file exclusion
         """
         self.root_path = Path(root_path).resolve()
         self._handler = SourceFileHandler(
@@ -181,6 +199,8 @@ class FileWatcher(StartCloseOnExitMixin):
             on_created=on_file_created,
             on_deleted=on_file_deleted,
             debounce_delay=debounce_delay,
+            ignore_spec=ignore_spec,
+            root_path=self.root_path,
         )
         self._observer: BaseObserver | None = None
         self._started = False

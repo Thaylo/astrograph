@@ -1946,6 +1946,121 @@ class TestLSPSetupTool:
         assert "rebaseline_after_cpp_lsp_binding" in action_ids
         assert "re-run auto_bind" in payload["agent_directive"]
 
+    def test_lsp_setup_discover_action_includes_server_bridge_info(self, tools):
+        missing_cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2088"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2088"],
+        }
+
+        actions = tools._build_lsp_recommended_actions(statuses=[missing_cpp_status])
+        discover = next(action for action in actions if action["id"] == "discover_cpp_lsp_endpoint")
+
+        assert "server_bridge_info" in discover
+        info = discover["server_bridge_info"]
+        assert info["server_binary"] == "clangd"
+        assert "socat_command" in info
+        assert "socat" in info["requires"]
+        assert "install_hints" in info
+        assert "macos" in info["install_hints"]
+        assert "linux" in info["install_hints"]
+
+    def test_lsp_setup_discover_action_bridge_info_shared_with(self, tools):
+        cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2088"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2088"],
+        }
+        c_status = {
+            "language": "c_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2087"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2087"],
+        }
+
+        actions = tools._build_lsp_recommended_actions(statuses=[cpp_status, c_status])
+        discover_cpp = next(
+            action for action in actions if action["id"] == "discover_cpp_lsp_endpoint"
+        )
+        discover_c = next(action for action in actions if action["id"] == "discover_c_lsp_endpoint")
+
+        assert discover_cpp["server_bridge_info"]["shared_with"] == "c_lsp"
+        assert discover_c["server_bridge_info"]["shared_with"] == "cpp_lsp"
+
+    def test_lsp_setup_execution_context_docker(self, tools):
+        missing_cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2088"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2088"],
+        }
+        payload = {
+            "mode": "inspect",
+            "servers": [missing_cpp_status],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            CodeStructureTools, "_is_docker_runtime", return_value=True
+        ):
+            tools._inject_lsp_setup_guidance(payload, workspace=Path(tmpdir))
+
+        assert payload["execution_context"] == "docker"
+        assert "observation_note" in payload
+        assert "host.docker.internal" in payload["observation_note"]
+
+    def test_lsp_setup_execution_context_host(self, tools):
+        missing_cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2088"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2088"],
+        }
+        payload = {
+            "mode": "inspect",
+            "servers": [missing_cpp_status],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            CodeStructureTools, "_is_docker_runtime", return_value=False
+        ):
+            tools._inject_lsp_setup_guidance(payload, workspace=Path(tmpdir))
+
+        assert payload["execution_context"] == "host"
+        assert "observation_note" not in payload
+
+    def test_lsp_setup_host_search_includes_binary(self, tools):
+        missing_cpp_status = {
+            "language": "cpp_lsp",
+            "required": False,
+            "available": False,
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2088"],
+            "effective_source": "default",
+            "default_command": ["tcp://127.0.0.1:2088"],
+        }
+
+        actions = tools._build_lsp_recommended_actions(statuses=[missing_cpp_status])
+        discover = next(action for action in actions if action["id"] == "discover_cpp_lsp_endpoint")
+
+        assert "which clangd" in discover["host_search_commands"]
+
 
 class TestToolResult:
     """Tests for ToolResult class."""
@@ -3676,3 +3791,84 @@ class TestBlockingDuringIndexing:
         _start_background_index_completion(tools)
         result = tools.check("def foo(): pass")
         assert "No code indexed" in result.text
+
+
+class TestGenerateIgnore:
+    """Tests for the astrograph_generate_ignore tool."""
+
+    def test_generate_ignore_creates_file(self):
+        """File created at workspace root with default content."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "hello.py")
+            with open(py_file, "w") as f:
+                f.write("def hello(): pass\n")
+            tools.index_codebase(tmpdir)
+            result = tools.generate_ignore()
+            assert "Created" in result.text
+            ignore_path = os.path.join(tmpdir, ".astrographignore")
+            assert os.path.exists(ignore_path)
+            content = Path(ignore_path).read_text()
+            assert "vendor/" in content
+            assert "*.min.js" in content
+            tools.close()
+
+    def test_generate_ignore_no_overwrite(self):
+        """Second call returns 'already exists'."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "hello.py")
+            with open(py_file, "w") as f:
+                f.write("def hello(): pass\n")
+            tools.index_codebase(tmpdir)
+            tools.generate_ignore()
+            result = tools.generate_ignore()
+            assert "already exists" in result.text
+            tools.close()
+
+    def test_generate_ignore_requires_indexed_path(self):
+        """Without indexing, returns error about needing index_codebase."""
+        tools = CodeStructureTools()
+        result = tools.generate_ignore()
+        assert "No indexed codebase" in result.text
+        tools.close()
+
+    def test_index_respects_astrographignore(self):
+        """Ignored files should not be in the index."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create .astrographignore
+            ignore_path = os.path.join(tmpdir, ".astrographignore")
+            with open(ignore_path, "w") as f:
+                f.write("ignored_dir/\n")
+
+            # Create a file that should be indexed
+            included_file = os.path.join(tmpdir, "included.py")
+            with open(included_file, "w") as f:
+                f.write("def included(): pass\n")
+
+            # Create a file inside ignored directory
+            ignored_dir = os.path.join(tmpdir, "ignored_dir")
+            os.makedirs(ignored_dir)
+            ignored_file = os.path.join(ignored_dir, "excluded.py")
+            with open(ignored_file, "w") as f:
+                f.write("def excluded(): pass\n")
+
+            tools.index_codebase(tmpdir)
+            # The included file should be indexed but the excluded one should not
+            indexed_files = list(tools.index.file_metadata.keys())
+            assert any("included.py" in f for f in indexed_files)
+            assert not any("excluded.py" in f for f in indexed_files)
+            tools.close()
+
+    def test_call_tool_dispatch_generate_ignore(self):
+        """call_tool('generate_ignore', {}) dispatches correctly."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "hello.py")
+            with open(py_file, "w") as f:
+                f.write("def hello(): pass\n")
+            tools.index_codebase(tmpdir)
+            result = tools.call_tool("generate_ignore", {})
+            assert "Created" in result.text
+            tools.close()

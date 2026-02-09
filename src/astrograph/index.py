@@ -20,6 +20,7 @@ from .canonical_hash import (
     structural_fingerprint,
     weisfeiler_leman_hash,
 )
+from .ignorefile import IgnoreSpec
 from .languages.base import ASTGraph, CodeUnit, LanguagePlugin, node_match
 from .languages.registry import LanguageRegistry
 
@@ -54,7 +55,9 @@ def _should_skip_path(path_parts: tuple[str, ...]) -> bool:
     return any(_is_skip_dir(p) for p in path_parts)
 
 
-def _walk_source_files(root: str, recursive: bool = True) -> Iterator[str]:
+def _walk_source_files(
+    root: str, recursive: bool = True, ignore_spec: IgnoreSpec | None = None
+) -> Iterator[str]:
     """Walk a directory yielding source file paths, pruning skip dirs early.
 
     Uses os.walk with in-place directory pruning so we never enter
@@ -69,10 +72,24 @@ def _walk_source_files(root: str, recursive: bool = True) -> Iterator[str]:
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune skip dirs IN-PLACE so os.walk never descends into them
         dirnames[:] = [d for d in dirnames if not _is_skip_dir(d)]
+        # Apply ignore spec for directory pruning
+        if ignore_spec is not None:
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if not ignore_spec.is_dir_ignored(
+                    d, os.path.relpath(os.path.join(dirpath, d), root)
+                )
+            ]
         for fname in filenames:
             ext = os.path.splitext(fname)[1]
             if ext in supported_exts:
-                yield os.path.join(dirpath, fname)
+                full_path = os.path.join(dirpath, fname)
+                if ignore_spec is not None:
+                    rel_path = os.path.relpath(full_path, root)
+                    if ignore_spec.is_file_ignored(rel_path):
+                        continue
+                yield full_path
         if not recursive:
             break  # Only process top-level directory
 
@@ -501,6 +518,7 @@ class CodeStructureIndex:
         recursive: bool = True,
         include_blocks: bool = True,
         max_block_depth: int = 3,
+        ignore_spec: IgnoreSpec | None = None,
     ) -> list[IndexEntry]:
         """
         Index all supported source files in a directory.
@@ -510,13 +528,16 @@ class CodeStructureIndex:
             recursive: If True, search recursively (default True)
             include_blocks: If True, include plugin-supported block extraction
             max_block_depth: Maximum nesting depth for block extraction (default 3)
+            ignore_spec: Optional ignore patterns for file/directory exclusion
         """
         path = Path(dir_path)
         if path.exists():
             all_entries = []
 
             with self._lock:
-                for source_file in _walk_python_files(str(path), recursive):
+                for source_file in _walk_python_files(
+                    str(path), recursive, ignore_spec=ignore_spec
+                ):
                     entries = self.index_file(source_file, include_blocks, max_block_depth)
                     all_entries.extend(entries)
 
@@ -552,6 +573,7 @@ class CodeStructureIndex:
         recursive: bool = True,
         include_blocks: bool = True,
         max_block_depth: int = 3,
+        ignore_spec: IgnoreSpec | None = None,
     ) -> tuple[list[IndexEntry], int, int, int, set[str], set[str]]:
         """
         Incrementally index a directory, only processing changed files.
@@ -561,6 +583,7 @@ class CodeStructureIndex:
             recursive: If True, search recursively (default True)
             include_blocks: If True, also extract code blocks
             max_block_depth: Maximum nesting depth for block extraction
+            ignore_spec: Optional ignore patterns for file/directory exclusion
 
         Returns:
             Tuple of (all_entries, added_count, updated_count, unchanged_count,
@@ -578,7 +601,7 @@ class CodeStructureIndex:
             seen_files: set[str] = set()
             changed_files: set[str] = set()
 
-            for source_file in _walk_python_files(str(path), recursive):
+            for source_file in _walk_python_files(str(path), recursive, ignore_spec=ignore_spec):
                 file_str = source_file
                 seen_files.add(file_str)
 
@@ -1171,7 +1194,9 @@ class CodeStructureIndex:
             self.suppressed_hashes.clear()
             self.suppression_details.clear()
 
-    def get_staleness_report(self, root_path: str | None = None) -> StalenessReport:
+    def get_staleness_report(
+        self, root_path: str | None = None, ignore_spec: IgnoreSpec | None = None
+    ) -> StalenessReport:
         """
         Check if the index is stale relative to the filesystem.
 
@@ -1197,7 +1222,7 @@ class CodeStructureIndex:
 
             # Check for new files if root_path is provided
             if root_path and os.path.isdir(root_path):
-                for source_file in _walk_python_files(root_path):
+                for source_file in _walk_python_files(root_path, ignore_spec=ignore_spec):
                     if source_file not in self.file_metadata:
                         new_files.append(source_file)
 

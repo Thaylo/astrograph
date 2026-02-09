@@ -166,7 +166,10 @@ def test_probe_command_attach_tcp_endpoint_falls_back_across_address_families(mo
     assert _FakeSocket.attempts == 2
 
 
-def test_auto_bind_missing_servers_accepts_attach_observations(tmp_path):
+def test_auto_bind_missing_servers_accepts_attach_observations(tmp_path, monkeypatch):
+    # Force the default c_lsp endpoint to be unreachable so auto_bind
+    # falls through to the observation candidate.
+    monkeypatch.setenv("ASTROGRAPH_C_LSP_COMMAND", "tcp://127.0.0.1:1")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
