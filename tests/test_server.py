@@ -1434,7 +1434,7 @@ class TestEsprimaGraph:
         assert result_too_old["state"] == "unsupported"
 
     def test_go_semantic_signals_emitted(self):
-        """Go plugin emits all 7 semantic signals for Go code."""
+        """Go plugin emits all 12 semantic signals for Go code."""
         from astrograph.languages.go_lsp_plugin import GoLSPPlugin
 
         plugin = GoLSPPlugin.__new__(GoLSPPlugin)
@@ -1471,6 +1471,11 @@ class TestEsprimaGraph:
             "go.receiver_style",
             "go.defer_recover",
             "go.modern_features",
+            "go.context_usage",
+            "go.http_patterns",
+            "go.grpc_patterns",
+            "go.sync_primitives",
+            "go.init_functions",
         }
         assert expected.issubset(keys)
         assert profile.extractor == "go_lsp:syntax"
@@ -1585,6 +1590,126 @@ class TestEsprimaGraph:
             available=True,
         )
         assert result_gopls["state"] == "best_effort"
+
+    def test_go_semantic_signals_microservices(self):
+        """Go plugin emits all 5 microservices signals."""
+        from astrograph.languages.go_lsp_plugin import GoLSPPlugin
+
+        plugin = GoLSPPlugin.__new__(GoLSPPlugin)
+        source = (
+            "package main\n\n"
+            "import (\n"
+            '    "context"\n'
+            '    "net/http"\n'
+            '    "sync"\n'
+            '    "google.golang.org/grpc"\n'
+            ")\n\n"
+            "func init() {\n"
+            "    // register defaults\n"
+            "}\n\n"
+            "func handler(ctx context.Context, w http.ResponseWriter, r *http.Request) {\n"
+            "    ctx, cancel := context.WithCancel(ctx)\n"
+            "    defer cancel()\n"
+            "    bg := context.Background()\n"
+            "    _ = bg\n"
+            "}\n\n"
+            "func startServer() {\n"
+            "    mux := http.NewServeMux()\n"
+            '    http.ListenAndServe(":8080", mux)\n'
+            "}\n\n"
+            "func startGRPC() {\n"
+            "    srv := grpc.NewServer()\n"
+            "    RegisterUserServer(srv, &impl{})\n"
+            '    conn, _ := grpc.Dial("localhost:9090")\n'
+            "    _ = conn\n"
+            "}\n\n"
+            "func worker() {\n"
+            "    var mu sync.Mutex\n"
+            "    var wg sync.WaitGroup\n"
+            "    var once sync.Once\n"
+            "    _ = mu\n"
+            "    _ = wg\n"
+            "    _ = once\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "server.go")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        # Context
+        assert "param" in sig_map["go.context_usage"]
+        assert "with_cancel" in sig_map["go.context_usage"]
+        assert "background" in sig_map["go.context_usage"]
+
+        # HTTP
+        assert "handler" in sig_map["go.http_patterns"]
+        assert "listener" in sig_map["go.http_patterns"]
+        assert "mux" in sig_map["go.http_patterns"]
+
+        # gRPC
+        assert "server" in sig_map["go.grpc_patterns"]
+        assert "service_registry" in sig_map["go.grpc_patterns"]
+        assert "client" in sig_map["go.grpc_patterns"]
+
+        # Sync
+        assert "mutex" in sig_map["go.sync_primitives"]
+        assert "waitgroup" in sig_map["go.sync_primitives"]
+        assert "once" in sig_map["go.sync_primitives"]
+
+        # Init
+        assert sig_map["go.init_functions"] == "yes"
+
+    def test_go_semantic_signals_context_only(self):
+        """Go plugin detects context.Context patterns in isolation."""
+        from astrograph.languages.go_lsp_plugin import GoLSPPlugin
+
+        plugin = GoLSPPlugin.__new__(GoLSPPlugin)
+        source = (
+            "package svc\n\n"
+            'import "context"\n\n'
+            "func Process(ctx context.Context, id string) error {\n"
+            "    ctx, cancel := context.WithTimeout(ctx, 5*time.Second)\n"
+            "    defer cancel()\n"
+            "    child := context.WithValue(ctx, keyID, id)\n"
+            "    todo := context.TODO()\n"
+            "    _ = child\n"
+            "    _ = todo\n"
+            "    return nil\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "svc.go")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert "param" in sig_map["go.context_usage"]
+        assert "with_timeout" in sig_map["go.context_usage"]
+        assert "with_value" in sig_map["go.context_usage"]
+        assert "todo" in sig_map["go.context_usage"]
+
+        # Non-microservices signals should be absent
+        assert sig_map["go.http_patterns"] == "none"
+        assert sig_map["go.grpc_patterns"] == "none"
+
+    def test_go_semantic_signals_absent_microservices(self):
+        """Go plugin emits 'none'/'no' for plain Go code without microservices."""
+        from astrograph.languages.go_lsp_plugin import GoLSPPlugin
+
+        plugin = GoLSPPlugin.__new__(GoLSPPlugin)
+        source = (
+            "package calc\n\n"
+            "func Add(a, b int) int {\n"
+            "    return a + b\n"
+            "}\n\n"
+            "func Subtract(a, b int) int {\n"
+            "    return a - b\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "calc.go")
+        sig_map = {s.key: s.value for s in profile.signals}
+
+        assert sig_map["go.context_usage"] == "none"
+        assert sig_map["go.http_patterns"] == "none"
+        assert sig_map["go.grpc_patterns"] == "none"
+        assert sig_map["go.sync_primitives"] == "none"
+        assert sig_map["go.init_functions"] == "no"
 
 
 class _RecordingLock:
