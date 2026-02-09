@@ -92,6 +92,11 @@ _LANGUAGE_VARIANT_POLICY: dict[str, dict[str, Any]] = {
         "best_effort": ["Java 8"],
         "notes": "Prefer LTS JDKs for predictable language-server behavior.",
     },
+    "go_lsp": {
+        "supported": ["Go 1.21", "Go 1.22", "Go 1.23", "Go 1.24", "Go 1.25"],
+        "best_effort": ["Go 1.20"],
+        "notes": "gopls is the canonical Go LSP server; shipped with the Go toolchain.",
+    },
 }
 
 
@@ -149,6 +154,13 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
             command_env_var="ASTROGRAPH_JAVA_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2089",),
             probe_commands=(),
+            required=False,
+        ),
+        LSPServerSpec(
+            language_id="go_lsp",
+            command_env_var="ASTROGRAPH_GO_LSP_COMMAND",
+            default_command=("tcp://127.0.0.1:2091",),
+            probe_commands=(("gopls", "version"),),
             required=False,
         ),
     )
@@ -237,6 +249,11 @@ _PROBE_DOCUMENTS: dict[str, dict[str, str]] = {
         "lsp_language_id": "java",
         "suffix": "_probe.java",
         "source": "class Greeter {\n  int greet(int value) { return value + 1; }\n}\n",
+    },
+    "go_lsp": {
+        "lsp_language_id": "go",
+        "suffix": "_probe.go",
+        "source": "package main\n\nfunc helper(value int) int { return value + 1 }\n",
     },
 }
 
@@ -666,6 +683,9 @@ def _version_probe_candidates(
     if language_id == "java_lsp":
         candidates.append((["java", "-version"], "runtime"))
 
+    if language_id == "go_lsp":
+        candidates.append((["go", "version"], "runtime"))
+
     deduped: list[tuple[list[str], str]] = []
     seen: set[tuple[str, ...]] = set()
     for candidate, kind in candidates:
@@ -842,6 +862,25 @@ def _evaluate_version_status(
         elif major >= 1:
             state = "best_effort"
             reason = "Java adapter version probing is best-effort; rely on workspace JDK checks."
+    elif language_id == "go_lsp":
+        if probe_kind == "runtime":
+            # Go toolchain version probing
+            if major == 1 and minor in {21, 22, 23, 24, 25}:
+                state = "supported"
+                reason = f"Go 1.{minor} is within the supported range."
+            elif major == 1 and minor == 20:
+                state = "best_effort"
+                reason = "Go 1.20 is accepted as best-effort."
+            elif major == 1 and minor >= 21:
+                state = "supported"
+                reason = f"Go 1.{minor} is within the supported range (>=1.21)."
+            else:
+                state = "unsupported"
+                reason = "Go version is below the supported range."
+        elif major >= 0:
+            # gopls version probing (gopls v0.16+)
+            state = "best_effort"
+            reason = "gopls version probing is best-effort; rely on protocol checks."
 
     return {
         "state": state,

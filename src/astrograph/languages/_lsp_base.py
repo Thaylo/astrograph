@@ -24,6 +24,7 @@ _KEYWORD_LABELS = {
     "class": "ClassDecl",
     "function": "FunctionDecl",
     "def": "FunctionDecl",
+    "func": "FunctionDecl",
     "if": "IfStmt",
     "elif": "IfStmt",
     "else": "ElseStmt",
@@ -38,6 +39,17 @@ _KEYWORD_LABELS = {
     "return": "ReturnStmt",
     "match": "MatchStmt",
     "except": "ExceptStmt",
+    "go": "GoStmt",
+    "defer": "DeferStmt",
+    "select": "SelectStmt",
+    "range": "ForStmt",
+    "type": "TypeDecl",
+    "struct": "StructDecl",
+    "interface": "InterfaceDecl",
+    "package": "PackageDecl",
+    "import": "ImportStmt",
+    "const": "ConstDecl",
+    "var": "VarDecl",
 }
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _STRING_RE = re.compile(r"'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\"")

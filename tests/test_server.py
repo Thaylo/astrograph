@@ -1433,6 +1433,159 @@ class TestEsprimaGraph:
         )
         assert result_too_old["state"] == "unsupported"
 
+    def test_go_semantic_signals_emitted(self):
+        """Go plugin emits all 7 semantic signals for Go code."""
+        from astrograph.languages.go_lsp_plugin import GoLSPPlugin
+
+        plugin = GoLSPPlugin.__new__(GoLSPPlugin)
+        source = (
+            "package main\n\n"
+            "type Reader interface {\n"
+            "    Read(p []byte) (int, error)\n"
+            "}\n\n"
+            "type Server struct {\n"
+            "    *Base\n"
+            "}\n\n"
+            "func (s *Server) Run() error {\n"
+            "    go func() {\n"
+            "        ch := make(chan int)\n"
+            "        select {\n"
+            "        case v := <-ch:\n"
+            "            fmt.Println(v)\n"
+            "        }\n"
+            "    }()\n"
+            "    defer s.Close()\n"
+            "    if err != nil {\n"
+            '        return errors.New("failed")\n'
+            "    }\n"
+            "    return err\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "main.go")
+        keys = {s.key for s in profile.signals}
+        expected = {
+            "go.concurrency",
+            "go.error_handling",
+            "go.interface_usage",
+            "go.struct_embedding",
+            "go.receiver_style",
+            "go.defer_recover",
+            "go.modern_features",
+        }
+        assert expected.issubset(keys)
+        assert profile.extractor == "go_lsp:syntax"
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "goroutine" in sig_map["go.concurrency"]
+        assert "channel" in sig_map["go.concurrency"]
+        assert "select" in sig_map["go.concurrency"]
+        assert "err_nil_check" in sig_map["go.error_handling"]
+        assert "error_creation" in sig_map["go.error_handling"]
+        assert "declaration" in sig_map["go.interface_usage"]
+        assert sig_map["go.struct_embedding"] == "yes"
+        assert sig_map["go.receiver_style"] == "pointer"
+        assert "defer" in sig_map["go.defer_recover"]
+
+    def test_go_semantic_signals_include_modern(self):
+        """Go plugin emits go.modern_features with generics."""
+        from astrograph.languages.go_lsp_plugin import GoLSPPlugin
+
+        plugin = GoLSPPlugin.__new__(GoLSPPlugin)
+        source = (
+            "package main\n\n"
+            "func Map[T any](s []T, f func(T) T) []T {\n"
+            "    result := make([]T, len(s))\n"
+            "    for i := range len(s) {\n"
+            "        result[i] = f(s[i])\n"
+            "    }\n"
+            "    return result\n"
+            "}\n"
+        )
+        profile = plugin.extract_semantic_profile(source, "generic.go")
+        keys = {s.key for s in profile.signals}
+        assert "go.modern_features" in keys
+        sig_map = {s.key: s.value for s in profile.signals}
+        assert "generics" in sig_map["go.modern_features"]
+
+    def test_brace_block_extraction_go_select(self):
+        """Brace block extractor finds select and if blocks in Go code."""
+        from astrograph.languages._brace_block_extractor import (
+            extract_brace_blocks_from_function,
+        )
+
+        go_code = (
+            "func process(ch chan int) {\n"
+            "    select {\n"
+            "    case v := <-ch:\n"
+            "        fmt.Println(v)\n"
+            "    }\n"
+            "    if (len(ch) > 0) {\n"
+            "        fmt.Println(ch)\n"
+            "    }\n"
+            "}"
+        )
+        blocks = list(
+            extract_brace_blocks_from_function(go_code, "main.go", "process", 1, "go_lsp")
+        )
+        block_types = [b.block_type for b in blocks]
+        assert "select" in block_types
+        assert "if" in block_types
+
+    def test_go_normalize_graph_op_pattern(self):
+        """Go normalize_graph_for_pattern collapses :Op(...) to :Op."""
+        import networkx as nx
+
+        from astrograph.languages.go_lsp_plugin import GoLSPPlugin
+
+        plugin = GoLSPPlugin.__new__(GoLSPPlugin)
+        g = nx.DiGraph()
+        g.add_node(0, label="AssignStmt:Op(+)")
+        g.add_node(1, label="CallStmt")
+        g.add_edge(0, 1)
+        normalized = plugin.normalize_graph_for_pattern(g)
+        labels = [data["label"] for _, data in normalized.nodes(data=True)]
+        assert "AssignStmt:Op" in labels
+        assert "AssignStmt:Op(+)" not in labels
+
+    def test_go_version_probing(self):
+        """Go version probing evaluates supported/best_effort/unsupported correctly."""
+        from astrograph.lsp_setup import _evaluate_version_status
+
+        result_supported = _evaluate_version_status(
+            language_id="go_lsp",
+            detected="go1.22.5",
+            probe_kind="runtime",
+            transport="subprocess",
+            available=True,
+        )
+        assert result_supported["state"] == "supported"
+
+        result_best_effort = _evaluate_version_status(
+            language_id="go_lsp",
+            detected="go1.20.0",
+            probe_kind="runtime",
+            transport="subprocess",
+            available=True,
+        )
+        assert result_best_effort["state"] == "best_effort"
+
+        result_unsupported = _evaluate_version_status(
+            language_id="go_lsp",
+            detected="go1.19.0",
+            probe_kind="runtime",
+            transport="subprocess",
+            available=True,
+        )
+        assert result_unsupported["state"] == "unsupported"
+
+        result_gopls = _evaluate_version_status(
+            language_id="go_lsp",
+            detected="gopls v0.16.0",
+            probe_kind="server",
+            transport="subprocess",
+            available=True,
+        )
+        assert result_gopls["state"] == "best_effort"
+
 
 class _RecordingLock:
     """Context manager that records enter/exit events for testing."""
@@ -1559,7 +1712,7 @@ class TestLSPSetupTool:
         assert set(payload["language_variant_policy"]) == {"cpp_lsp"}
 
     def test_lsp_setup_inspect_rejects_unknown_language(self, tools):
-        payload = json.loads(tools.lsp_setup(mode="inspect", language="go_lsp").text)
+        payload = json.loads(tools.lsp_setup(mode="inspect", language="rust_lsp").text)
         assert payload["ok"] is False
         assert "Unsupported language" in payload["error"]
 
@@ -4011,8 +4164,9 @@ class TestMCPCompletions:
         tools = CodeStructureTools()
         set_tools(tools)
         completion = self._complete(server, "setup-lsp", "language")
-        assert len(completion.values) == 6
+        assert len(completion.values) == 7
         assert "python" in completion.values
+        assert "go_lsp" in completion.values
 
     def test_setup_lsp_language_prefix(self):
         """Completion for setup-lsp language with prefix filters."""

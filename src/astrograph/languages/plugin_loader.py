@@ -18,6 +18,7 @@ DEFAULT_PLUGIN_CLASS_PATHS = (
     "astrograph.languages.c_lsp_plugin:CLSPPlugin",
     "astrograph.languages.cpp_lsp_plugin:CppLSPPlugin",
     "astrograph.languages.java_lsp_plugin:JavaLSPPlugin",
+    "astrograph.languages.go_lsp_plugin:GoLSPPlugin",
 )
 
 logger = logging.getLogger(__name__)

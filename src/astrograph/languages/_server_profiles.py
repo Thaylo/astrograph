@@ -367,6 +367,82 @@ class BasedPyrightProfile:
 
 
 # ---------------------------------------------------------------------------
+# gopls  (Go)
+# ---------------------------------------------------------------------------
+# gopls emits rich semantic tokens for Go source.  Token types:
+# namespace, type, struct, interface, function, method, variable, parameter,
+# property, typeParameter, keyword, string, number, comment.
+# Modifiers: definition, readonly, deprecated, defaultLibrary.
+# ---------------------------------------------------------------------------
+
+
+class GoplsProfile:
+    """Server profile for gopls (Go language server)."""
+
+    name = "gopls"
+
+    def extract_signals(self, token_index: TokenIndex, source: str) -> list[SemanticSignal]:
+        del source
+        signals: list[SemanticSignal] = []
+
+        # Interface declarations
+        _lsp_type_signal(
+            signals, token_index, "interface", "go.interface_usage", value="declaration"
+        )
+
+        # Struct types
+        has_struct = token_index.has_type("struct")
+        if has_struct:
+            signals.append(
+                SemanticSignal(
+                    key="typing.user_types.present",
+                    value="yes",
+                    confidence=0.95,
+                    origin="lsp",
+                )
+            )
+
+        # Type parameters → generics
+        has_type_param = token_index.has_type("typeParameter")
+        if has_type_param:
+            signals.append(
+                SemanticSignal(
+                    key="go.modern_features",
+                    value="generics",
+                    confidence=0.95,
+                    origin="lsp",
+                )
+            )
+
+        # Namespace names (package names)
+        _lsp_texts_signal(signals, token_index, "namespace", "go.packages")
+
+        # Keyword-based signals
+        keyword_texts = token_index.texts_of_type("keyword")
+        if "defer" in keyword_texts:
+            signals.append(
+                SemanticSignal(
+                    key="go.defer_recover",
+                    value="defer",
+                    confidence=0.95,
+                    origin="lsp",
+                )
+            )
+
+        if "go" in keyword_texts:
+            signals.append(
+                SemanticSignal(
+                    key="go.concurrency",
+                    value="goroutine",
+                    confidence=0.95,
+                    origin="lsp",
+                )
+            )
+
+        return signals
+
+
+# ---------------------------------------------------------------------------
 # Profile registry — maps serverInfo.name → profile instance
 # ---------------------------------------------------------------------------
 
@@ -380,6 +456,7 @@ def _register_defaults() -> None:
         JdtlsProfile(),
         TypeScriptLanguageServerProfile(),
         BasedPyrightProfile(),
+        GoplsProfile(),
     )
     for profile in defaults:
         _PROFILE_REGISTRY[profile.name] = profile

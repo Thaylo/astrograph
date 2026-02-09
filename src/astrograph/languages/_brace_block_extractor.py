@@ -20,6 +20,8 @@ _BLOCK_KEYWORDS: dict[str, str] = {
     "if": "if",
     "switch": "switch",
     "try": "try",
+    "select": "select",
+    "defer": "defer",
 }
 
 # Regex to match a block-introducing keyword at the start of a statement.
