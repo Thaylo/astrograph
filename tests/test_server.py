@@ -475,17 +475,178 @@ class TestCompare:
         )
         assert "EQUIVALENT" in result.text
 
-    def test_compare_cpp_semantic_mismatch_annotate(self, tools):
-        builtin_plus = "int add(int a, int b) { return a + b; }"
-        custom_plus = "Vec add(Vec a, Vec b) { return a + b; }"
-        result = tools.compare(
-            builtin_plus,
-            custom_plus,
-            language="cpp_lsp",
-            semantic_mode="annotate",
-        )
+    # -- Semantic mismatch annotate tests (parametrized) --
+
+    @pytest.mark.parametrize(
+        "code_a,code_b,language,expected_signal",
+        [
+            pytest.param(
+                "int add(int a, int b) { return a + b; }",
+                "Vec add(Vec a, Vec b) { return a + b; }",
+                "cpp_lsp",
+                "operator.plus.binding",
+                id="cpp-operator-plus",
+            ),
+            pytest.param(
+                "template <typename T>\nT add(T a, T b) { return a + b; }",
+                "int add(int a, int b) { return a + b; }",
+                "cpp_lsp",
+                "cpp.template.present",
+                id="cpp-template",
+            ),
+            pytest.param(
+                "virtual void draw() { }",
+                "void draw() override { }",
+                "cpp_lsp",
+                "cpp.virtual_override",
+                id="cpp-virtual",
+            ),
+            pytest.param(
+                "namespace alpha {\nint add(int a, int b) { return a + b; }\n}",
+                "namespace beta {\nint add(int a, int b) { return a + b; }\n}",
+                "cpp_lsp",
+                "cpp.namespace",
+                id="cpp-namespace",
+            ),
+            pytest.param(
+                "constexpr int add(int a, int b) { return a + b; }",
+                "int add(int a, int b) { return a + b; }",
+                "cpp_lsp",
+                "cpp.const_correctness",
+                id="cpp-constexpr",
+            ),
+            pytest.param(
+                "def fetch(url: str) -> str:\n    return url",
+                "async def fetch(url: str) -> str:\n    return url",
+                "python",
+                "python.async.present",
+                id="python-async",
+            ),
+            pytest.param(
+                "def add(a: int, b: int) -> int:\n    return a + b",
+                "def add(a, b):\n    return a + b",
+                "python",
+                "python.type_annotation.density",
+                id="python-annotation",
+            ),
+            pytest.param(
+                "function fetchData(url) { return fetch(url); }",
+                "async function fetchData(url) { return await fetch(url); }",
+                "javascript_lsp",
+                "javascript.async.present",
+                id="js-async",
+            ),
+            pytest.param(
+                "import { add } from './math';\nexport function sum(a, b) { return a + b; }",
+                "const { add } = require('./math');\nmodule.exports = function sum(a, b) { return a + b; }",
+                "javascript_lsp",
+                "javascript.module_system",
+                id="js-esm-vs-cjs",
+            ),
+            pytest.param(
+                "function add(a: number, b: number): number { return a + b; }",
+                "function add(a, b) { return a + b; }",
+                "javascript_lsp",
+                "javascript.type_system",
+                id="js-typed",
+            ),
+            pytest.param(
+                "function identity<T>(x: T): T { return x; }",
+                "function identity(x: any): any { return x; }",
+                "typescript_lsp",
+                "typescript.generic.present",
+                id="ts-generic",
+            ),
+            pytest.param(
+                "function get(x: unknown): string { return x as string; }",
+                "function get(x) { return x; }",
+                "typescript_lsp",
+                "typescript.strict_mode",
+                id="ts-strict",
+            ),
+            pytest.param(
+                "@Override\npublic int getValue() { return value; }",
+                "public int getValue() { return value; }",
+                "java_lsp",
+                "java.annotations",
+                id="java-annotation",
+            ),
+            pytest.param(
+                "public int add(int a, int b) { return a + b; }",
+                "private int add(int a, int b) { return a + b; }",
+                "java_lsp",
+                "java.access_modifiers",
+                id="java-access",
+            ),
+            pytest.param(
+                "public <T extends Comparable> T max(T a, T b) { return a; }",
+                "public int max(int a, int b) { return a; }",
+                "java_lsp",
+                "java.generic.present",
+                id="java-generic",
+            ),
+            pytest.param(
+                "list.stream().filter(x -> x > 0).collect(Collectors.toList());",
+                "for (int x : list) { if (x > 0) result.add(x); }",
+                "java_lsp",
+                "java.functional_style",
+                id="java-stream",
+            ),
+            pytest.param(
+                "interface Drawable { void draw(); }",
+                "class Circle { void draw() { } }",
+                "java_lsp",
+                "java.class_kind",
+                id="java-interface",
+            ),
+            pytest.param(
+                "void read() throws IOException { }",
+                "void read() { try { } catch (IOException e) { } }",
+                "java_lsp",
+                "java.exception_handling",
+                id="java-exception",
+            ),
+            pytest.param(
+                "int* arr = malloc(10 * sizeof(int)); free(arr);",
+                "int arr[10];",
+                "c_lsp",
+                "c.memory_management",
+                id="c-malloc",
+            ),
+            pytest.param(
+                "struct Point { int x; int y; };",
+                "int x; int y;",
+                "c_lsp",
+                "c.composite_types",
+                id="c-struct",
+            ),
+            pytest.param(
+                "#ifdef DEBUG\nint x = 1;\n#endif",
+                "int x = 1;",
+                "c_lsp",
+                "c.preprocessor",
+                id="c-preprocessor",
+            ),
+            pytest.param(
+                "goto cleanup; cleanup: return;", "return;", "c_lsp", "c.control_flow", id="c-goto"
+            ),
+            pytest.param(
+                "void swap(int *a, int *b) { int t = *a; *a = *b; *b = t; }",
+                "void swap(int a, int b) { int t = a; a = b; b = t; }",
+                "c_lsp",
+                "c.pointer_usage",
+                id="c-pointer",
+            ),
+        ],
+    )
+    def test_compare_semantic_mismatch_annotate(
+        self, tools, code_a, code_b, language, expected_signal
+    ):
+        result = tools.compare(code_a, code_b, language=language, semantic_mode="annotate")
         assert "SEMANTIC_MISMATCH" in result.text
-        assert "operator.plus.binding" in result.text
+        assert expected_signal in result.text
+
+    # -- Semantic differentiate / structural tests --
 
     def test_compare_cpp_semantic_mismatch_differentiate(self, tools):
         builtin_plus = "int add(int a, int b) { return a + b; }"
@@ -497,32 +658,6 @@ class TestCompare:
             semantic_mode="differentiate",
         )
         assert "DIFFERENT" in result.text
-
-    # -- Python semantic profiling tests --
-
-    def test_compare_python_semantic_async_vs_sync_annotate(self, tools):
-        sync_code = "def fetch(url: str) -> str:\n    return url"
-        async_code = "async def fetch(url: str) -> str:\n    return url"
-        result = tools.compare(
-            sync_code,
-            async_code,
-            language="python",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "python.async.present" in result.text
-
-    def test_compare_python_semantic_annotation_mismatch(self, tools):
-        annotated = "def add(a: int, b: int) -> int:\n    return a + b"
-        unannotated = "def add(a, b):\n    return a + b"
-        result = tools.compare(
-            annotated,
-            unannotated,
-            language="python",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "python.type_annotation.density" in result.text
 
     def test_compare_python_semantic_plus_numeric_vs_str(self, tools):
         numeric = "def add(a: int, b: int) -> int:\n    return a + b"
@@ -562,44 +697,6 @@ class TestCompare:
             semantic_mode="annotate",
         )
         assert "SEMANTIC_MISMATCH" in result.text
-
-    # -- JavaScript semantic profiling tests --
-
-    def test_compare_js_semantic_async_vs_sync_annotate(self, tools):
-        sync_code = "function fetchData(url) { return fetch(url); }"
-        async_code = "async function fetchData(url) { return await fetch(url); }"
-        result = tools.compare(
-            sync_code,
-            async_code,
-            language="javascript_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "javascript.async.present" in result.text
-
-    def test_compare_js_semantic_esm_vs_commonjs(self, tools):
-        esm = "import { add } from './math';\nexport function sum(a, b) { return a + b; }"
-        cjs = "const { add } = require('./math');\nmodule.exports = function sum(a, b) { return a + b; }"
-        result = tools.compare(
-            esm,
-            cjs,
-            language="javascript_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "javascript.module_system" in result.text
-
-    def test_compare_js_semantic_typed_vs_untyped(self, tools):
-        typed = "function add(a: number, b: number): number { return a + b; }"
-        untyped = "function add(a, b) { return a + b; }"
-        result = tools.compare(
-            typed,
-            untyped,
-            language="javascript_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "javascript.type_system" in result.text
 
     def test_compare_js_semantic_class_vs_prototype(self, tools):
         es6_class = (
@@ -654,61 +751,7 @@ class TestCompare:
         result = tools.compare(code1, code2, language="javascript_lsp")
         assert "DIFFERENT" in result.text
 
-    # -- C++ semantic signal tests --
-
-    def test_compare_cpp_template_vs_non_template(self, tools):
-        """Template vs non-template function triggers SEMANTIC_MISMATCH."""
-        template_code = "template <typename T>\nT add(T a, T b) { return a + b; }"
-        non_template = "int add(int a, int b) { return a + b; }"
-        result = tools.compare(
-            template_code,
-            non_template,
-            language="cpp_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "cpp.template.present" in result.text
-
-    def test_compare_cpp_virtual_vs_override(self, tools):
-        """virtual vs override triggers SEMANTIC_MISMATCH."""
-        virtual_code = "virtual void draw() { }"
-        override_code = "void draw() override { }"
-        result = tools.compare(
-            virtual_code,
-            override_code,
-            language="cpp_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "cpp.virtual_override" in result.text
-
-    def test_compare_cpp_namespace_mismatch(self, tools):
-        """Different namespaces trigger SEMANTIC_MISMATCH."""
-        ns_alpha = "namespace alpha {\nint add(int a, int b) { return a + b; }\n}"
-        ns_beta = "namespace beta {\nint add(int a, int b) { return a + b; }\n}"
-        result = tools.compare(
-            ns_alpha,
-            ns_beta,
-            language="cpp_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "cpp.namespace" in result.text
-
-    def test_compare_cpp_constexpr_vs_plain(self, tools):
-        """constexpr vs plain function triggers SEMANTIC_MISMATCH."""
-        constexpr_code = "constexpr int add(int a, int b) { return a + b; }"
-        plain_code = "int add(int a, int b) { return a + b; }"
-        result = tools.compare(
-            constexpr_code,
-            plain_code,
-            language="cpp_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "cpp.const_correctness" in result.text
-
-    # -- TypeScript tests --
+    # -- TypeScript structural tests --
 
     def test_compare_ts_structural_match(self, tools):
         """Two identical TS functions match structurally."""
@@ -717,32 +760,6 @@ class TestCompare:
         result = tools.compare(code1, code2, language="typescript_lsp")
         assert any(exp in result.text for exp in ["EQUIVALENT", "EXACT_MATCH"])
 
-    def test_compare_ts_generic_vs_non_generic(self, tools):
-        """Generic vs plain function → SEMANTIC_MISMATCH."""
-        generic = "function identity<T>(x: T): T { return x; }"
-        plain = "function identity(x: any): any { return x; }"
-        result = tools.compare(
-            generic,
-            plain,
-            language="typescript_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "typescript.generic.present" in result.text
-
-    def test_compare_ts_strict_vs_loose(self, tools):
-        """TS strict mode indicators vs plain triggers SEMANTIC_MISMATCH."""
-        strict_code = "function get(x: unknown): string { return x as string; }"
-        loose_code = "function get(x) { return x; }"
-        result = tools.compare(
-            strict_code,
-            loose_code,
-            language="typescript_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "typescript.strict_mode" in result.text
-
     def test_compare_ts_vs_js_same_structure(self, tools):
         """TS function structurally matches equivalent JS when compared as TS."""
         ts_code = "function add(a: number, b: number): number { return a + b; }"
@@ -750,153 +767,6 @@ class TestCompare:
         result = tools.compare(ts_code, js_code, language="typescript_lsp")
         # Both reduce to same structure after TS annotation stripping
         assert any(exp in result.text for exp in ["EQUIVALENT", "EXACT_MATCH", "SIMILAR"])
-
-    # -- Java semantic signal tests --
-
-    def test_compare_java_annotated_vs_plain(self, tools):
-        """Java @Override annotation vs plain method → SEMANTIC_MISMATCH."""
-        annotated = "@Override\npublic int getValue() { return value; }"
-        plain = "public int getValue() { return value; }"
-        result = tools.compare(
-            annotated,
-            plain,
-            language="java_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "java.annotations" in result.text
-
-    def test_compare_java_public_vs_private(self, tools):
-        """Java public vs private access modifier → SEMANTIC_MISMATCH."""
-        public_code = "public int add(int a, int b) { return a + b; }"
-        private_code = "private int add(int a, int b) { return a + b; }"
-        result = tools.compare(
-            public_code,
-            private_code,
-            language="java_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "java.access_modifiers" in result.text
-
-    def test_compare_java_generic_vs_non_generic(self, tools):
-        """Java generic vs non-generic → SEMANTIC_MISMATCH."""
-        generic = "public <T extends Comparable> T max(T a, T b) { return a; }"
-        plain = "public int max(int a, int b) { return a; }"
-        result = tools.compare(
-            generic,
-            plain,
-            language="java_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "java.generic.present" in result.text
-
-    def test_compare_java_stream_vs_loop(self, tools):
-        """Java stream/lambda vs plain → SEMANTIC_MISMATCH."""
-        stream_code = "list.stream().filter(x -> x > 0).collect(Collectors.toList());"
-        loop_code = "for (int x : list) { if (x > 0) result.add(x); }"
-        result = tools.compare(
-            stream_code,
-            loop_code,
-            language="java_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "java.functional_style" in result.text
-
-    def test_compare_java_interface_vs_class(self, tools):
-        """Java interface vs class → SEMANTIC_MISMATCH."""
-        iface = "interface Drawable { void draw(); }"
-        cls = "class Circle { void draw() { } }"
-        result = tools.compare(
-            iface,
-            cls,
-            language="java_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "java.class_kind" in result.text
-
-    def test_compare_java_exception_handling_mismatch(self, tools):
-        """Java throws vs try-catch → SEMANTIC_MISMATCH."""
-        throws_code = "void read() throws IOException { }"
-        try_code = "void read() { try { } catch (IOException e) { } }"
-        result = tools.compare(
-            throws_code,
-            try_code,
-            language="java_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "java.exception_handling" in result.text
-
-    # -- C semantic signal tests --
-
-    def test_compare_c_malloc_vs_stack(self, tools):
-        """C malloc vs stack allocation → SEMANTIC_MISMATCH."""
-        heap_code = "int* arr = malloc(10 * sizeof(int)); free(arr);"
-        stack_code = "int arr[10];"
-        result = tools.compare(
-            heap_code,
-            stack_code,
-            language="c_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "c.memory_management" in result.text
-
-    def test_compare_c_struct_vs_plain(self, tools):
-        """C struct usage vs plain types → SEMANTIC_MISMATCH."""
-        struct_code = "struct Point { int x; int y; };"
-        plain_code = "int x; int y;"
-        result = tools.compare(
-            struct_code,
-            plain_code,
-            language="c_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "c.composite_types" in result.text
-
-    def test_compare_c_preprocessor_mismatch(self, tools):
-        """C preprocessor conditional vs non-conditional → SEMANTIC_MISMATCH."""
-        ifdef_code = "#ifdef DEBUG\nint x = 1;\n#endif"
-        plain_code = "int x = 1;"
-        result = tools.compare(
-            ifdef_code,
-            plain_code,
-            language="c_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "c.preprocessor" in result.text
-
-    def test_compare_c_goto_vs_structured(self, tools):
-        """C goto usage vs structured control flow → SEMANTIC_MISMATCH."""
-        goto_code = "goto cleanup; cleanup: return;"
-        structured_code = "return;"
-        result = tools.compare(
-            goto_code,
-            structured_code,
-            language="c_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "c.control_flow" in result.text
-
-    def test_compare_c_pointer_vs_value(self, tools):
-        """C pointer dereference vs value semantics → SEMANTIC_MISMATCH."""
-        pointer_code = "void swap(int *a, int *b) { int t = *a; *a = *b; *b = t; }"
-        value_code = "void swap(int a, int b) { int t = a; a = b; b = t; }"
-        result = tools.compare(
-            pointer_code,
-            value_code,
-            language="c_lsp",
-            semantic_mode="annotate",
-        )
-        assert "SEMANTIC_MISMATCH" in result.text
-        assert "c.pointer_usage" in result.text
 
 
 def _extract_signal_map(plugin_cls: type, source: str, filename: str) -> dict:
