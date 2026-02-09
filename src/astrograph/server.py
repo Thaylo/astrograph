@@ -53,7 +53,8 @@ def create_server() -> Server:
             "If the first tool call is slow, indexing is still in progress. "
             "Use astrograph_status to check readiness. "
             "Before large refactors, call astrograph_lsp_setup(mode='inspect') and execute "
-            "recommended_actions (search/install/bind/auto_bind) until missing_required_languages is empty."
+            "recommended_actions (run host_search_commands, search/install/bind/auto_bind) "
+            "until missing_languages is empty. Always attempt to resolve all languages, not just required ones."
         ),
     )
 

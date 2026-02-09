@@ -1327,10 +1327,10 @@ class CodeStructureTools(CloseOnExitMixin):
                 {
                     "id": "focus_cpp_lsp",
                     "priority": "high",
-                    "title": "Start with cpp_lsp only",
+                    "title": "Resolve cpp_lsp first",
                     "why": (
-                        "Attach languages are optional; focusing setup on C++ first keeps "
-                        "the first-run journey clean and deterministic."
+                        "Multiple attach languages are unavailable. Resolve them one at a time, "
+                        "starting with C++. Run the host_search_commands, then auto_bind."
                     ),
                     "tool": "astrograph_lsp_setup",
                     "arguments": {"mode": "inspect", "language": "cpp_lsp"},
@@ -1342,8 +1342,8 @@ class CodeStructureTools(CloseOnExitMixin):
                 "priority": "high" if missing_required else "medium",
                 "title": "Auto-bind any reachable language servers",
                 "why": (
-                    f"{len(missing)} language server(s) are missing; "
-                    "auto_bind uses bindings/env/defaults/observations."
+                    f"{len(missing)} language server(s) are unreachable. Execute this action to probe "
+                    "all candidate endpoints and bind any that respond."
                 ),
                 "tool": "astrograph_lsp_setup",
                 "arguments": _with_scope({"mode": "auto_bind"}),
@@ -1517,6 +1517,11 @@ class CodeStructureTools(CloseOnExitMixin):
                 "id": f"discover_{language}_endpoint",
                 "priority": priority,
                 "title": f"Discover a reachable attach endpoint for {language}",
+                "why": (
+                    f"No server is listening on the expected {language} port. "
+                    "Run the host_search_commands on the host machine to check, "
+                    "then provide the working endpoint via auto_bind with observations."
+                ),
                 "language": language,
                 "candidate_endpoints": candidates,
                 "host_search_commands": endpoint_search_commands,
@@ -1660,9 +1665,11 @@ class CodeStructureTools(CloseOnExitMixin):
                 "(real C++ LSP endpoint, such as clangd/ccls, + valid compile_commands.json)."
             )
         elif missing:
+            missing_names = ", ".join(missing)
             payload["agent_directive"] = (
-                "Optional attach languages are currently unavailable. "
-                "Run recommended_actions when you need those languages."
+                f"{len(missing)} attach language(s) ({missing_names}) are unavailable. "
+                "Execute recommended_actions now: run the host_search_commands, "
+                "then call auto_bind with any discovered endpoints."
             )
         elif attach_scope_ready and scope_language:
             payload["agent_directive"] = (
@@ -1793,15 +1800,16 @@ class CodeStructureTools(CloseOnExitMixin):
             elif missing:
                 if not language and "cpp_lsp" in missing:
                     payload["next_step"] = (
-                        "Optional attach endpoints are currently unavailable. "
-                        "For a clean first-run C++ flow, call astrograph_lsp_setup with "
-                        "mode='inspect', language='cpp_lsp', then run mode='auto_bind' "
-                        "for that same language."
+                        f"{len(missing)} attach endpoint(s) unreachable. "
+                        "Start by running the host_search_commands from recommended_actions "
+                        "to check if language servers are already running on the host. "
+                        "Then call astrograph_lsp_setup(mode='auto_bind') with any discovered endpoints as observations."
                     )
                 else:
                     payload["next_step"] = (
-                        "Optional attach endpoints are currently unavailable. "
-                        "Call astrograph_lsp_setup with mode='auto_bind' to configure them."
+                        f"{len(missing)} attach endpoint(s) unreachable. "
+                        "Run the host_search_commands from recommended_actions to discover running servers, "
+                        "then call astrograph_lsp_setup(mode='auto_bind') with results as observations."
                     )
 
             if missing:
@@ -1821,8 +1829,9 @@ class CodeStructureTools(CloseOnExitMixin):
                 ]
                 if not language and "cpp_lsp" in missing:
                     payload["focus_hint"] = (
-                        "To reduce setup noise, inspect one language at a time: "
-                        "astrograph_lsp_setup(mode='inspect', language='cpp_lsp')."
+                        "Start by resolving one language at a time. "
+                        "Run astrograph_lsp_setup(mode='inspect', language='cpp_lsp') "
+                        "and execute its recommended_actions before moving to the next."
                     )
             if cpp_reachable_only:
                 payload["production_gate"] = {
