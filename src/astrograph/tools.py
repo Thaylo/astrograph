@@ -403,6 +403,17 @@ class CodeStructureTools(CloseOnExitMixin):
         # Store resolved path for auto-reindex and relative path computation
         self._last_indexed_path = str(Path(path).resolve())
 
+        # Update active workspace so plugin initialisation resolves bindings
+        # from the correct directory (not the Docker default /workspace).
+        from .lsp_setup import set_active_workspace
+
+        set_active_workspace(self._last_indexed_path)
+
+        # Reset plugin singletons so they re-initialise their LSP clients
+        # against the new active workspace (binding resolution is workspace-
+        # relative, so stale plugins would use the wrong endpoint).
+        LanguageRegistry.reset()
+
         # Always include blocks - only 22% overhead for much better detection
         return self._index_codebase_event_driven(path, recursive)
 

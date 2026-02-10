@@ -19,6 +19,24 @@ from urllib.parse import unquote, urlparse
 
 PERSISTENCE_DIR = ".metadata_astrograph"
 LSP_BINDINGS_FILENAME = "lsp_bindings.json"
+
+# Module-level active workspace: set by index_codebase / set_workspace so that
+# plugin initialisation (which calls create_lsp_client without an explicit
+# workspace) resolves bindings from the correct directory.
+_active_workspace: Path | None = None
+
+
+def set_active_workspace(workspace: str | Path | None) -> None:
+    """Update the module-level active workspace used by binding resolution."""
+    global _active_workspace
+    if workspace is not None:
+        p = Path(workspace).expanduser()
+        if p.exists():
+            p = p.resolve()
+        _active_workspace = p
+    else:
+        _active_workspace = None
+
 _SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 _VALIDATION_MODES = frozenset({"production", "bootstrap"})
 _VALIDATION_MODE_ALIASES = {"relaxed": "bootstrap"}
@@ -912,6 +930,11 @@ def _normalize_workspace_root(workspace: str | Path | None) -> Path:
                 root = root.resolve()
             return root.parent if root.is_file() else root
         return Path.cwd().resolve()
+
+    # Active workspace (set by set_workspace / index_codebase) — used when
+    # no explicit env var is set (normal runtime in Docker).
+    if _active_workspace is not None and _active_workspace.is_dir():
+        return _active_workspace
 
     docker_workspace = Path("/workspace")
     if docker_workspace.is_dir():

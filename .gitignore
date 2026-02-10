@@ -33,6 +33,7 @@ ENV/
 
 # Testing
 .pytest_cache/
+_lang_tests/
 .coverage
 htmlcov/
 .tox/
