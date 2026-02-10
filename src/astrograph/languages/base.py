@@ -85,6 +85,26 @@ class SemanticProfile:
         return mapped
 
 
+def next_block_name(
+    block_type: str,
+    func_name: str,
+    parent_block_name: str,
+    block_counters: dict[str, int],
+) -> str:
+    """Increment counter and return the hierarchical block name.
+
+    Shared by Python, JS/esprima, and brace-based block extractors.
+    """
+    counter_key = f"{parent_block_name}.{block_type}"
+    if counter_key not in block_counters:
+        block_counters[counter_key] = 0
+    block_counters[counter_key] += 1
+    block_num = block_counters[counter_key]
+    if parent_block_name == func_name:
+        return f"{func_name}.{block_type}_{block_num}"
+    return f"{parent_block_name}.{block_type}_{block_num}"
+
+
 def compute_label_histogram(graph: nx.DiGraph) -> dict[str, int]:
     """Compute histogram of node labels in a graph."""
     histogram: dict[str, int] = {}

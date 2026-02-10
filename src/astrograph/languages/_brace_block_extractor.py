@@ -10,7 +10,7 @@ import re
 import textwrap
 from collections.abc import Iterator
 
-from .base import CodeUnit
+from .base import CodeUnit, next_block_name
 
 # Block-introducing keywords and their block type names.
 _BLOCK_KEYWORDS: dict[str, str] = {
@@ -134,17 +134,7 @@ def extract_brace_blocks_from_function(
             if start_line_rel == end_line_rel:
                 continue
 
-            # Build block name
-            counter_key = f"{parent_block_name}.{block_type}"
-            if counter_key not in block_counters:
-                block_counters[counter_key] = 0
-            block_counters[counter_key] += 1
-            block_num = block_counters[counter_key]
-
-            if parent_block_name == func_name:
-                block_name = f"{func_name}.{block_type}_{block_num}"
-            else:
-                block_name = f"{parent_block_name}.{block_type}_{block_num}"
+            block_name = next_block_name(block_type, func_name, parent_block_name, block_counters)
 
             # Extract code from function source lines
             code = textwrap.dedent("\n".join(source_lines[start_line_rel - 1 : end_line_rel]))

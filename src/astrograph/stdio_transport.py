@@ -13,11 +13,38 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
+
+
+class _UnclosableSendStream:
+    """Write-stream proxy that ignores close.
+
+    The MCP session's ``_receive_loop`` closes ``_write_stream`` when
+    the read stream ends (EOF).  This proxy prevents that teardown so
+    in-flight request handlers can still send their responses.  The
+    real stream is closed by the outer transport scope after
+    ``server.run()`` returns.
+    """
+
+    def __init__(self, inner: MemoryObjectSendStream[SessionMessage]) -> None:
+        self._inner = inner
+
+    async def send(self, item: SessionMessage) -> None:
+        await self._inner.send(item)
+
+    async def aclose(self) -> None:
+        pass  # Intentional no-op — outer scope manages lifetime.
+
+    async def __aenter__(self) -> _UnclosableSendStream:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass  # Intentional no-op.
 
 
 class _StdioReader:
@@ -154,6 +181,11 @@ async def dual_stdio_server() -> (
 
     Yields ``(read_stream, write_stream)`` where messages are automatically
     framed in whichever mode the client uses.
+
+    The write stream is wrapped in ``_UnclosableSendStream`` so that the
+    MCP session's ``_receive_loop`` cannot tear it down when stdin reaches
+    EOF.  This prevents ``ClosedResourceError`` for handlers that are still
+    writing their responses.
     """
     read_send, read_recv = anyio.create_memory_object_stream[SessionMessage | Exception](0)
     write_send, write_recv = anyio.create_memory_object_stream[SessionMessage](0)
@@ -162,6 +194,11 @@ async def dual_stdio_server() -> (
     stdout = anyio.wrap_file(sys.stdout.buffer)
 
     reader = _StdioReader(stdin)
+    shutdown_event = anyio.Event()
+
+    # Wrap write_send so the MCP session's _receive_loop can't close it
+    # when the read stream ends (EOF).
+    write_proxy = _UnclosableSendStream(write_send)
 
     async def stdin_task() -> None:
         async with read_send:
@@ -173,9 +210,12 @@ async def dual_stdio_server() -> (
                     msg = JSONRPCMessage.model_validate_json(data)
                     await read_send.send(SessionMessage(message=msg))
                 except EOFError:
-                    return
+                    break
                 except Exception as exc:
                     await read_send.send(exc)
+        # Block until the server has finished processing all requests
+        # and the outer scope signals shutdown.
+        await shutdown_event.wait()
 
     async def stdout_task() -> None:
         async with write_recv:
@@ -194,5 +234,9 @@ async def dual_stdio_server() -> (
     async with anyio.create_task_group() as tg:
         tg.start_soon(stdin_task)
         tg.start_soon(stdout_task)
-        yield read_recv, write_send
-        tg.cancel_scope.cancel()
+        yield read_recv, write_proxy
+        # server.run() returned — all request handlers have completed.
+        # Close the real write_send so stdout_task drains and exits.
+        await write_send.aclose()
+        # Unblock stdin_task so it can exit too.
+        shutdown_event.set()

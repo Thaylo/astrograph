@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import networkx as nx
 
-from .base import ASTGraph, BaseLanguagePlugin, CodeUnit, build_ast_graph
+from .base import ASTGraph, BaseLanguagePlugin, CodeUnit, build_ast_graph, next_block_name
 
 # Block types to extract from functions
 _MATCH_TYPE: tuple[type, ...] = (ast.Match,) if hasattr(ast, "Match") else ()
@@ -56,18 +56,7 @@ def _extract_blocks_recursive(
         if isinstance(child, BLOCK_TYPES):
             block_type = BLOCK_TYPE_NAMES[type(child)]
 
-            # Generate unique name for this block type at this level
-            counter_key = f"{parent_block_name}.{block_type}"
-            if counter_key not in block_counters:
-                block_counters[counter_key] = 0
-            block_counters[counter_key] += 1
-            block_num = block_counters[counter_key]
-
-            # Hierarchical name: func.for_1 or func.for_1.if_1
-            if parent_block_name == func_name:
-                block_name = f"{func_name}.{block_type}_{block_num}"
-            else:
-                block_name = f"{parent_block_name}.{block_type}_{block_num}"
+            block_name = next_block_name(block_type, func_name, parent_block_name, block_counters)
 
             start = child.lineno - 1
             end = child.end_lineno if child.end_lineno else start + 1

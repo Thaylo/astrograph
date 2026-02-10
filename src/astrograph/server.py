@@ -510,19 +510,22 @@ async def run_server() -> None:
 _close_once = threading.Event()
 
 
-def _shutdown_handler(_signum: int, _frame: object) -> None:
-    """Handle SIGTERM from Docker by flushing and closing resources."""
+def _close_if_first() -> None:
+    """Idempotent close: only the first caller flushes and closes resources."""
     if not _close_once.is_set():
         _close_once.set()
         _tools.close()
+
+
+def _shutdown_handler(_signum: int, _frame: object) -> None:
+    """Handle SIGTERM from Docker by flushing and closing resources."""
+    _close_if_first()
     sys.exit(0)
 
 
 def _atexit_close() -> None:
     """Idempotent close for atexit — skips if signal handler already ran."""
-    if not _close_once.is_set():
-        _close_once.set()
-        _tools.close()
+    _close_if_first()
 
 
 def main() -> None:

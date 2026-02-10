@@ -11,7 +11,7 @@ import esprima
 import networkx as nx
 
 from ._configured_lsp_plugin import ConfiguredLSPLanguagePluginBase
-from .base import CodeUnit, SemanticSignal
+from .base import CodeUnit, SemanticSignal, next_block_name
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +28,6 @@ _TS_ANNOTATION_RE = re.compile(
 _TS_INTERFACE_RE = re.compile(r"\b(?:interface|type)\s+[A-Z][\w$]*")
 _JSDOC_RE = re.compile(r"@(?:type|param|returns?|typedef)\b")
 _FLOW_PRAGMA_RE = re.compile(r"(?://|/\*)\s*@flow\b")
-
-# -- Plus expression binding --
-_JS_PLUS_EXPR_RE = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*([A-Za-z_$][A-Za-z0-9_$]*)\b")
-_JS_PARAM_ANNOTATION_RE = re.compile(
-    r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*" r"(string|number|boolean|bigint|any|[\w$]+)\b"
-)
-_JS_STRING_LITERAL_PLUS_RE = re.compile(
-    r"""(?:["'`][^"'`]*["'`])\s*\+|""" r"""\+\s*(?:["'`][^"'`]*["'`])"""
-)
-_JS_NUMBER_LITERAL_PLUS_RE = re.compile(r"\b\d+(?:\.\d+)?\s*\+|\+\s*\d+(?:\.\d+)?\b")
 
 # -- Module system --
 _ESM_RE = re.compile(r"\b(?:import|export)\s")
@@ -164,15 +154,13 @@ def _esprima_node_label(node: object, normalize_ops: bool = False) -> str:
     if node_type in _OPERATOR_EXPR_TYPES:
         op = getattr(node, "operator", "")
         return f"{node_type}:Op" if normalize_ops else f"{node_type}:{op}"
-    if node_type == "VariableDeclaration":
-        kind = getattr(node, "kind", "var")
-        return f"VariableDeclaration:{kind}"
+    _kind_defaults = {"VariableDeclaration": "var", "MethodDefinition": "method"}
+    if node_type in _kind_defaults:
+        kind = getattr(node, "kind", _kind_defaults[node_type])
+        return f"{node_type}:{kind}"
     if node_type == "Literal":
         val = getattr(node, "value", None)
         return f"Literal:{type(val).__name__}"
-    if node_type == "MethodDefinition":
-        kind = getattr(node, "kind", "method")
-        return f"MethodDefinition:{kind}"
     if node_type == "ArrowFunctionExpression":
         return "ArrowFunction"
     if node_type == "TemplateLiteral":
@@ -281,16 +269,9 @@ def _esprima_extract_blocks(
 
             if node_type in _ESPRIMA_BLOCK_TYPES:
                 block_type = _ESPRIMA_BLOCK_TYPE_NAMES[node_type]
-                counter_key = f"{parent_block_name}.{block_type}"
-                if counter_key not in block_counters:
-                    block_counters[counter_key] = 0
-                block_counters[counter_key] += 1
-                block_num = block_counters[counter_key]
-
-                if parent_block_name == func_name:
-                    block_name = f"{func_name}.{block_type}_{block_num}"
-                else:
-                    block_name = f"{parent_block_name}.{block_type}_{block_num}"
+                block_name = next_block_name(
+                    block_type, func_name, parent_block_name, block_counters
+                )
 
                 loc = getattr(item, "loc", None)
                 if loc is None:
@@ -528,50 +509,137 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
             return "jsdoc"
         return "none"
 
-    def _build_annotation_map(self, source: str) -> dict[str, str]:
-        """Build variable→type mapping from TS-style annotations."""
+    # -- AST-based plus binding helpers --
+
+    @staticmethod
+    def _esprima_walk(node: object) -> Iterator[object]:
+        """Yield all AST nodes reachable from *node* (depth-first)."""
+        if node is None or not hasattr(node, "type"):
+            return
+        yield node
+        for field in _ESPRIMA_CHILD_FIELDS:
+            child = getattr(node, field, None)
+            if child is None:
+                continue
+            if isinstance(child, list):
+                for item in child:
+                    yield from JavaScriptLSPPlugin._esprima_walk(item)
+            else:
+                yield from JavaScriptLSPPlugin._esprima_walk(child)
+
+    @staticmethod
+    def _esprima_annotation_name(annotation: object | None) -> str | None:
+        """Extract a simple type name from an esprima type annotation."""
+        if annotation is None:
+            return None
+        ann_type = getattr(annotation, "type", None)
+        # TSTypeAnnotation wraps the actual type node
+        if ann_type == "TSTypeAnnotation":
+            return JavaScriptLSPPlugin._esprima_annotation_name(
+                getattr(annotation, "typeAnnotation", None)
+            )
+        if ann_type == "TSTypeReference":
+            type_name_node = getattr(annotation, "typeName", None)
+            return getattr(type_name_node, "name", None)
+        if ann_type in (
+            "TSStringKeyword",
+            "TSNumberKeyword",
+            "TSBooleanKeyword",
+            "TSBigIntKeyword",
+            "TSAnyKeyword",
+        ):
+            # e.g. "TSNumberKeyword" → "number"
+            return str(ann_type[2:-7]).lower()  # strip TS...Keyword
+        return None
+
+    @staticmethod
+    def _esprima_build_annotation_map(tree: object) -> dict[str, str]:
+        """Build variable→type mapping from function parameter annotations."""
         ann_map: dict[str, str] = {}
-        for match in _JS_PARAM_ANNOTATION_RE.finditer(source):
-            ann_map[match.group(1)] = match.group(2)
+        for node in JavaScriptLSPPlugin._esprima_walk(tree):
+            node_type = getattr(node, "type", None)
+            if node_type not in _ESPRIMA_FUNCTION_TYPES:
+                continue
+            params = getattr(node, "params", None)
+            if not params:
+                continue
+            for param in params:
+                param_type = getattr(param, "type", None)
+                # Plain identifier with optional annotation: `x: number`
+                if param_type == "Identifier":
+                    name = getattr(param, "name", None)
+                    ann = getattr(param, "typeAnnotation", None)
+                    type_name = JavaScriptLSPPlugin._esprima_annotation_name(ann)
+                    if name and type_name:
+                        ann_map[name] = type_name
+                # Assignment pattern (default value): `x: number = 0`
+                elif param_type == "AssignmentPattern":
+                    left = getattr(param, "left", None)
+                    if left and getattr(left, "type", None) == "Identifier":
+                        name = getattr(left, "name", None)
+                        ann = getattr(left, "typeAnnotation", None)
+                        type_name = JavaScriptLSPPlugin._esprima_annotation_name(ann)
+                        if name and type_name:
+                            ann_map[name] = type_name
         return ann_map
 
-    def _infer_plus_binding(self, source: str) -> tuple[str, float] | None:
-        """Resolve + operand types from annotations and literals."""
-        has_var_plus = bool(_JS_PLUS_EXPR_RE.search(source))
-        has_str_literal_plus = bool(_JS_STRING_LITERAL_PLUS_RE.search(source))
-        has_num_literal_plus = bool(_JS_NUMBER_LITERAL_PLUS_RE.search(source))
+    @staticmethod
+    def _resolve_js_operand_type(
+        node: object,
+        annotation_map: dict[str, str],
+    ) -> str | None:
+        """Resolve an operand to a type string via annotation lookup or literal."""
+        node_type = getattr(node, "type", None)
+        if node_type == "Identifier":
+            return annotation_map.get(getattr(node, "name", ""))
+        if node_type == "Literal":
+            val = getattr(node, "value", None)
+            if isinstance(val, str):
+                return "string"
+            if isinstance(val, int | float):
+                return "number"
+        if node_type == "TemplateLiteral":
+            return "string"
+        return None
 
-        if not has_var_plus and not has_str_literal_plus and not has_num_literal_plus:
+    def _infer_plus_binding(self, source: str) -> tuple[str, float] | None:
+        """Find BinaryExpression(+) via esprima AST, resolve operand types."""
+        tree = _esprima_try_parse(source)
+        if tree is None:
             return None
 
-        if has_str_literal_plus and not has_num_literal_plus and not has_var_plus:
-            return "str_concat", 0.9
-        if has_num_literal_plus and not has_str_literal_plus and not has_var_plus:
-            return "numeric", 0.9
+        annotation_map = self._esprima_build_annotation_map(tree)
+        found_plus = False
+        saw_numeric = False
+        saw_str = False
+        saw_unknown = False
 
-        if not has_var_plus:
-            return "mixed", 0.6
-
-        ann_map = self._build_annotation_map(source)
-        saw_numeric = has_num_literal_plus
-        saw_str = has_str_literal_plus
-
-        for match in _JS_PLUS_EXPR_RE.finditer(source):
-            left_type = ann_map.get(match.group(1))
-            right_type = ann_map.get(match.group(2))
+        for node in self._esprima_walk(tree):
+            if getattr(node, "type", None) != "BinaryExpression":
+                continue
+            if getattr(node, "operator", None) != "+":
+                continue
+            found_plus = True
+            left_type = self._resolve_js_operand_type(getattr(node, "left", None), annotation_map)
+            right_type = self._resolve_js_operand_type(getattr(node, "right", None), annotation_map)
             if left_type is None or right_type is None:
+                saw_unknown = True
                 continue
             if left_type in _JS_NUMERIC_TYPES and right_type in _JS_NUMERIC_TYPES:
                 saw_numeric = True
             elif left_type == "string" and right_type == "string":
                 saw_str = True
 
+        if not found_plus:
+            return None
         if saw_str and saw_numeric:
             return "mixed", 0.6
         if saw_str:
-            return "str_concat", 0.85
+            return "str_concat", 0.9
         if saw_numeric:
-            return "numeric", 0.85
+            return "numeric", 0.9
+        if saw_unknown:
+            return "unknown", 0.5
         return "unknown", 0.5
 
     def _detect_module_system(self, source: str) -> str:
