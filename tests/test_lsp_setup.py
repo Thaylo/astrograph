@@ -87,7 +87,20 @@ def test_resolve_lsp_command_precedence(
     assert command == expected_command
 
 
-def test_auto_bind_missing_servers_uses_agent_observations(tmp_path):
+def test_auto_bind_missing_servers_uses_agent_observations(tmp_path, monkeypatch):
+    # Mock default TCP endpoint as unavailable so the observation gets used.
+    # Without this, a socat bridge on port 2090 would make the default
+    # reachable and auto_bind would skip the observation entirely.
+    _real_probe = lsp_setup.probe_command
+
+    def _probe_no_defaults(command):
+        parsed = lsp_setup.parse_command(command)
+        if parsed and any("tcp://127.0.0.1:" in c for c in parsed):
+            return {"command": parsed, "available": False, "executable": None}
+        return _real_probe(command)
+
+    monkeypatch.setattr(lsp_setup, "probe_command", _probe_no_defaults)
+
     # No bindings → python is unconfigured → auto_bind should use the observation
     result = auto_bind_missing_servers(
         workspace=tmp_path,
@@ -183,11 +196,23 @@ def test_probe_command_attach_tcp_endpoint_falls_back_across_address_families(mo
 
 
 def test_auto_bind_missing_servers_accepts_attach_observations(tmp_path, monkeypatch):
+    # Mock default TCP endpoints as unavailable so observations get used.
+    _real_probe = lsp_setup.probe_command
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
         _host, port = server.getsockname()
         endpoint = f"tcp://127.0.0.1:{port}"
+
+        def _probe_no_defaults(command):
+            parsed = lsp_setup.parse_command(command)
+            # Block default port but allow the ephemeral test port
+            if parsed and any(f"tcp://127.0.0.1:{p}" in c for c in parsed for p in (2087,)):
+                return {"command": parsed, "available": False, "executable": None}
+            return _real_probe(command)
+
+        monkeypatch.setattr(lsp_setup, "probe_command", _probe_no_defaults)
 
         result = auto_bind_missing_servers(
             workspace=tmp_path,

@@ -2284,6 +2284,16 @@ class TestLSPSetupTool:
             tools.close()
 
     def test_lsp_setup_auto_bind_uses_observations(self):
+        import astrograph.lsp_setup as lsp_setup
+
+        _real_probe = lsp_setup.probe_command
+
+        def _probe_no_defaults(command):
+            parsed = lsp_setup.parse_command(command)
+            if parsed and any("tcp://127.0.0.1:" in c for c in parsed):
+                return {"command": parsed, "available": False, "executable": None}
+            return _real_probe(command)
+
         with (
             tempfile.TemporaryDirectory() as tmpdir,
             patch.dict(
@@ -2291,6 +2301,7 @@ class TestLSPSetupTool:
                 {"ASTROGRAPH_WORKSPACE": tmpdir},
                 clear=False,
             ),
+            patch.object(lsp_setup, "probe_command", _probe_no_defaults),
         ):
             # No binding for python → auto_bind should pick up the observation
             tools = CodeStructureTools()

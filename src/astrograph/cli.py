@@ -147,7 +147,7 @@ def _print_doctor(statuses: list[LSPServerStatus], as_json: bool) -> None:
     for status in statuses:
         state = "OK" if status.available else "MISSING"
         command = " ".join(status.command) if status.command else "<empty>"
-        source = f" ({status.command_source})" if status.command_source == "env" else ""
+        source = f" ({status.command_source})" if status.command_source == "binding" else ""
         print(f"[{state}] {status.language_id}: {command}{source}")
         if status.executable:
             label = "endpoint" if status.transport != "subprocess" else "executable"
