@@ -1,6 +1,6 @@
 [project]
 name = "astrograph"
-version = "0.5.62"
+version = "0.5.63"
 description = "MCP server for structural code duplication detection and language-aware semantic analysis"
 readme = "README.md"
 requires-python = ">=3.10"

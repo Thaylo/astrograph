@@ -502,6 +502,10 @@ class CodeStructureTools(CloseOnExitMixin):
             remainder = path[len(self._host_root) :]
             if remainder.startswith("/"):
                 remainder = remainder[1:]
+            # Filter traversal components from remainder
+            if remainder:
+                safe_parts = [pt for pt in Path(remainder).parts if pt not in ("/", ".", "..")]
+                remainder = str(Path(*safe_parts)) if safe_parts else ""
             return str(Path("/workspace") / remainder) if remainder else "/workspace"
 
         workspace = Path("/workspace")
@@ -510,8 +514,8 @@ class CodeStructureTools(CloseOnExitMixin):
             return path
 
         p = Path(path)
-        # Skip leading '/' to avoid joinpath resetting to root
-        parts = tuple(pt for pt in p.parts if pt != "/")
+        # Skip leading '/' and filter traversal components (..)
+        parts = tuple(pt for pt in p.parts if pt not in ("/", ".", ".."))
 
         for i in range(len(parts)):
             candidate = workspace.joinpath(*parts[i:])
@@ -520,7 +524,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 return str(candidate)
 
         # For new files: resolve the parent directory and append the filename
-        parent_parts = tuple(pt for pt in p.parent.parts if pt != "/")
+        parent_parts = tuple(pt for pt in p.parent.parts if pt not in ("/", ".", ".."))
         for i in range(len(parent_parts)):
             candidate = workspace.joinpath(*parent_parts[i:])
             if candidate.is_dir():
@@ -2439,7 +2443,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
         # Read the file
         try:
-            with open(file_path) as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
         except FileNotFoundError:
             return ToolResult(f"File not found: {display_path}")

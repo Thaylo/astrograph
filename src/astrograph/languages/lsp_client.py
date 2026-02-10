@@ -151,7 +151,10 @@ class SubprocessLSPClient(LSPClient):
             name, value = line.split(":", 1)
             headers[name.strip().lower()] = value.strip()
 
-        content_length = int(headers.get("content-length", "0"))
+        try:
+            content_length = int(headers.get("content-length", "0"))
+        except (ValueError, TypeError):
+            return None
         if content_length <= 0:
             return None
 
@@ -159,7 +162,10 @@ class SubprocessLSPClient(LSPClient):
         if len(payload) != content_length:
             return None
 
-        decoded = json.loads(payload.decode("utf-8"))
+        try:
+            decoded = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
         return decoded if isinstance(decoded, dict) else None
 
     def _request(
@@ -610,7 +616,10 @@ class SocketLSPClient(SubprocessLSPClient):
             name, value = line.split(":", 1)
             headers[name.strip().lower()] = value.strip()
 
-        content_length = int(headers.get("content-length", "0"))
+        try:
+            content_length = int(headers.get("content-length", "0"))
+        except (ValueError, TypeError):
+            return None
         if content_length <= 0:
             return None
 
@@ -627,7 +636,10 @@ class SocketLSPClient(SubprocessLSPClient):
         if len(payload) != content_length:
             return None
 
-        decoded = json.loads(payload.decode("utf-8"))
+        try:
+            decoded = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
         return decoded if isinstance(decoded, dict) else None
 
     def close(self, *, force: bool = False) -> None:

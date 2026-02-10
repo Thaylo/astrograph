@@ -505,12 +505,10 @@ class TestE2EWorkflow:
         # Extract a WL hash from the analysis report on disk
         metadata_dir = Path(sample_workspace) / ".metadata_astrograph"
         reports = sorted(metadata_dir.glob("analysis_report_*.txt"))
-        if not reports:
-            pytest.skip("No analysis report generated (empty index)")
+        assert reports, "No analysis report generated — workspace has known duplicates"
         report_text = reports[-1].read_text()
-        hash_match = re.search(r"suppress\(wl_hash=([a-f0-9]+)\)", report_text)
-        if not hash_match:
-            pytest.skip("No suppressible hash in report")
+        hash_match = re.search(r'suppress\(wl_hash="?([a-f0-9]+)"?\)', report_text)
+        assert hash_match, f"No suppressible hash in report:\n{report_text[:500]}"
         wl_hash = hash_match.group(1)
 
         # Step 2: suppress the duplicate and re-analyze
