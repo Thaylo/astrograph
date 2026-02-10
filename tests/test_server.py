@@ -25,22 +25,26 @@ from astrograph.tools import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_lsp_env(monkeypatch):
-    """Keep LSP command env vars isolated across tests/modules."""
+def _clear_lsp_env(monkeypatch, tmp_path):
+    """Keep LSP state isolated across tests/modules."""
     LanguageRegistry.reset()
-    for key in (
-        "ASTROGRAPH_PY_LSP_COMMAND",
-        "ASTROGRAPH_JS_LSP_COMMAND",
-        "ASTROGRAPH_TS_LSP_COMMAND",
-        "ASTROGRAPH_C_LSP_COMMAND",
-        "ASTROGRAPH_CPP_LSP_COMMAND",
-        "ASTROGRAPH_JAVA_LSP_COMMAND",
-        "ASTROGRAPH_COMPILE_COMMANDS_PATH",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("ASTROGRAPH_PY_LSP_COMMAND", f"{sys.executable} -m pylsp")
+    monkeypatch.delenv("ASTROGRAPH_COMPILE_COMMANDS_PATH", raising=False)
     # Disable startup auto-indexing in tests; fixtures call index_codebase explicitly.
     monkeypatch.setenv("ASTROGRAPH_WORKSPACE", "")
+
+    # Save Python LSP binding and redirect default (workspace=None) resolution
+    # so plugins find the binding without triggering auto-indexing.
+    import astrograph.lsp_setup as _lsp_mod
+
+    _lsp_mod.save_lsp_bindings({"python": [sys.executable, "-m", "pylsp"]}, workspace=tmp_path)
+    _orig = _lsp_mod._normalize_workspace_root
+
+    def _test_normalize(workspace):
+        if workspace is None:
+            return tmp_path
+        return _orig(workspace)
+
+    monkeypatch.setattr(_lsp_mod, "_normalize_workspace_root", _test_normalize)
 
 
 class TestResolveDockerPath:
@@ -2284,13 +2288,11 @@ class TestLSPSetupTool:
             tempfile.TemporaryDirectory() as tmpdir,
             patch.dict(
                 os.environ,
-                {
-                    "ASTROGRAPH_WORKSPACE": tmpdir,
-                    "ASTROGRAPH_PY_LSP_COMMAND": "missing-python-lsp-xyz",
-                },
+                {"ASTROGRAPH_WORKSPACE": tmpdir},
                 clear=False,
             ),
         ):
+            # No binding for python → auto_bind should pick up the observation
             tools = CodeStructureTools()
             result = tools.lsp_setup(
                 mode="auto_bind",
@@ -2312,10 +2314,7 @@ class TestLSPSetupTool:
             tempfile.TemporaryDirectory() as tmpdir,
             patch.dict(
                 os.environ,
-                {
-                    "ASTROGRAPH_WORKSPACE": tmpdir,
-                    "ASTROGRAPH_PY_LSP_COMMAND": "missing-python-lsp-xyz",
-                },
+                {"ASTROGRAPH_WORKSPACE": tmpdir},
                 clear=False,
             ),
         ):

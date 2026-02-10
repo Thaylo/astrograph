@@ -94,8 +94,6 @@ class JavaLSPPlugin(BraceLanguageLSPPlugin):
     FILE_EXTENSIONS = frozenset({".java"})
     SKIP_DIRS = frozenset({"build", "out", "target", ".gradle"})
     DEFAULT_COMMAND = ("tcp://127.0.0.1:2089",)
-    COMMAND_ENV_VAR = "ASTROGRAPH_JAVA_LSP_COMMAND"
-    TIMEOUT_ENV_VAR = "ASTROGRAPH_JAVA_LSP_TIMEOUT"
 
     def _language_signals(self, source: str) -> list[SemanticSignal]:
         """Java-specific regex signals for semantic profiling."""

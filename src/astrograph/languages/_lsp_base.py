@@ -149,7 +149,7 @@ class LSPClient(Protocol):
 
 
 class NullLSPClient:
-    """Fallback LSP client when no backend is configured."""
+    """Sentinel LSP client for unconfigured languages. Returns empty results immediately."""
 
     @property
     def server_name(self) -> str | None:

@@ -102,10 +102,9 @@ _LANGUAGE_VARIANT_POLICY: dict[str, dict[str, Any]] = {
 
 @dataclass(frozen=True)
 class LSPServerSpec:
-    """Configuration of one bundled LSP-backed language adapter."""
+    """Configuration of one LSP-backed language adapter."""
 
     language_id: str
-    command_env_var: str
     default_command: tuple[str, ...]
     probe_commands: tuple[tuple[str, ...], ...] = ()
     required: bool = True
@@ -116,49 +115,45 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
     return (
         LSPServerSpec(
             language_id="python",
-            command_env_var="ASTROGRAPH_PY_LSP_COMMAND",
-            default_command=("pylsp",),
+            default_command=("tcp://127.0.0.1:2090",),
             probe_commands=(
                 ("python", "-m", "pylsp"),
                 ("python3", "-m", "pylsp"),
             ),
+            required=False,
         ),
         LSPServerSpec(
             language_id="javascript_lsp",
-            command_env_var="ASTROGRAPH_JS_LSP_COMMAND",
-            default_command=("typescript-language-server", "--stdio"),
-            probe_commands=(),
+            default_command=("tcp://127.0.0.1:2092",),
+            probe_commands=(("typescript-language-server", "--version"),),
+            required=False,
         ),
         LSPServerSpec(
             language_id="typescript_lsp",
-            command_env_var="ASTROGRAPH_TS_LSP_COMMAND",
-            default_command=("typescript-language-server", "--stdio"),
-            probe_commands=(),
+            default_command=("tcp://127.0.0.1:2093",),
+            probe_commands=(("typescript-language-server", "--version"),),
+            required=False,
         ),
         LSPServerSpec(
             language_id="c_lsp",
-            command_env_var="ASTROGRAPH_C_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2087",),
             probe_commands=(),
             required=False,
         ),
         LSPServerSpec(
             language_id="cpp_lsp",
-            command_env_var="ASTROGRAPH_CPP_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2088",),
             probe_commands=(),
             required=False,
         ),
         LSPServerSpec(
             language_id="java_lsp",
-            command_env_var="ASTROGRAPH_JAVA_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2089",),
             probe_commands=(),
             required=False,
         ),
         LSPServerSpec(
             language_id="go_lsp",
-            command_env_var="ASTROGRAPH_GO_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2091",),
             probe_commands=(("gopls", "version"),),
             required=False,
@@ -167,7 +162,7 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
 
 
 def get_lsp_spec(language_id: str) -> LSPServerSpec | None:
-    """Return bundled server spec for a language, when known."""
+    """Return server spec for a language, when known."""
     for spec in bundled_lsp_specs():
         if spec.language_id == language_id:
             return spec
@@ -1140,18 +1135,13 @@ def resolve_lsp_command(
     *,
     language_id: str,
     default_command: Sequence[str],
-    command_env_var: str,
     workspace: str | Path | None = None,
 ) -> tuple[list[str], str]:
-    """Resolve effective command with precedence: binding -> env -> default."""
+    """Resolve effective command with precedence: binding -> default."""
     bindings = load_lsp_bindings(workspace)
     bound = bindings.get(language_id)
     if bound:
         return list(bound), "binding"
-
-    env_command = parse_command(os.getenv(command_env_var, ""))
-    if env_command:
-        return env_command, "env"
 
     return parse_command(default_command), "default"
 
@@ -1193,16 +1183,47 @@ def collect_lsp_statuses(
     compile_db_path: str | Path | None = None,
     project_root: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect effective command status for each bundled language adapter."""
+    """Collect effective command status for each language adapter."""
     bindings = load_lsp_bindings(workspace)
     statuses: list[dict[str, Any]] = []
     for spec in bundled_lsp_specs():
         effective_command, effective_source = resolve_lsp_command(
             language_id=spec.language_id,
             default_command=spec.default_command,
-            command_env_var=spec.command_env_var,
             workspace=workspace,
         )
+
+        # Fail fast: unconfigured languages (no binding)
+        # are immediately marked unavailable — no probe attempted.
+        if effective_source == "default":
+            endpoint = parse_attach_endpoint(effective_command)
+            statuses.append(
+                {
+                    "language": spec.language_id,
+                    "required": spec.required,
+                    "available": False,
+                    "probe_available": False,
+                    "executable": None,
+                    "transport": endpoint["transport"] if endpoint else "subprocess",
+                    "endpoint": endpoint["target"] if endpoint else None,
+                    "effective_command": effective_command,
+                    "effective_source": effective_source,
+                    "binding_command": [],
+                    "default_command": list(spec.default_command),
+                    "version_status": {"state": "not_configured"},
+                    "language_variant_policy": dict(
+                        _LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})
+                    ),
+                    "verification": {"state": "not_configured"},
+                    "verification_state": "not_configured",
+                    "validation_mode": _normalized_validation_mode_with_override(
+                        validation_mode
+                    ),
+                    "compile_commands": None,
+                }
+            )
+            continue
+
         probe = probe_command(effective_command)
         validation = _availability_validation(
             language_id=spec.language_id,
@@ -1229,7 +1250,6 @@ def collect_lsp_statuses(
                 "effective_command": effective_command,
                 "effective_source": effective_source,
                 "binding_command": bindings.get(spec.language_id, []),
-                "env_command": parse_command(os.getenv(spec.command_env_var, "")),
                 "default_command": list(spec.default_command),
                 "version_status": version_status,
                 "language_variant_policy": dict(_LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})),
@@ -1318,7 +1338,6 @@ def probe_candidates(
         add("observation", observed)
 
     add("binding", bindings.get(spec.language_id, []))
-    add("env", os.getenv(spec.command_env_var, ""))
     add("default", spec.default_command)
     for probe_command_tokens in spec.probe_commands:
         add("heuristic", probe_command_tokens)
@@ -1335,7 +1354,7 @@ def auto_bind_missing_servers(
     compile_db_path: str | Path | None = None,
     project_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Auto-bind commands only for currently missing bundled language adapters."""
+    """Auto-bind commands only for currently missing language adapters."""
     root = _normalize_workspace_root(workspace)
     bindings = load_lsp_bindings(root)
     language_scope = {
@@ -1355,7 +1374,6 @@ def auto_bind_missing_servers(
         effective_command, _source = resolve_lsp_command(
             language_id=spec.language_id,
             default_command=spec.default_command,
-            command_env_var=spec.command_env_var,
             workspace=root,
         )
         effective_probe = probe_command(effective_command)

@@ -155,9 +155,7 @@ class TypeScriptLSPPlugin(JavaScriptLSPPlugin):
     LSP_LANGUAGE_ID = "typescript"
     FILE_EXTENSIONS = frozenset({".ts", ".tsx"})
     SKIP_DIRS = frozenset({"node_modules", ".next", "dist", "build"})
-    DEFAULT_COMMAND = ("typescript-language-server", "--stdio")
-    COMMAND_ENV_VAR = "ASTROGRAPH_TS_LSP_COMMAND"
-    TIMEOUT_ENV_VAR = "ASTROGRAPH_TS_LSP_TIMEOUT"
+    DEFAULT_COMMAND = ("tcp://127.0.0.1:2093",)
 
     # ------------------------------------------------------------------
     # AST graph builder (strip TS → parse as JS)

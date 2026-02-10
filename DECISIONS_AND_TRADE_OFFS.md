@@ -43,8 +43,9 @@ Language support is plugin-based. Python and JavaScript are both delivered throu
 
 ## D-002: Bundle JavaScript LSP Runtime in Official Docker Image
 
-- Status: `Accepted`
+- Status: `Superseded` by D-009
 - Effective date: `2026-02-07`
+- Superseded date: `2026-02-10`
 
 ### Context
 
@@ -55,14 +56,10 @@ Unbundled JS LSP dependencies create setup friction and inconsistent local envir
 Official Docker images bundle `node`, `npm`, `typescript`, and
 `typescript-language-server`.
 
-### Trade-offs
+### Supersession
 
-- Pros:
-  - Frictionless adoption for macOS/Linux users running Docker.
-  - Predictable behavior across environments.
-- Cons:
-  - Larger image size.
-  - Runtime components must be maintained in release cadence.
+Replaced by D-009 (fully unbundled architecture). All language servers are external
+and configured exclusively through `astrograph_lsp_setup bind`.
 
 ## D-003: Duplicate Significance Policy (Noise Reduction)
 
@@ -168,8 +165,9 @@ Suppressions are necessary for tolerated duplication patterns and should survive
 
 ## D-007: Deterministic Agent-Assisted LSP Wiring
 
-- Status: `Accepted`
+- Status: `Superseded` by D-009
 - Effective date: `2026-02-08`
+- Superseded date: `2026-02-10`
 
 ### Context
 
@@ -193,20 +191,16 @@ Command resolution precedence is:
 2. environment override (`ASTROGRAPH_*_LSP_COMMAND`)
 3. built-in default command
 
-### Trade-offs
+### Supersession
 
-- Pros:
-  - Minimal MCP surface while preserving iterative discoverability for unaware agents.
-  - No LLM dependence inside ASTrograph; behavior remains deterministic Python logic.
-  - Stable per-workspace configuration with explicit provenance.
-- Cons:
-  - Availability checks verify executable reachability, not semantic LSP correctness.
-  - Misconfigured persisted bindings can override otherwise-valid environment defaults.
+Replaced by D-009 (binding-only resolution). Environment variable overrides and
+the binding-env-default resolution chain have been removed entirely.
 
 ## D-008: Hybrid LSP Runtime Strategy (Bundle Python/JS, Attach C/C++/Java)
 
-- Status: `Accepted`
+- Status: `Superseded` by D-009
 - Effective date: `2026-02-08`
+- Superseded date: `2026-02-10`
 
 ### Context
 
@@ -226,16 +220,58 @@ ASTrograph ships with a hybrid runtime model:
   - `cpp_lsp` -> `tcp://127.0.0.1:2088`
   - `java_lsp` -> `tcp://127.0.0.1:2089`
 
-Attach languages remain fully configurable through `astrograph_lsp_setup` bindings,
-environment overrides, and observation-assisted auto-bind. They are treated as
-optional for readiness checks (`doctor.ready`), while bundled Python/JavaScript remain required.
+### Supersession
+
+Replaced by D-009. All languages are now fully unbundled and use TCP attach mode.
+No language runtimes are shipped in the Docker image.
+
+## D-009: Fully Unbundled, Binding-Only LSP Architecture
+
+- Status: `Accepted`
+- Effective date: `2026-02-10`
+
+### Context
+
+The hybrid bundled/attach model (D-008) and environment variable overrides (D-007)
+created multiple implicit configuration paths. Environment variables were invisible state,
+hard to debug, and a potential security concern. Bundled runtimes (Python LSP, Node.js/npm)
+bloated the Docker image and required maintenance.
+
+### Decision
+
+All 7 language adapters are fully unbundled:
+
+- No language server runtimes are shipped in the Docker image.
+- No environment variable overrides (`ASTROGRAPH_*_LSP_COMMAND`, `ASTROGRAPH_*_LSP_TIMEOUT`).
+- The only valid configuration method is explicit binding via `astrograph_lsp_setup(mode='bind')`.
+- Command resolution is: **binding -> fail fast**. No binding = not configured.
+- Unconfigured languages return a `NullLSPClient` immediately -- no connection attempt,
+  no silent degradation, no `_disabled` flag chain.
+- All languages use TCP attach endpoints as defaults (only used for display/discovery,
+  never for silent connection attempts).
+- `auto_bind` remains as an explicit discovery tool for agents, not a runtime fallback.
+
+Default TCP endpoints (for `auto_bind` discovery and documentation):
+
+| Language | Endpoint |
+|----------|----------|
+| C | `tcp://127.0.0.1:2087` |
+| C++ | `tcp://127.0.0.1:2088` |
+| Java | `tcp://127.0.0.1:2089` |
+| Python | `tcp://127.0.0.1:2090` |
+| Go | `tcp://127.0.0.1:2091` |
+| JavaScript | `tcp://127.0.0.1:2092` |
+| TypeScript | `tcp://127.0.0.1:2093` |
 
 ### Trade-offs
 
 - Pros:
-  - Frictionless Docker adoption for Python/JavaScript-heavy teams.
-  - Leaner maintenance burden than bundling all language runtimes.
-  - Clear path for advanced users to integrate existing host LSP infrastructure.
+  - Single, explicit configuration path -- no invisible env var state.
+  - Minimal Docker image (Python-only, no Node.js/npm).
+  - Fail-fast behavior -- misconfiguration is immediately visible.
+  - Consistent architecture across all 7 languages.
+  - Reduced attack surface (no bundled runtimes, no env var injection).
 - Cons:
-  - C/C++/Java analysis quality depends on external server lifecycle management.
-  - Default attach endpoints may be unreachable in fresh environments until configured.
+  - Users must start and bind language servers explicitly before use.
+  - No zero-configuration experience for Python or JavaScript.
+  - Timeout is hardcoded (5.0s) -- not configurable per-language without code change.

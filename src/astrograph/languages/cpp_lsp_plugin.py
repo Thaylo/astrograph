@@ -82,8 +82,6 @@ class CppLSPPlugin(BraceLanguageLSPPlugin):
     FILE_EXTENSIONS = frozenset({".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".ipp"})
     SKIP_DIRS = frozenset({"build", "cmake-build-debug", "cmake-build-release"})
     DEFAULT_COMMAND = ("tcp://127.0.0.1:2088",)
-    COMMAND_ENV_VAR = "ASTROGRAPH_CPP_LSP_COMMAND"
-    TIMEOUT_ENV_VAR = "ASTROGRAPH_CPP_LSP_TIMEOUT"
 
     def _normalize_cpp_type(self, raw_type: str) -> str:
         cleaned = raw_type.replace("&", " ").replace("*", " ")

@@ -24,7 +24,7 @@ class LSPServerStatus:
 
     language_id: str
     command: list[str]
-    command_source: str  # "binding", "default", or "env"
+    command_source: str  # "binding" or "default"
     executable: str | None
     available: bool
     transport: str
@@ -36,11 +36,10 @@ class LSPServerStatus:
 
 
 def _resolve_lsp_command(spec: LSPServerSpec) -> tuple[list[str], str]:
-    """Resolve command from persisted binding, env override, or default."""
+    """Resolve command from persisted binding or default."""
     return resolve_lsp_command(
         language_id=spec.language_id,
         default_command=spec.default_command,
-        command_env_var=spec.command_env_var,
     )
 
 
@@ -69,7 +68,7 @@ def _lsp_status(spec: LSPServerSpec) -> LSPServerStatus:
             required=spec.required,
             installable=False,
             install_command=None,
-            reason=f"{spec.command_env_var} resolved to an empty command",
+            reason="command resolved to an empty value",
         )
 
     probe = probe_command(command)
@@ -82,14 +81,11 @@ def _lsp_status(spec: LSPServerSpec) -> LSPServerStatus:
     installable = transport == "subprocess" and source == "default" and install_command is not None
     reason: str | None = None
 
-    if source == "env" and not available:
+    if source == "binding" and not available:
         if transport == "subprocess":
-            reason = (
-                f"custom command from {spec.command_env_var} was not found; "
-                "auto-install is disabled for custom commands"
-            )
+            reason = "bound command was not found; check the binding"
         else:
-            reason = f"custom endpoint from {spec.command_env_var} is not reachable"
+            reason = "bound endpoint is not reachable; check the binding"
     elif source == "default" and transport != "subprocess" and not available:
         reason = "default attach endpoint is not reachable"
     elif not installable and not available:
@@ -115,7 +111,7 @@ def _lsp_status(spec: LSPServerSpec) -> LSPServerStatus:
 
 
 def _collect_lsp_statuses() -> list[LSPServerStatus]:
-    """Collect status for all bundled LSP servers."""
+    """Collect status for all LSP servers."""
     return [_lsp_status(spec) for spec in bundled_lsp_specs()]
 
 
@@ -256,12 +252,12 @@ def main() -> None:
         help="Language ID override (otherwise inferred from file extensions)",
     )
 
-    doctor_parser = subparsers.add_parser("doctor", help="Check bundled LSP server readiness")
+    doctor_parser = subparsers.add_parser("doctor", help="Check LSP server readiness")
     doctor_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     install_parser = subparsers.add_parser(
         "install-lsps",
-        help="Install missing bundled LSP servers (python/javascript)",
+        help="Install missing LSP servers (python/javascript)",
     )
     install_parser.add_argument("--python", action="store_true", help="Install Python LSP only")
     install_parser.add_argument(

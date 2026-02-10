@@ -1359,7 +1359,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
     @staticmethod
     def _default_install_command(language_id: str) -> list[str] | None:
-        """Return a known install command for bundled subprocess servers."""
+        """Return a known install command for common language servers."""
         if language_id == "python":
             return ["python3", "-m", "pip", "install", "python-lsp-server>=1.11"]
         if language_id in ("javascript_lsp", "typescript_lsp"):
@@ -1557,22 +1557,6 @@ class CodeStructureTools(CloseOnExitMixin):
                         }
                     )
 
-                if status.get("effective_source") == "env":
-                    spec = spec_by_language.get(language)
-                    if spec is not None:
-                        actions.append(
-                            {
-                                "id": f"fix_env_override_{language}",
-                                "priority": priority,
-                                "title": f"Fix unavailable env override for {language}",
-                                "language": language,
-                                "env_var": spec.command_env_var,
-                                "note": (
-                                    f"{spec.command_env_var} currently resolves to an "
-                                    "unavailable command."
-                                ),
-                            }
-                        )
                 continue
 
             if verification_state == "reachable_only":
@@ -1832,7 +1816,7 @@ class CodeStructureTools(CloseOnExitMixin):
             )
         else:
             payload["agent_directive"] = (
-                "All bundled language servers are reachable. "
+                "All configured language servers are reachable. "
                 "Re-run inspect after environment changes."
             )
 
@@ -1856,7 +1840,7 @@ class CodeStructureTools(CloseOnExitMixin):
         compile_db_path: str | None = None,
         project_root: str | None = None,
     ) -> ToolResult:
-        """Inspect and configure deterministic command bindings for bundled LSP plugins."""
+        """Inspect and configure LSP command bindings for language plugins."""
         workspace = self._lsp_setup_workspace()
         normalized_mode = (mode or "inspect").strip().lower()
         known_languages = [

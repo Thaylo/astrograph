@@ -260,6 +260,32 @@ class TestDoctorCommand:
         optional = next(server for server in payload["servers"] if server["language"] == "c_lsp")
         assert optional["required"] is False
 
+    def test_doctor_json_all_optional_missing_is_still_ready(self, capsys):
+        statuses = [
+            _status(
+                language_id="python",
+                available=False,
+                command=["tcp://127.0.0.1:2090"],
+                transport="tcp",
+                endpoint="127.0.0.1:2090",
+                required=False,
+            ),
+            _status(
+                language_id="javascript_lsp",
+                available=False,
+                command=["tcp://127.0.0.1:2092"],
+                transport="tcp",
+                endpoint="127.0.0.1:2092",
+                required=False,
+            ),
+        ]
+        with patch("astrograph.cli._collect_lsp_statuses", return_value=statuses):
+            _run_cli(["cli", "doctor", "--json"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ready"] is True
+        assert all(not server["required"] for server in payload["servers"])
+
 
 class TestInstallLSPsCommand:
     """Tests for install-lsps command."""

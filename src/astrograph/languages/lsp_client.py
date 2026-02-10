@@ -662,30 +662,31 @@ class SocketLSPClient(SubprocessLSPClient):
             self._close_quietly(sock)
 
 
-def create_subprocess_client_from_env(
+def create_lsp_client(
     *,
     default_command: Sequence[str],
-    command_env_var: str,
-    timeout_env_var: str,
     language_id: str,
     workspace: str | Path | None = None,
-    default_timeout: float = 5.0,
+    request_timeout: float = 5.0,
 ) -> LSPClient:
-    """Create an LSP client from binding/env/default command resolution."""
-    command, _source = resolve_lsp_command(
+    """Create an LSP client from binding resolution.
+
+    Returns a NullLSPClient immediately if no binding exists (fail fast).
+    Only explicitly bound commands produce a real client.
+    """
+    from ._lsp_base import NullLSPClient
+
+    command, source = resolve_lsp_command(
         language_id=language_id,
         default_command=default_command,
-        command_env_var=command_env_var,
         workspace=workspace,
     )
 
-    timeout_text = os.getenv(timeout_env_var, str(default_timeout))
-    try:
-        timeout = float(timeout_text)
-    except ValueError:
-        timeout = default_timeout
+    # Fail fast: no binding → not configured
+    if source != "binding":
+        return NullLSPClient()
 
-    request_timeout = max(timeout, 0.1)
+    request_timeout = max(request_timeout, 0.1)
     endpoint = parse_attach_endpoint(command)
     if endpoint is not None:
         return SocketLSPClient(command[0], request_timeout=request_timeout)

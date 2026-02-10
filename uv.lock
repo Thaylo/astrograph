@@ -38,7 +38,6 @@ dependencies = [
     { name = "mcp" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "python-lsp-server" },
     { name = "watchdog" },
     { name = "xxhash" },
 ]
@@ -50,9 +49,13 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "python-lsp-server" },
     { name = "ruff" },
     { name = "vulture" },
     { name = "watchdog" },
+]
+lsp = [
+    { name = "python-lsp-server" },
 ]
 treesitter = [
     { name = "tree-sitter" },
@@ -68,7 +71,8 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "python-lsp-server", specifier = ">=1.11" },
+    { name = "python-lsp-server", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "python-lsp-server", marker = "extra == 'lsp'", specifier = ">=1.11" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2" },
     { name = "tree-sitter", marker = "extra == 'treesitter'", specifier = ">=0.23.0" },
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.10" },
@@ -76,7 +80,7 @@ requires-dist = [
     { name = "watchdog", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "xxhash", specifier = ">=3.0.0" },
 ]
-provides-extras = ["treesitter", "dev"]
+provides-extras = ["treesitter", "lsp", "dev"]
 
 [[package]]
 name = "attrs"

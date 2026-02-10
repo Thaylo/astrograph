@@ -5,7 +5,7 @@
 </p>
 
 [![Docker](https://img.shields.io/badge/Docker-Hub-blue?logo=docker)](https://hub.docker.com/r/thaylo/astrograph)
-[![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue?logo=linux)](https://hub.docker.com/r/thaylo/astrograph)
+[![Arch](https://img.shields.io/badge/arch-amd64-blue?logo=linux)](https://hub.docker.com/r/thaylo/astrograph)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Server-purple)](https://modelcontextprotocol.io)
 
@@ -32,7 +32,7 @@ Add `.mcp.json` to your project root:
 }
 ```
 
-That's it. The image is multi-arch (amd64, arm64). The codebase is indexed at startup and re-indexed on file changes.
+That's it. The codebase is indexed at startup and re-indexed on file changes.
 
 <details>
 <summary><strong>Claude Desktop</strong></summary>
@@ -128,19 +128,17 @@ Different variable names, identical structure. Source code is converted into lab
 
 ## Language support
 
-Python, JavaScript, TypeScript, and Go work out of the box. C, C++, and Java attach to an already-running language server over TCP.
+All languages require an explicit LSP binding via `astrograph_lsp_setup(mode='bind')`. No language server is bundled -- ASTrograph attaches to already-running servers over TCP or stdio. Unconfigured languages fail fast with no silent fallbacks.
 
-| Language | Versions | Mode | Default endpoint |
-|----------|----------|------|-----------------|
-| Python | 3.11 -- 3.14 | bundled | `pylsp` |
-| JavaScript | ES2021+, Node 20/22/24 LTS | bundled | `typescript-language-server --stdio` |
-| TypeScript | TypeScript 5.x, Node 20/22/24 LTS | bundled | `typescript-language-server --stdio` |
-| Go | 1.21 -- 1.25 | bundled | `gopls serve` |
-| C | C11, C17, C23 | attach | `tcp://127.0.0.1:2087` |
-| C++ | C++17, C++20, C++23 | attach | `tcp://127.0.0.1:2088` |
-| Java | 11, 17, 21, 25 | attach | `tcp://127.0.0.1:2089` |
-
-The Docker image bundles Python and JS/TS LSP runtimes. For attach-based languages, expose the language server on a TCP port and use `astrograph_lsp_setup` to bind.
+| Language | Versions | Default endpoint |
+|----------|----------|-----------------|
+| Python | 3.11 -- 3.14 | `tcp://127.0.0.1:2090` |
+| JavaScript | ES2021+, Node 20/22/24 LTS | `tcp://127.0.0.1:2092` |
+| TypeScript | TypeScript 5.x, Node 20/22/24 LTS | `tcp://127.0.0.1:2093` |
+| Go | 1.21 -- 1.25 | `tcp://127.0.0.1:2091` |
+| C | C11, C17, C23 | `tcp://127.0.0.1:2087` |
+| C++ | C++17, C++20, C++23 | `tcp://127.0.0.1:2088` |
+| Java | 11, 17, 21, 25 | `tcp://127.0.0.1:2089` |
 
 ## Star History
 

@@ -3,7 +3,7 @@ MCP server for code structure analysis.
 
 Auto-indexes the codebase at startup and maintains the index via file watching.
 
-Provides 10 tools (all prefixed with astrograph_):
+Provides 12 tools (all prefixed with astrograph_):
 - astrograph_analyze: Find duplicates and similar patterns
 - astrograph_write: Write file with duplicate detection (blocks if duplicate exists)
 - astrograph_edit: Edit file with duplicate detection (blocks if duplicate exists)
@@ -11,7 +11,7 @@ Provides 10 tools (all prefixed with astrograph_):
 - astrograph_unsuppress: Unsuppress one or more hashes (string or array)
 - astrograph_list_suppressions: List all suppressed hashes
 - astrograph_status: Check server readiness (returns instantly even during indexing)
-- astrograph_lsp_setup: Inspect/bind LSP commands or attach endpoints for bundled language plugins
+- astrograph_lsp_setup: Inspect/bind LSP commands or attach endpoints for language plugins
 - astrograph_metadata_erase: Erase all persisted metadata
 - astrograph_metadata_recompute_baseline: Erase metadata and re-index from scratch
 
@@ -143,9 +143,9 @@ def create_server() -> Server:
             Tool(
                 name="astrograph_lsp_setup",
                 description=(
-                    "Inspect and configure deterministic LSP command bindings "
-                    "for bundled language plugins. Returns a guided recommended_actions "
-                    "plan for search/install/config workflows."
+                    "Inspect and configure LSP command bindings for language plugins. "
+                    "All languages require explicit setup via bind or auto_bind. "
+                    "Returns a guided recommended_actions plan."
                 ),
                 inputSchema={
                     "type": "object",

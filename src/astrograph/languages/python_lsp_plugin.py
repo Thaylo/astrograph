@@ -20,9 +20,7 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
     LSP_LANGUAGE_ID = "python"
     FILE_EXTENSIONS = frozenset({".py", ".pyi"})
     SKIP_DIRS = frozenset({"__pycache__", "venv", ".venv", ".tox", ".mypy_cache"})
-    DEFAULT_COMMAND = ("pylsp",)
-    COMMAND_ENV_VAR = "ASTROGRAPH_PY_LSP_COMMAND"
-    TIMEOUT_ENV_VAR = "ASTROGRAPH_PY_LSP_TIMEOUT"
+    DEFAULT_COMMAND = ("tcp://127.0.0.1:2090",)
 
     def __init__(self, lsp_client: LSPClient | None = None) -> None:
         super().__init__(lsp_client=lsp_client)

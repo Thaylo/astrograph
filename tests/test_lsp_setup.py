@@ -13,6 +13,7 @@ import pytest
 import astrograph.lsp_setup as lsp_setup
 from astrograph.lsp_setup import (
     auto_bind_missing_servers,
+    bundled_lsp_specs,
     collect_lsp_statuses,
     language_variant_policy,
     load_lsp_bindings,
@@ -61,52 +62,42 @@ def _make_fake_probe(endpoint: str):
 
 
 @pytest.mark.parametrize(
-    ("binding", "env_command", "expected_source", "expected_command"),
+    ("binding", "expected_source", "expected_command"),
     [
-        (["custom-pylsp"], "env-pylsp", "binding", ["custom-pylsp"]),
-        (None, "python -m pylsp", "env", ["python", "-m", "pylsp"]),
+        (["custom-pylsp"], "binding", ["custom-pylsp"]),
+        (None, "default", ["pylsp"]),
     ],
 )
 def test_resolve_lsp_command_precedence(
     tmp_path,
     binding,
-    env_command,
     expected_source,
     expected_command,
 ):
     if binding is not None:
         save_lsp_bindings({"python": binding}, workspace=tmp_path)
 
-    with patch.dict(os.environ, {"ASTROGRAPH_PY_LSP_COMMAND": env_command}, clear=False):
-        command, source = resolve_lsp_command(
-            language_id="python",
-            default_command=("pylsp",),
-            command_env_var="ASTROGRAPH_PY_LSP_COMMAND",
-            workspace=tmp_path,
-        )
+    command, source = resolve_lsp_command(
+        language_id="python",
+        default_command=("pylsp",),
+        workspace=tmp_path,
+    )
 
     assert source == expected_source
     assert command == expected_command
 
 
 def test_auto_bind_missing_servers_uses_agent_observations(tmp_path):
-    with patch.dict(
-        os.environ,
-        {
-            "ASTROGRAPH_PY_LSP_COMMAND": "missing-python-lsp-xyz",
-            "ASTROGRAPH_JS_LSP_COMMAND": "missing-js-lsp-xyz",
-        },
-        clear=False,
-    ):
-        result = auto_bind_missing_servers(
-            workspace=tmp_path,
-            observations=[
-                {
-                    "language": "python",
-                    "command": [sys.executable, "-m", "pylsp"],
-                }
-            ],
-        )
+    # No bindings → python is unconfigured → auto_bind should use the observation
+    result = auto_bind_missing_servers(
+        workspace=tmp_path,
+        observations=[
+            {
+                "language": "python",
+                "command": [sys.executable, "-m", "pylsp"],
+            }
+        ],
+    )
 
     python_change = next(change for change in result["changes"] if change["language"] == "python")
     assert python_change["source"] == "observation"
@@ -192,9 +183,6 @@ def test_probe_command_attach_tcp_endpoint_falls_back_across_address_families(mo
 
 
 def test_auto_bind_missing_servers_accepts_attach_observations(tmp_path, monkeypatch):
-    # Force the default c_lsp endpoint to be unreachable so auto_bind
-    # falls through to the observation candidate.
-    monkeypatch.setenv("ASTROGRAPH_C_LSP_COMMAND", "tcp://127.0.0.1:1")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
@@ -562,3 +550,106 @@ def test_subprocess_version_unsupported(
     )
     assert result["available"] is expect_available
     assert result["verification"]["state"] == expect_state
+
+
+# ---------------------------------------------------------------------------
+# Unbundled architecture: all languages use TCP attach
+# ---------------------------------------------------------------------------
+
+
+class TestUnbundledLSPSpecs:
+    """Verify bundled_lsp_specs() reflects the fully unbundled architecture."""
+
+    def test_all_specs_use_tcp_defaults(self):
+        """Every language must default to a tcp:// endpoint."""
+        for spec in bundled_lsp_specs():
+            cmd = " ".join(spec.default_command)
+            assert cmd.startswith("tcp://"), (
+                f"{spec.language_id} default_command should be tcp://, got {cmd}"
+            )
+
+    def test_all_specs_are_optional(self):
+        """No language should be required — all are attach-mode."""
+        for spec in bundled_lsp_specs():
+            assert spec.required is False, f"{spec.language_id} should have required=False"
+
+    def test_no_duplicate_ports(self):
+        """Each language must have a unique TCP port."""
+        ports = []
+        for spec in bundled_lsp_specs():
+            endpoint = parse_attach_endpoint(spec.default_command[0])
+            assert endpoint is not None, f"{spec.language_id} is not a valid TCP endpoint"
+            ports.append(endpoint["port"])
+        assert len(ports) == len(set(ports)), f"Duplicate ports: {ports}"
+
+    def test_plugin_defaults_match_specs(self):
+        """Plugin DEFAULT_COMMAND constants must agree with bundled_lsp_specs()."""
+        from astrograph.languages.c_lsp_plugin import CLSPPlugin
+        from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
+        from astrograph.languages.go_lsp_plugin import GoLSPPlugin
+        from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
+        from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
+        from astrograph.languages.python_lsp_plugin import PythonLSPPlugin
+        from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
+
+        plugin_map = {
+            "python": PythonLSPPlugin,
+            "javascript_lsp": JavaScriptLSPPlugin,
+            "typescript_lsp": TypeScriptLSPPlugin,
+            "go_lsp": GoLSPPlugin,
+            "c_lsp": CLSPPlugin,
+            "cpp_lsp": CppLSPPlugin,
+            "java_lsp": JavaLSPPlugin,
+        }
+
+        for spec in bundled_lsp_specs():
+            plugin_cls = plugin_map.get(spec.language_id)
+            if plugin_cls is None:
+                continue
+            assert spec.default_command == plugin_cls.DEFAULT_COMMAND, (
+                f"{spec.language_id}: spec {spec.default_command} != "
+                f"plugin {plugin_cls.DEFAULT_COMMAND}"
+            )
+
+    def test_expected_port_assignments(self):
+        """Verify the canonical port mapping."""
+        expected = {
+            "c_lsp": 2087,
+            "cpp_lsp": 2088,
+            "java_lsp": 2089,
+            "python": 2090,
+            "go_lsp": 2091,
+            "javascript_lsp": 2092,
+            "typescript_lsp": 2093,
+        }
+        for spec in bundled_lsp_specs():
+            endpoint = parse_attach_endpoint(spec.default_command[0])
+            assert endpoint is not None
+            assert endpoint["port"] == expected[spec.language_id], (
+                f"{spec.language_id}: expected port {expected[spec.language_id]}, "
+                f"got {endpoint['port']}"
+            )
+
+
+class TestFailFastUnconfigured:
+    """Unconfigured languages (no binding, no env) must fail fast — no probe attempted."""
+
+    def test_unconfigured_language_is_immediately_unavailable(self, tmp_path):
+        """collect_lsp_statuses marks default-sourced languages as not_configured."""
+        with patch.dict(os.environ, {}, clear=True):
+            statuses = collect_lsp_statuses(workspace=tmp_path)
+
+        for status in statuses:
+            assert status["effective_source"] == "default"
+            assert status["available"] is False
+            assert status["verification_state"] == "not_configured"
+
+    def test_configured_language_is_probed(self, tmp_path):
+        """A bound language should NOT be marked not_configured."""
+        save_lsp_bindings({"python": ["nonexistent-pylsp-xyz"]}, workspace=tmp_path)
+        statuses = collect_lsp_statuses(workspace=tmp_path)
+
+        python_status = next(s for s in statuses if s["language"] == "python")
+        assert python_status["effective_source"] == "binding"
+        # It was probed (not fast-failed) — verification_state reflects the probe result
+        assert python_status["verification_state"] != "not_configured"
