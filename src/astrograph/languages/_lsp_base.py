@@ -357,24 +357,15 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
         include base-class signals (type hints, operator plus).
         """
         signals: list[SemanticSignal] = []
-        if self._has_type_hints(source):
-            signals.append(
-                SemanticSignal(
-                    key="typing.channel", value="annotated", confidence=0.65, origin="syntax"
+        for check, key, value, confidence in (
+            (self._has_type_hints, "typing.channel", "annotated", 0.65),
+            (_PLUS_EXPR_RE.search, "operator.plus.present", "yes", 0.8),
+            (_OPERATOR_PLUS_DECL_RE.search, "operator.plus.declared", "yes", 0.95),
+        ):
+            if check(source):
+                signals.append(
+                    SemanticSignal(key=key, value=value, confidence=confidence, origin="syntax")
                 )
-            )
-        if _PLUS_EXPR_RE.search(source):
-            signals.append(
-                SemanticSignal(
-                    key="operator.plus.present", value="yes", confidence=0.8, origin="syntax"
-                )
-            )
-        if _OPERATOR_PLUS_DECL_RE.search(source):
-            signals.append(
-                SemanticSignal(
-                    key="operator.plus.declared", value="yes", confidence=0.95, origin="syntax"
-                )
-            )
         return signals
 
     def _strip_literals(self, line: str) -> str:

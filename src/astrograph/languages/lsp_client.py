@@ -26,6 +26,25 @@ from ._semantic_tokens import (
 logger = logging.getLogger(__name__)
 
 
+def _parse_content_length(headers: dict[str, str]) -> int:
+    """Extract Content-Length from LSP headers, returning 0 on failure."""
+    try:
+        return max(0, int(headers.get("content-length", "0")))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _decode_lsp_payload(payload: bytes, content_length: int) -> dict[str, Any] | None:
+    """Validate length and decode a JSON-RPC payload."""
+    if len(payload) != content_length:
+        return None
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
 class SubprocessLSPClient(LSPClient):
     """Minimal synchronous LSP client over stdio JSON-RPC framing."""
 
@@ -151,22 +170,12 @@ class SubprocessLSPClient(LSPClient):
             name, value = line.split(":", 1)
             headers[name.strip().lower()] = value.strip()
 
-        try:
-            content_length = int(headers.get("content-length", "0"))
-        except (ValueError, TypeError):
-            return None
+        content_length = _parse_content_length(headers)
         if content_length <= 0:
             return None
 
         payload = stdout.read(content_length)
-        if len(payload) != content_length:
-            return None
-
-        try:
-            decoded = json.loads(payload.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-        return decoded if isinstance(decoded, dict) else None
+        return _decode_lsp_payload(payload, content_length)
 
     def _request(
         self,
@@ -616,10 +625,7 @@ class SocketLSPClient(SubprocessLSPClient):
             name, value = line.split(":", 1)
             headers[name.strip().lower()] = value.strip()
 
-        try:
-            content_length = int(headers.get("content-length", "0"))
-        except (ValueError, TypeError):
-            return None
+        content_length = _parse_content_length(headers)
         if content_length <= 0:
             return None
 
@@ -633,14 +639,7 @@ class SocketLSPClient(SubprocessLSPClient):
         except OSError:
             return None
 
-        if len(payload) != content_length:
-            return None
-
-        try:
-            decoded = json.loads(payload.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-        return decoded if isinstance(decoded, dict) else None
+        return _decode_lsp_payload(payload, content_length)
 
     def close(self, *, force: bool = False) -> None:
         with self._lock:

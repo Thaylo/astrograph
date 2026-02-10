@@ -177,17 +177,19 @@ class EntryStore:
     # Hot metadata access (no full entry load)
     # ------------------------------------------------------------------
 
-    def get_node_count(self, eid: str) -> int | None:
-        """Get node_count from hot metadata without loading the full entry."""
+    def _get_meta_attr(self, eid: str, attr: str):
+        """Thread-safe access to a single hot-metadata attribute."""
         with self._lock:
             meta = self._meta.get(eid)
-            return meta.node_count if meta else None
+            return getattr(meta, attr) if meta else None
+
+    def get_node_count(self, eid: str) -> int | None:
+        """Get node_count from hot metadata without loading the full entry."""
+        return self._get_meta_attr(eid, "node_count")
 
     def get_hierarchy_hashes(self, eid: str) -> list[str] | None:
         """Get hierarchy_hashes from hot metadata without loading the full entry."""
-        with self._lock:
-            meta = self._meta.get(eid)
-            return meta.hierarchy_hashes if meta else None
+        return self._get_meta_attr(eid, "hierarchy_hashes")
 
     def get_meta(self, eid: str) -> EntryMeta | None:
         """Get full hot metadata for bucket cleanup in remove_file()."""
