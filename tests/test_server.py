@@ -296,7 +296,9 @@ def _with_indexed_temp_file(tools: CodeStructureTools, content: str, fn):
 @pytest.fixture
 def tools():
     """Create a fresh tools instance for each test."""
-    return CodeStructureTools()
+    t = CodeStructureTools()
+    yield t
+    t.close()
 
 
 @pytest.fixture

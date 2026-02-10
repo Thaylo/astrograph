@@ -729,7 +729,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
             if f.get("keep"):
                 result.append(f"   Keep: {f['keep']} ({f['keep_reason']})")
-            result.append(f'   suppress(wl_hash="{wl_hash}")')
+            result.append(f'   Action: refactor to eliminate duplication, or suppress(wl_hash="{wl_hash}") if intentional.')
             result.append("")
             return result
 
@@ -785,7 +785,7 @@ class CodeStructureTools(CloseOnExitMixin):
             summary_parts.append(
                 f"Details: {PERSISTENCE_DIR}/{report_path.name} ({line_count_report} lines)"
             )
-            summary_parts.append("Read the file to see locations and suppress commands.")
+            summary_parts.append("Read the file to see locations and refactoring opportunities.\nRefactor duplicates first. Only suppress intentional patterns (API symmetry, test isolation, framework boilerplate).")
             return ToolResult(invalidation_warning + "\n".join(summary_parts))
 
         # Fallback: file write failed or no indexed path — return full output inline
@@ -1284,6 +1284,7 @@ class CodeStructureTools(CloseOnExitMixin):
             parts.append(f"{len(not_found)} not found: {shown}")
         parts = parts or ["No hashes provided."]
         if changed and suppress:
+            parts.append("Reminder: suppression hides duplicates — refactoring eliminates them.")
             parts.append("Run analyze to refresh.")
         return ToolResult(prefix + " ".join(parts))
 

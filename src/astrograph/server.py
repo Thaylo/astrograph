@@ -92,7 +92,7 @@ def create_server() -> Server:
             ),
             Tool(
                 name="astrograph_suppress",
-                description="Suppress a duplicate by WL hash (from analyze output).",
+                description="Suppress a duplicate by WL hash (from analyze output). Only suppress AFTER confirming the duplication is intentional (e.g. API symmetry, test isolation). Refactoring should be the default action for duplicates.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -411,9 +411,10 @@ def create_server() -> Server:
                             f"Here is the latest ASTrograph duplicate analysis report "
                             f"(focus: {focus_label}):\n\n{analysis_text}\n\n"
                             "For each duplicate group, decide one of:\n"
-                            "- SUPPRESS: acceptable duplication, suppress with "
-                            "astrograph_suppress(wl_hash=...)\n"
-                            "- REFACTOR: extract shared logic to eliminate the duplication\n"
+                            "- REFACTOR (preferred): extract shared logic to eliminate the duplication\n"
+                            "- SUPPRESS (requires justification): only for intentional duplication "
+                            "(API symmetry, test isolation, framework boilerplate). "
+                            "Explain WHY the duplication is acceptable.\n"
                             "- SKIP: needs more context before deciding\n\n"
                             "Provide your decision and reasoning for each group."
                         ),
