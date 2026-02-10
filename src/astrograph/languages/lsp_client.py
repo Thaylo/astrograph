@@ -534,6 +534,7 @@ class SocketLSPClient(SubprocessLSPClient):
         *,
         request_timeout: float = 5.0,
         initialization_options: dict[str, Any] | None = None,
+        path_prefix_map: tuple[str, str] | None = None,
     ) -> None:
         parsed_endpoint = parse_attach_endpoint([endpoint])
         if parsed_endpoint is None:
@@ -545,9 +546,18 @@ class SocketLSPClient(SubprocessLSPClient):
             initialization_options=initialization_options,
         )
         self._endpoint = parsed_endpoint
+        self._path_prefix_map = path_prefix_map  # (container_prefix, host_prefix)
         self._sock: socket.socket | None = None
         self._stdin: BinaryIO | None = None
         self._stdout: BinaryIO | None = None
+
+    def _path_to_uri(self, file_path: str) -> str:
+        # Translate container paths to host paths for host-side LSP servers.
+        if self._path_prefix_map is not None:
+            container_pfx, host_pfx = self._path_prefix_map
+            if file_path.startswith(container_pfx):
+                file_path = host_pfx + file_path[len(container_pfx):]
+        return super()._path_to_uri(file_path)
 
     def _start_process(self) -> bool:
         with self._lock:
@@ -689,6 +699,12 @@ def create_lsp_client(
     request_timeout = max(request_timeout, 0.1)
     endpoint = parse_attach_endpoint(command)
     if endpoint is not None:
-        return SocketLSPClient(command[0], request_timeout=request_timeout)
+        from ..lsp_setup import get_docker_path_map
+
+        return SocketLSPClient(
+            command[0],
+            request_timeout=request_timeout,
+            path_prefix_map=get_docker_path_map(),
+        )
 
     return SubprocessLSPClient(command, request_timeout=request_timeout)

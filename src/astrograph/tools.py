@@ -555,6 +555,13 @@ class CodeStructureTools(CloseOnExitMixin):
             # container_path is exactly "/workspace" — host_path IS the root
             self._host_root = host_path
 
+        # Propagate mapping to LSP layer so SocketLSPClient translates
+        # container paths (/workspace/…) to host paths in URIs.
+        if self._host_root is not None:
+            from .lsp_setup import set_docker_path_map
+
+            set_docker_path_map("/workspace", self._host_root)
+
     def _format_locations(self, entries: list[IndexEntry]) -> list[str]:
         """Format entry locations for output."""
         return [

@@ -37,6 +37,24 @@ def set_active_workspace(workspace: str | Path | None) -> None:
     else:
         _active_workspace = None
 
+
+# Docker→host path mapping: set by tools._learn_host_root so that
+# SocketLSPClient translates container paths (/workspace/…) to host
+# paths before sending URIs to host-side LSP servers via socat bridge.
+_docker_path_map: tuple[str, str] | None = None  # (container_prefix, host_prefix)
+
+
+def set_docker_path_map(container_root: str, host_root: str) -> None:
+    """Store the Docker container→host path mapping for LSP URI translation."""
+    global _docker_path_map
+    _docker_path_map = (container_root.rstrip("/"), host_root.rstrip("/"))
+
+
+def get_docker_path_map() -> tuple[str, str] | None:
+    """Return (container_prefix, host_prefix) if a mapping is known."""
+    return _docker_path_map
+
+
 _SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 _VALIDATION_MODES = frozenset({"production", "bootstrap"})
 _VALIDATION_MODE_ALIASES = {"relaxed": "bootstrap"}
@@ -318,7 +336,9 @@ def _probe_attach_lsp_semantics(
     probe_path = workspace_root / PERSISTENCE_DIR / probe["suffix"]
     probe_path.parent.mkdir(parents=True, exist_ok=True)
 
-    client = SocketLSPClient(parsed[0], request_timeout=timeout)
+    client = SocketLSPClient(
+        parsed[0], request_timeout=timeout, path_prefix_map=get_docker_path_map()
+    )
     symbols: list[Any] = []
     handshake_ok = False
     try:
