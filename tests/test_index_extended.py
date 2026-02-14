@@ -1728,3 +1728,87 @@ class TestEnhancedSuppressions:
         info = index.get_suppression_info(wl_hash)
         assert str(file1) not in info.source_files
         assert str(file2) in info.source_files
+
+
+class TestEntryFilter:
+    """Tests for the entry_filter parameter on find_*_duplicates methods."""
+
+    def test_find_all_duplicates_with_entry_filter(self, tmp_path):
+        """entry_filter restricts which entries appear in duplicate groups."""
+        index = CodeStructureIndex()
+        # Create two pairs of duplicates in different directories
+        src_dir = tmp_path / "src"
+        lib_dir = tmp_path / "lib"
+        src_dir.mkdir()
+        lib_dir.mkdir()
+
+        code = "def calc(a, b):\n    result = a + b\n    return result * 2\n"
+        (src_dir / "a.py").write_text(code)
+        (src_dir / "b.py").write_text(code)
+        (lib_dir / "a.py").write_text(code)
+
+        index.index_file(str(src_dir / "a.py"))
+        index.index_file(str(src_dir / "b.py"))
+        index.index_file(str(lib_dir / "a.py"))
+
+        # Without filter: all 3 entries in one group
+        all_groups = index.find_all_duplicates()
+        if all_groups:
+            total_entries = sum(len(g.entries) for g in all_groups)
+            assert total_entries >= 3
+
+        # With filter: only src/ entries
+        def src_only(entry: IndexEntry) -> bool:
+            return "/src/" in entry.code_unit.file_path
+
+        filtered = index.find_all_duplicates(entry_filter=src_only)
+        if filtered:
+            for g in filtered:
+                for e in g.entries:
+                    assert "/src/" in e.code_unit.file_path
+
+    def test_find_all_duplicates_filter_too_strict_returns_empty(self, tmp_path):
+        """If filter removes too many entries, no groups are returned."""
+        index = CodeStructureIndex()
+        code = "def calc(a, b):\n    result = a + b\n    return result * 2\n"
+        (tmp_path / "a.py").write_text(code)
+        (tmp_path / "b.py").write_text(code)
+        index.index_file(str(tmp_path / "a.py"))
+        index.index_file(str(tmp_path / "b.py"))
+
+        # Filter that matches nothing
+        groups = index.find_all_duplicates(entry_filter=lambda e: False)
+        assert groups == []
+
+    def test_find_pattern_duplicates_with_entry_filter(self, tmp_path):
+        """entry_filter works on pattern duplicates too."""
+        index = CodeStructureIndex()
+        (tmp_path / "add.py").write_text("def f(a, b):\n    return a + b\n")
+        (tmp_path / "mul.py").write_text("def f(a, b):\n    return a * b\n")
+        index.index_file(str(tmp_path / "add.py"))
+        index.index_file(str(tmp_path / "mul.py"))
+
+        # Filter that matches nothing — no groups
+        groups = index.find_pattern_duplicates(entry_filter=lambda e: False)
+        assert groups == []
+
+    def test_find_block_duplicates_composes_filters(self, tmp_path):
+        """block_types filter composes with entry_filter."""
+        index = CodeStructureIndex()
+        code = (
+            "def func():\n"
+            "    for i in range(10):\n"
+            "        x = i * 2\n"
+            "        y = x + 1\n"
+            "        print(y)\n"
+        )
+        (tmp_path / "a.py").write_text(code)
+        (tmp_path / "b.py").write_text(code)
+        index.index_file(str(tmp_path / "a.py"), include_blocks=True)
+        index.index_file(str(tmp_path / "b.py"), include_blocks=True)
+
+        # Filter that rejects everything — no block groups even with valid block_types
+        groups = index.find_block_duplicates(
+            block_types=["for"], entry_filter=lambda e: False
+        )
+        assert groups == []

@@ -324,28 +324,38 @@ class EventDrivenIndex(CloseOnExitMixin):
     def get_cached_analysis(
         self,
         min_node_count: int = 5,
+        entry_filter: Callable | None = None,
     ) -> tuple[list[DuplicateGroup], list[DuplicateGroup], list[DuplicateGroup]]:
         """
         Get analysis results, using cache if available.
 
+        When ``entry_filter`` is provided the cache is bypassed because
+        scoped results differ from the global cached results.
+
         Returns (exact_duplicates, pattern_duplicates, block_duplicates).
         """
-        # Cache is always computed with min_node_count=5; only use it
-        # when the caller requests the same threshold.
-        if min_node_count == 5:
+        # Cache is always computed with min_node_count=5 and no filter;
+        # only use it when the caller requests the same threshold and no filter.
+        if min_node_count == 5 and entry_filter is None:
             cached = self._cache.get()
             if cached is not None:
                 self._cache_hits += 1
                 return cached
 
-        # Cache miss or different threshold - compute synchronously
+        # Cache miss, different threshold, or scoped query - compute synchronously
         self._cache_misses += 1
-        exact = self.index.find_all_duplicates(min_node_count=min_node_count)
-        pattern = self.index.find_pattern_duplicates(min_node_count=min_node_count)
-        blocks = self.index.find_block_duplicates(min_node_count=min_node_count)
+        exact = self.index.find_all_duplicates(
+            min_node_count=min_node_count, entry_filter=entry_filter
+        )
+        pattern = self.index.find_pattern_duplicates(
+            min_node_count=min_node_count, entry_filter=entry_filter
+        )
+        blocks = self.index.find_block_duplicates(
+            min_node_count=min_node_count, entry_filter=entry_filter
+        )
 
-        # Only populate cache when using the standard threshold
-        if min_node_count == 5:
+        # Only populate cache when using the standard threshold without filter
+        if min_node_count == 5 and entry_filter is None:
             self._cache.set(exact, pattern, blocks)
         return exact, pattern, blocks
 

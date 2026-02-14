@@ -1065,12 +1065,22 @@ class CodeStructureIndex:
                 info.source_files.remove(deleted)
             info.file_hashes.pop(deleted, None)
 
-    def find_all_duplicates(self, min_node_count: int = 5) -> list[DuplicateGroup]:
+    def find_all_duplicates(
+        self,
+        min_node_count: int = 5,
+        entry_filter: Callable | None = None,
+    ) -> list[DuplicateGroup]:
         """Find all groups of structurally equivalent code units."""
         with self._lock:
-            return self._find_duplicates_in_buckets(self.hash_buckets, min_node_count)
+            return self._find_duplicates_in_buckets(
+                self.hash_buckets, min_node_count, entry_filter
+            )
 
-    def find_pattern_duplicates(self, min_node_count: int = 5) -> list[DuplicateGroup]:
+    def find_pattern_duplicates(
+        self,
+        min_node_count: int = 5,
+        entry_filter: Callable | None = None,
+    ) -> list[DuplicateGroup]:
         """
         Find groups of code with same pattern but different operators.
 
@@ -1085,7 +1095,9 @@ class CodeStructureIndex:
         """
         with self._lock:
             # Get candidate groups using shared logic
-            groups = self._find_duplicates_in_buckets(self.pattern_buckets, min_node_count)
+            groups = self._find_duplicates_in_buckets(
+                self.pattern_buckets, min_node_count, entry_filter
+            )
 
             # Exclude groups where ALL entries are exact duplicates of each other
             exact_hashes = {h for h, ids in self.hash_buckets.items() if len(ids) >= 2}
@@ -1101,6 +1113,7 @@ class CodeStructureIndex:
         self,
         min_node_count: int = 5,
         block_types: list[str] | None = None,
+        entry_filter: Callable | None = None,
     ) -> list[DuplicateGroup]:
         """
         Find groups of structurally equivalent code blocks.
@@ -1109,11 +1122,12 @@ class CodeStructureIndex:
             min_node_count: Minimum AST node count to include (default 5)
             block_types: Optional list of block types to include (e.g., ['for', 'if']).
                         If None, includes all block types.
+            entry_filter: Optional filter function for entries.
 
         Returns:
             List of DuplicateGroup objects for duplicate blocks.
         """
-        entry_filter = None
+        combined_filter = entry_filter
         if block_types:
             block_types_set = set(block_types)
             if not block_types_set:
@@ -1122,11 +1136,19 @@ class CodeStructureIndex:
             def block_type_filter(e: IndexEntry) -> bool:
                 return e.code_unit.block_type in block_types_set
 
-            entry_filter = block_type_filter
+            if entry_filter is not None:
+                outer = entry_filter
+
+                def composed(e: IndexEntry) -> bool:
+                    return outer(e) and block_type_filter(e)
+
+                combined_filter = composed
+            else:
+                combined_filter = block_type_filter
 
         with self._lock:
             return self._find_duplicates_in_buckets(
-                self.block_buckets, min_node_count, entry_filter
+                self.block_buckets, min_node_count, combined_filter
             )
 
     def has_duplicates(self, min_node_count: int = 5) -> bool:

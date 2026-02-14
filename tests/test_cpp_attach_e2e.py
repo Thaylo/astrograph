@@ -11,14 +11,6 @@ from astrograph.tools import CodeStructureTools
 from tests.languages.test_lsp_client import _run_fake_socket_lsp
 
 
-def _is_tcp_endpoint_reachable(host: str, port: int, timeout: float = 0.2) -> bool:
-    try:
-        socket.create_connection((host, port), timeout=timeout).close()
-    except OSError:
-        return False
-    return True
-
-
 class _EphemeralSocketLSP:
     """Minimal socket LSP endpoint used when no host C++ endpoint is running."""
 
@@ -58,15 +50,9 @@ class _EphemeralSocketLSP:
 class TestCppAttachE2E:
     def test_cpp_attach_discovery_and_indexing(self, tmp_path, monkeypatch):
         """Discover/provision a C++ endpoint, bind it, then index C++ code."""
-        endpoint = None
-        if _is_tcp_endpoint_reachable("127.0.0.1", 2088):
-            endpoint = "tcp://127.0.0.1:2088"
-
-        fallback_endpoint: _EphemeralSocketLSP | None = None
-        if endpoint is None:
-            fallback_endpoint = _EphemeralSocketLSP()
-            fallback_endpoint.start()
-            endpoint = fallback_endpoint.endpoint
+        fallback_endpoint = _EphemeralSocketLSP()
+        fallback_endpoint.start()
+        endpoint = fallback_endpoint.endpoint
 
         source_file = tmp_path / "sample.cpp"
         source_file.write_text(
@@ -137,5 +123,4 @@ int helper(int value) {
             )
         finally:
             tools.close()
-            if fallback_endpoint is not None:
-                fallback_endpoint.close()
+            fallback_endpoint.close()

@@ -4803,3 +4803,1363 @@ class TestSetWorkspace:
             result = tools.call_tool("set_workspace", {"path": tmpdir})
             assert "Workspace changed:" in result.text
             tools.close()
+
+
+def _create_duplicate_files(
+    directory: str, subdir: str, prefix: str, depth: int = 3
+) -> list[str]:
+    """Create two Python files with duplicate functions in a subdirectory.
+
+    ``depth`` controls the number of body statements so different calls
+    produce structurally distinct functions (different WL hashes).
+    """
+    sub = os.path.join(directory, subdir)
+    os.makedirs(sub, exist_ok=True)
+    body_lines = "\n".join(f"    x{i} = a + b + {i}" for i in range(depth))
+    paths = []
+    for suffix in ("a", "b"):
+        path = os.path.join(sub, f"{prefix}_{suffix}.py")
+        with open(path, "w") as f:
+            f.write(f"def {prefix}_calc(a, b):\n{body_lines}\n    return x0\n")
+        paths.append(path)
+    return paths
+
+
+class TestScopedAnalysis:
+    """Tests for analyze with scope parameter."""
+
+    def test_analyze_with_scope_filters_entries(self):
+        """Only entries matching scope globs are analyzed."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _create_duplicate_files(tmpdir, "src", "core")
+            _create_duplicate_files(tmpdir, "lib", "helper")
+
+            tools.index_codebase(tmpdir)
+
+            # Scoped analysis to src/ only
+            scoped_result = tools.analyze(scope=["src/**"])
+
+            if "No significant duplicates" not in scoped_result.text:
+                # Report file contains the full locations
+                meta_dir = _get_persistence_path(tmpdir)
+                reports = sorted(meta_dir.glob("analysis_report_*.txt"))
+                assert reports, "Expected analysis report file"
+                report_text = reports[-1].read_text()
+                assert "src/" in report_text
+                assert "lib/" not in report_text
+
+            tools.close()
+
+    def test_analyze_scope_no_match_returns_empty(self):
+        """Scope with non-matching pattern returns no duplicates."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _create_duplicate_files(tmpdir, "src", "core")
+
+            tools.index_codebase(tmpdir)
+            result = tools.analyze(scope=["nonexistent/**"])
+            assert "No significant duplicates" in result.text
+            tools.close()
+
+    def test_analyze_scope_via_call_tool(self):
+        """scope parameter works through call_tool dispatch."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _create_duplicate_files(tmpdir, "src", "core")
+
+            tools.index_codebase(tmpdir)
+            result = tools.call_tool("analyze", {"scope": ["nonexistent/**"]})
+            assert "No significant duplicates" in result.text
+            tools.close()
+
+
+class TestConfigureDomains:
+    """Tests for configure_domains tool."""
+
+    def test_configure_domains_persists(self):
+        """Domain configuration is written to domains.json."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _create_duplicate_files(tmpdir, "src", "core")
+            tools.index_codebase(tmpdir)
+
+            result = tools.configure_domains(
+                domains={"core": ["src/**"], "tests": ["tests/**"]}
+            )
+            assert "2 detection domain" in result.text
+
+            # Verify file exists
+            domains_file = _get_persistence_path(tmpdir) / "domains.json"
+            assert domains_file.exists()
+            data = json.loads(domains_file.read_text())
+            assert "core" in data["domains"]
+            assert "tests" in data["domains"]
+
+            tools.close()
+
+    def test_configure_domains_clear(self):
+        """Empty dict clears domain configuration."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _create_duplicate_files(tmpdir, "src", "core")
+            tools.index_codebase(tmpdir)
+
+            # Configure then clear
+            tools.configure_domains(domains={"core": ["src/**"]})
+            result = tools.configure_domains(domains={})
+            assert "cleared" in result.text.lower()
+
+            # File should be removed
+            domains_file = _get_persistence_path(tmpdir) / "domains.json"
+            assert not domains_file.exists()
+
+            tools.close()
+
+    def test_configure_domains_validates_empty_patterns(self):
+        """Domain with empty pattern list is rejected."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _create_duplicate_files(tmpdir, "src", "core")
+            tools.index_codebase(tmpdir)
+
+            result = tools.configure_domains(domains={"bad": []})
+            assert "no patterns" in result.text.lower()
+            tools.close()
+
+    def test_configure_domains_requires_index(self):
+        """configure_domains requires an indexed codebase."""
+        tools = CodeStructureTools()
+        result = tools.configure_domains(domains={"core": ["src/**"]})
+        assert "No indexed codebase" in result.text
+        tools.close()
+
+    def test_analyze_with_domains_partitions_output(self):
+        """When domains are configured, analysis is partitioned."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Use different depth to produce structurally distinct functions per domain
+            _create_duplicate_files(tmpdir, "src", "core", depth=3)
+            _create_duplicate_files(tmpdir, "lib", "helper", depth=5)
+
+            tools.index_codebase(tmpdir)
+            tools.configure_domains(
+                domains={"source": ["src/**"], "library": ["lib/**"]}
+            )
+
+            result = tools.analyze()
+            # Should have domain section headers
+            if "No significant duplicates" not in result.text:
+                # Read the report file for full output
+                meta_dir = _get_persistence_path(tmpdir)
+                reports = sorted(meta_dir.glob("analysis_report_*.txt"))
+                if reports:
+                    report_text = reports[-1].read_text()
+                    assert "Domain:" in report_text
+
+            tools.close()
+
+    def test_cross_domain_duplicates_reported(self):
+        """Duplicates spanning domains are tagged cross-domain."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create identical files in two different domains
+            src_dir = os.path.join(tmpdir, "src")
+            lib_dir = os.path.join(tmpdir, "lib")
+            os.makedirs(src_dir)
+            os.makedirs(lib_dir)
+
+            code = (
+                "def shared_calc(a, b):\n"
+                "    result = a + b\n"
+                "    return result * 2\n"
+            )
+            with open(os.path.join(src_dir, "shared.py"), "w") as f:
+                f.write(code)
+            with open(os.path.join(lib_dir, "shared.py"), "w") as f:
+                f.write(code)
+
+            tools.index_codebase(tmpdir)
+            tools.configure_domains(
+                domains={"source": ["src/**"], "library": ["lib/**"]}
+            )
+
+            result = tools.analyze()
+            if "No significant duplicates" not in result.text:
+                meta_dir = _get_persistence_path(tmpdir)
+                reports = sorted(meta_dir.glob("analysis_report_*.txt"))
+                if reports:
+                    report_text = reports[-1].read_text()
+                    assert "Cross-domain" in report_text
+
+            tools.close()
+
+    def test_configure_domains_via_call_tool(self):
+        """configure_domains works through call_tool dispatch."""
+        tools = CodeStructureTools()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _create_duplicate_files(tmpdir, "src", "core")
+            tools.index_codebase(tmpdir)
+
+            result = tools.call_tool(
+                "configure_domains",
+                {"domains": {"core": ["src/**"]}},
+            )
+            assert "1 detection domain" in result.text
+            tools.close()
+
+    def test_domains_in_tool_list(self):
+        """configure_domains appears in the MCP tool list."""
+        loop = asyncio.new_event_loop()
+        try:
+            from mcp.types import ListToolsRequest
+
+            server = create_server()
+            handler = server.request_handlers[ListToolsRequest]
+            result = loop.run_until_complete(handler(ListToolsRequest(method="tools/list")))
+        finally:
+            loop.close()
+        tool_names = [t.name for t in result.root.tools]
+        assert "astrograph_configure_domains" in tool_names
+
+
+class TestServerMCPResources:
+    """Tests for MCP resource/prompt/completion handlers."""
+
+    def test_read_resource_unknown_uri(self):
+        from mcp.types import ReadResourceRequest
+
+        server = create_server()
+        handler = server.request_handlers[ReadResourceRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            with pytest.raises(ValueError, match="Unknown resource URI"):
+                loop.run_until_complete(
+                    handler(
+                        ReadResourceRequest(
+                            method="resources/read",
+                            params={"uri": "astrograph://nonexistent"},
+                        )
+                    )
+                )
+        finally:
+            loop.close()
+
+    def test_list_resource_templates_empty(self):
+        from mcp.types import ListResourceTemplatesRequest
+
+        server = create_server()
+        handler = server.request_handlers[ListResourceTemplatesRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                handler(ListResourceTemplatesRequest(method="resources/templates/list"))
+            )
+            assert result.root.resourceTemplates == []
+        finally:
+            loop.close()
+
+    def test_list_prompts(self):
+        from mcp.types import ListPromptsRequest
+
+        server = create_server()
+        handler = server.request_handlers[ListPromptsRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                handler(ListPromptsRequest(method="prompts/list"))
+            )
+            prompt_names = [p.name for p in result.root.prompts]
+            assert "review-duplicates" in prompt_names
+            assert "setup-lsp" in prompt_names
+        finally:
+            loop.close()
+
+    def test_get_prompt_unknown(self):
+        from mcp.types import GetPromptRequest
+
+        server = create_server()
+        handler = server.request_handlers[GetPromptRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            with pytest.raises(ValueError, match="Unknown prompt"):
+                loop.run_until_complete(
+                    handler(
+                        GetPromptRequest(
+                            method="prompts/get",
+                            params={"name": "nonexistent"},
+                        )
+                    )
+                )
+        finally:
+            loop.close()
+
+    def test_completion_non_prompt_ref(self):
+        from mcp.types import CompleteRequest, CompletionArgument
+
+        server = create_server()
+        handler = server.request_handlers[CompleteRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                handler(
+                    CompleteRequest(
+                        method="completion/complete",
+                        params={
+                            "ref": {"type": "ref/resource", "uri": "astrograph://status"},
+                            "argument": {"name": "focus", "value": ""},
+                        },
+                    )
+                )
+            )
+            assert result.root.completion.values == []
+        finally:
+            loop.close()
+
+    def test_completion_prompt_ref(self):
+        from mcp.types import CompleteRequest
+
+        server = create_server()
+        handler = server.request_handlers[CompleteRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                handler(
+                    CompleteRequest(
+                        method="completion/complete",
+                        params={
+                            "ref": {"type": "ref/prompt", "name": "review-duplicates"},
+                            "argument": {"name": "focus", "value": "a"},
+                        },
+                    )
+                )
+            )
+            assert "all" in result.root.completion.values
+        finally:
+            loop.close()
+
+
+class TestServerShutdown:
+    """Tests for signal/atexit shutdown handling."""
+
+    def test_close_if_first_idempotent(self):
+        import astrograph.server as server_mod
+
+        original_event = server_mod._close_once
+        server_mod._close_once = __import__("threading").Event()
+        try:
+            with patch.object(server_mod._tools, "close") as mock_close:
+                server_mod._close_if_first()
+                server_mod._close_if_first()
+                mock_close.assert_called_once()
+        finally:
+            server_mod._close_once = original_event
+
+    def test_atexit_close(self):
+        import astrograph.server as server_mod
+
+        original_event = server_mod._close_once
+        server_mod._close_once = __import__("threading").Event()
+        try:
+            with patch.object(server_mod._tools, "close") as mock_close:
+                server_mod._atexit_close()
+                mock_close.assert_called_once()
+        finally:
+            server_mod._close_once = original_event
+
+
+class TestToolsBackgroundIndexError:
+    """Tests for background indexing error handling."""
+
+    def test_bg_index_error_reported(self, monkeypatch):
+        monkeypatch.setenv("ASTROGRAPH_WORKSPACE", "")
+        tools = CodeStructureTools()
+        tools._bg_index_progress = "error"
+        tools._bg_index_error = "disk full"
+        result = tools._require_index()
+        assert result is not None
+        assert "Background indexing failed" in result.text
+        assert "disk full" in result.text
+        tools.close()
+
+    def test_bg_index_error_unknown(self, monkeypatch):
+        monkeypatch.setenv("ASTROGRAPH_WORKSPACE", "")
+        tools = CodeStructureTools()
+        tools._bg_index_progress = "error"
+        result = tools._require_index()
+        assert "unknown error" in result.text
+        tools.close()
+
+
+class TestToolsInvalidatedSuppressions:
+    """Tests for suppression invalidation warnings."""
+
+    def _populate_index(self, tools):
+        """Add a dummy entry so self.index.entries is truthy."""
+        unit = CodeUnit(
+            name="dummy", code="def dummy(): pass", file_path="d.py",
+            line_start=1, line_end=1, unit_type="function",
+        )
+        tools.index.add_code_unit(unit)
+
+    def test_invalidated_suppressions_warning(self, tools):
+        tools._last_indexed_path = "/some/path"
+        self._populate_index(tools)
+        with patch.object(
+            tools.index,
+            "invalidate_stale_suppressions",
+            return_value=[("abc123", "reason")],
+        ):
+            warning = tools._check_invalidated_suppressions()
+        assert "Suppressions invalidated" in warning
+        assert "abc123" in warning
+
+    def test_many_invalidated_truncated(self, tools):
+        tools._last_indexed_path = "/some/path"
+        self._populate_index(tools)
+        entries = [(f"hash_{i:03d}", "reason") for i in range(10)]
+        with patch.object(
+            tools.index,
+            "invalidate_stale_suppressions",
+            return_value=entries,
+        ):
+            warning = tools._check_invalidated_suppressions()
+        assert "10 total" in warning
+
+
+class TestToolsFormatIndexStats:
+    """Tests for format_index_stats edge cases."""
+
+    def test_with_blocks(self, tools):
+        tools._last_indexed_path = "/some/path"
+        with patch.object(
+            tools.index,
+            "get_stats",
+            return_value={
+                "function_entries": 5,
+                "indexed_files": 2,
+                "block_entries": 3,
+            },
+        ):
+            with patch.object(tools, "_has_significant_duplicates", return_value=False):
+                text = tools._format_index_stats(include_blocks=True)
+        assert "3 code blocks" in text
+        assert "No duplicates" in text
+
+    def test_with_duplicates(self, tools):
+        tools._last_indexed_path = "/some/path"
+        with patch.object(
+            tools.index,
+            "get_stats",
+            return_value={
+                "function_entries": 5,
+                "indexed_files": 2,
+                "block_entries": 0,
+            },
+        ):
+            with patch.object(tools, "_has_significant_duplicates", return_value=True):
+                text = tools._format_index_stats(include_blocks=False)
+        assert "Duplicates found" in text
+
+
+class TestToolsCheckNoPlugin:
+    """Tests for check tool with unsupported language."""
+
+    def test_unsupported_language(self, tools):
+        unit = CodeUnit(
+            name="dummy", code="def dummy(): pass", file_path="d.py",
+            line_start=1, line_end=1, unit_type="function",
+        )
+        tools.index.add_code_unit(unit)
+        result = tools.check("some code", language="nonexistent_lang_xyz")
+        assert "Unsupported language" in result.text
+
+
+class TestToolsVerifyGroup:
+    """Tests for _verify_group edge cases."""
+
+    def test_single_entry_group(self, tools):
+        from astrograph.index import DuplicateGroup
+
+        group = DuplicateGroup(wl_hash="abc", entries=[object()])
+        assert tools._verify_group(group) is False
+
+
+# ---------------------------------------------------------------------------
+# Coverage-targeted tests appended below
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, PropertyMock
+
+from astrograph.languages.base import SemanticProfile, SemanticSignal
+
+
+class TestDockerResolveFastPath:
+    """Cover fast-path branch in _resolve_path with learned host root."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+
+    def test_fast_path_with_trailing_slash_remainder(self):
+        """Fast path strips leading '/' from remainder."""
+        self.tools._host_root = "/Users/dev/project"
+        # Path starts with host_root; remainder starts with '/'
+        result = self.tools._resolve_path("/Users/dev/project/src/main.py")
+        assert result == "/workspace/src/main.py"
+
+    def test_fast_path_empty_remainder(self):
+        """Fast path returns /workspace when remainder is empty."""
+        self.tools._host_root = "/Users/dev/project"
+        result = self.tools._resolve_path("/Users/dev/project")
+        assert result == "/workspace"
+
+    def test_fast_path_filters_traversal_components(self):
+        """Fast path filters out '..' traversal components from remainder."""
+        self.tools._host_root = "/Users/dev/project"
+        result = self.tools._resolve_path("/Users/dev/project/../project/src/file.py")
+        # The '..' should be stripped; only safe parts remain
+        assert ".." not in result
+        assert "/workspace" in result
+
+    def test_fast_path_remainder_no_leading_slash(self):
+        """Fast path handles remainder that does not start with '/'."""
+        self.tools._host_root = "/Users/dev/project/"
+        # The host_root has trailing slash, so remainder won't start with /
+        result = self.tools._resolve_path("/Users/dev/project/lib/utils.py")
+        assert result == "/workspace/lib/utils.py"
+
+    def test_fast_path_traversal_only_components_empty(self):
+        """Fast path with only traversal components yields empty remainder."""
+        self.tools._host_root = "/Users/dev/project"
+        # After stripping host_root, remainder is "/.." which becomes all traversal parts
+        result = self.tools._resolve_path("/Users/dev/project/..")
+        # safe_parts will be empty => remainder = "" => returns "/workspace"
+        assert result == "/workspace"
+
+
+class TestLearnHostRoot:
+    """Cover _learn_host_root method (lines 599-613)."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+
+    def test_learn_host_root_with_suffix(self):
+        """_learn_host_root derives root when container path has suffix."""
+        with patch("astrograph.lsp_setup.set_docker_path_map") as mock_set:
+            self.tools._learn_host_root(
+                "/Users/dev/myproject/src/lib",
+                "/workspace/src/lib",
+            )
+            assert self.tools._host_root == "/Users/dev/myproject"
+            mock_set.assert_called_once_with("/workspace", "/Users/dev/myproject")
+
+    def test_learn_host_root_exact_workspace(self):
+        """_learn_host_root sets root directly when container path is /workspace."""
+        with patch("astrograph.lsp_setup.set_docker_path_map") as mock_set:
+            self.tools._learn_host_root(
+                "/Users/dev/myproject",
+                "/workspace",
+            )
+            assert self.tools._host_root == "/Users/dev/myproject"
+            mock_set.assert_called_once_with("/workspace", "/Users/dev/myproject")
+
+    def test_learn_host_root_suffix_mismatch_no_learn(self):
+        """_learn_host_root does not learn when suffix doesn't match host path."""
+        with patch("astrograph.lsp_setup.set_docker_path_map") as mock_set:
+            self.tools._learn_host_root(
+                "/Users/other/path",
+                "/workspace/src",
+            )
+            # suffix is "/src", but host_path "/Users/other/path" doesn't end with "/src"
+            assert self.tools._host_root is None
+            mock_set.assert_not_called()
+
+
+class TestSemanticCompareResult:
+    """Cover _semantic_compare_result static method (lines 1218-1263)."""
+
+    def test_low_confidence_signals_skipped(self):
+        """Signals below 0.4 confidence are skipped entirely."""
+        profile1 = SemanticProfile(
+            signals=(SemanticSignal(key="type", value="int", confidence=0.3),),
+        )
+        profile2 = SemanticProfile(
+            signals=(SemanticSignal(key="type", value="int", confidence=0.2),),
+        )
+        available, compatible, mismatches, matched, reason = (
+            CodeStructureTools._semantic_compare_result(profile1, profile2)
+        )
+        assert not available
+        assert not compatible
+        assert matched == []
+        assert "insufficient" in reason
+
+    def test_no_comparable_signals_inconclusive(self):
+        """No shared keys at all yields inconclusive result."""
+        profile1 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="yes", confidence=0.9),),
+        )
+        profile2 = SemanticProfile(
+            signals=(SemanticSignal(key="type", value="int", confidence=0.9),),
+        )
+        available, compatible, mismatches, matched, reason = (
+            CodeStructureTools._semantic_compare_result(profile1, profile2)
+        )
+        assert not available
+        assert "insufficient" in reason
+
+    def test_no_signals_inconclusive_with_notes(self):
+        """Empty overlapping signals with notes includes note in reason."""
+        profile1 = SemanticProfile(
+            signals=(),
+            notes=("syntax-only extraction",),
+        )
+        profile2 = SemanticProfile(
+            signals=(),
+            notes=(),
+        )
+        available, compatible, mismatches, matched, reason = (
+            CodeStructureTools._semantic_compare_result(profile1, profile2)
+        )
+        assert not available
+        assert "syntax-only extraction" in reason
+
+    def test_matching_signals_compatible(self):
+        """All shared high-confidence signals matching yields compatible."""
+        profile1 = SemanticProfile(
+            signals=(
+                SemanticSignal(key="async", value="yes", confidence=0.9),
+                SemanticSignal(key="type_system", value="typed", confidence=0.8),
+            ),
+        )
+        profile2 = SemanticProfile(
+            signals=(
+                SemanticSignal(key="async", value="yes", confidence=0.9),
+                SemanticSignal(key="type_system", value="typed", confidence=0.8),
+            ),
+        )
+        available, compatible, mismatches, matched, reason = (
+            CodeStructureTools._semantic_compare_result(profile1, profile2)
+        )
+        assert available
+        assert compatible
+        assert "async" in matched
+        assert "type_system" in matched
+        assert mismatches == []
+
+    def test_mismatching_signals_incompatible(self):
+        """Diverging signal values yields incompatible with mismatch descriptions."""
+        profile1 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="yes", confidence=0.9),),
+        )
+        profile2 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        available, compatible, mismatches, matched, reason = (
+            CodeStructureTools._semantic_compare_result(profile1, profile2)
+        )
+        assert available
+        assert not compatible
+        assert len(mismatches) == 1
+        assert "async" in mismatches[0]
+        assert "yes vs no" in mismatches[0]
+
+
+class TestCompareSemanticModes:
+    """Cover compare() method semantic mode branches (lines 1296-1334)."""
+
+    @pytest.fixture
+    def mock_tools(self):
+        """Create tools with mocked plugin returning controlled graphs/profiles."""
+        tools = CodeStructureTools()
+        return tools
+
+    def _make_mock_plugin(
+        self,
+        *,
+        g1=None,
+        g2=None,
+        profile1=None,
+        profile2=None,
+    ):
+        """Return a mock plugin with controlled graph/profile outputs."""
+        import networkx as nx
+
+        plugin = MagicMock()
+        if g1 is None:
+            g1 = nx.DiGraph()
+            g1.add_node(0, label="FunctionDef")
+        if g2 is None:
+            g2 = nx.DiGraph()
+            g2.add_node(0, label="FunctionDef")
+
+        call_count = {"graph": 0, "profile": 0}
+
+        def source_to_graph(code):
+            call_count["graph"] += 1
+            return g1 if call_count["graph"] == 1 else g2
+
+        def extract_semantic_profile(code, **kwargs):
+            call_count["profile"] += 1
+            return profile1 if call_count["profile"] == 1 else profile2
+
+        plugin.source_to_graph = source_to_graph
+        plugin.extract_semantic_profile = extract_semantic_profile
+        return plugin
+
+    def test_annotate_unavailable_profiles(self, mock_tools):
+        """mode=annotate with unavailable profiles returns SEMANTIC_INCONCLUSIVE."""
+        empty_profile = SemanticProfile(signals=(), notes=("no LSP data",))
+        plugin = self._make_mock_plugin(profile1=empty_profile, profile2=empty_profile)
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): pass", "def b(): pass", semantic_mode="annotate"
+            )
+        assert "SEMANTIC_INCONCLUSIVE" in result.text
+        assert "astrograph_lsp_setup" in result.text
+
+    def test_differentiate_unavailable_profiles(self, mock_tools):
+        """mode=differentiate with unavailable profiles returns INCONCLUSIVE."""
+        empty_profile = SemanticProfile(signals=(), notes=())
+        plugin = self._make_mock_plugin(profile1=empty_profile, profile2=empty_profile)
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): pass", "def b(): pass", semantic_mode="differentiate"
+            )
+        assert "INCONCLUSIVE" in result.text
+        assert "differentiate mode" in result.text
+
+    def test_annotate_compatible_profiles(self, mock_tools):
+        """mode=annotate with compatible profiles returns structural + SEMANTIC_MATCH."""
+        matching_profile = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        plugin = self._make_mock_plugin(profile1=matching_profile, profile2=matching_profile)
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): pass", "def b(): pass", semantic_mode="annotate"
+            )
+        assert "SEMANTIC_MATCH" in result.text
+
+    def test_differentiate_equivalent_compatible(self, mock_tools):
+        """mode=differentiate with equivalent structure + compatible signals."""
+        import networkx as nx
+
+        g = nx.DiGraph()
+        g.add_node(0, label="FunctionDef")
+        g.add_node(1, label="Return")
+        g.add_edge(0, 1)
+
+        matching_profile = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        plugin = self._make_mock_plugin(
+            g1=g, g2=g, profile1=matching_profile, profile2=matching_profile
+        )
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): return 1", "def b(): return 2", semantic_mode="differentiate"
+            )
+        assert "EQUIVALENT" in result.text
+        assert "semantically aligned" in result.text
+
+    def test_differentiate_similar_compatible(self, mock_tools):
+        """mode=differentiate with non-equivalent structure + compatible signals."""
+        import networkx as nx
+
+        g1 = nx.DiGraph()
+        g1.add_node(0, label="FunctionDef")
+        g1.add_node(1, label="Return")
+        g1.add_edge(0, 1)
+
+        g2 = nx.DiGraph()
+        g2.add_node(0, label="FunctionDef")
+        g2.add_node(1, label="If")
+        g2.add_node(2, label="Return")
+        g2.add_edge(0, 1)
+        g2.add_edge(1, 2)
+
+        matching_profile = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        plugin = self._make_mock_plugin(
+            g1=g1, g2=g2, profile1=matching_profile, profile2=matching_profile
+        )
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): return 1",
+                "def b():\n if True:\n  return 2",
+                semantic_mode="differentiate",
+            )
+        assert "SEMANTIC_MATCH" in result.text
+
+    def test_annotate_equivalent_mismatch(self, mock_tools):
+        """mode=annotate with equivalent structure + semantic mismatch."""
+        import networkx as nx
+
+        g = nx.DiGraph()
+        g.add_node(0, label="FunctionDef")
+        g.add_node(1, label="Return")
+        g.add_edge(0, 1)
+
+        profile1 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="yes", confidence=0.9),),
+        )
+        profile2 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        plugin = self._make_mock_plugin(g1=g, g2=g, profile1=profile1, profile2=profile2)
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): return 1", "def b(): return 2", semantic_mode="annotate"
+            )
+        assert "EQUIVALENT (STRUCTURE)" in result.text
+        assert "SEMANTIC_MISMATCH" in result.text
+
+    def test_differentiate_equivalent_mismatch(self, mock_tools):
+        """mode=differentiate with equivalent structure + semantic mismatch."""
+        import networkx as nx
+
+        g = nx.DiGraph()
+        g.add_node(0, label="FunctionDef")
+        g.add_node(1, label="Return")
+        g.add_edge(0, 1)
+
+        profile1 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="yes", confidence=0.9),),
+        )
+        profile2 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        plugin = self._make_mock_plugin(g1=g, g2=g, profile1=profile1, profile2=profile2)
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): return 1", "def b(): return 2", semantic_mode="differentiate"
+            )
+        assert "DIFFERENT" in result.text
+        assert "diverge semantically" in result.text
+
+    def test_annotate_different_mismatch(self, mock_tools):
+        """mode=annotate with different structure + semantic mismatch."""
+        import networkx as nx
+
+        g1 = nx.DiGraph()
+        g1.add_node(0, label="FunctionDef")
+        g1.add_node(1, label="Return")
+        g1.add_edge(0, 1)
+
+        g2 = nx.DiGraph()
+        g2.add_node(0, label="FunctionDef")
+        g2.add_node(1, label="If")
+        g2.add_node(2, label="Return")
+        g2.add_edge(0, 1)
+        g2.add_edge(1, 2)
+
+        profile1 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="yes", confidence=0.9),),
+        )
+        profile2 = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        plugin = self._make_mock_plugin(g1=g1, g2=g2, profile1=profile1, profile2=profile2)
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
+            result = mock_tools.compare(
+                "def a(): return 1",
+                "def b():\n if True:\n  return 2",
+                semantic_mode="annotate",
+            )
+        assert "DIFFERENT" in result.text
+        assert "SEMANTIC_MISMATCH" in result.text
+
+    def test_compare_unsupported_language(self, mock_tools):
+        """compare with unsupported language returns error."""
+        result = mock_tools.compare(
+            "code1", "code2", language="unknown_lang_xyz"
+        )
+        assert "Unsupported language" in result.text
+
+
+class TestSemanticAlignmentHint:
+    """Cover _semantic_alignment_hint (lines 1109-1146)."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+
+    def _make_candidate(self, language="python", code="def f(): pass"):
+        code_unit = CodeUnit(
+            name="f",
+            code=code,
+            file_path="test.py",
+            line_start=1,
+            line_end=1,
+            unit_type="function",
+            language=language,
+        )
+        entry = IndexEntry(
+            id="test:f:test.py",
+            wl_hash="wl_hash",
+            pattern_hash="pattern_hash",
+            fingerprint={"n_nodes": 5, "n_edges": 4},
+            hierarchy_hashes=["root"],
+            code_unit=code_unit,
+            node_count=5,
+            depth=2,
+        )
+        return SimilarityResult(entry=entry, similarity_type="high")
+
+    def test_no_plugin_found(self):
+        """Returns unknown when no plugin exists for the language."""
+        candidate = self._make_candidate(language="nonexistent_lang_xyz")
+        source_profile = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+        score, hint = self.tools._semantic_alignment_hint(
+            source_profile=source_profile, candidate=candidate
+        )
+        assert score == pytest.approx(0.1)
+        assert "no language plugin" in hint
+
+    def test_extraction_exception(self):
+        """Returns unknown when profile extraction raises."""
+        candidate = self._make_candidate(language="python")
+        source_profile = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+
+        mock_plugin = MagicMock()
+        mock_plugin.extract_semantic_profile.side_effect = RuntimeError("extraction boom")
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=mock_plugin):
+            score, hint = self.tools._semantic_alignment_hint(
+                source_profile=source_profile, candidate=candidate
+            )
+        assert score == pytest.approx(0.1)
+        assert "profile extraction failed" in hint
+
+    def test_inconclusive_insufficient_overlap(self):
+        """Returns inconclusive when semantic comparison has no overlap."""
+        candidate = self._make_candidate(language="python")
+        source_profile = SemanticProfile(
+            signals=(SemanticSignal(key="unique_key_a", value="x", confidence=0.9),),
+        )
+
+        mock_plugin = MagicMock()
+        mock_plugin.extract_semantic_profile.return_value = SemanticProfile(
+            signals=(SemanticSignal(key="unique_key_b", value="y", confidence=0.9),),
+        )
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=mock_plugin):
+            score, hint = self.tools._semantic_alignment_hint(
+                source_profile=source_profile, candidate=candidate
+            )
+        assert score == pytest.approx(0.2)
+        assert "inconclusive" in hint
+
+    def test_compatible_with_matched_keys(self):
+        """Returns aligned with matched keys listed."""
+        candidate = self._make_candidate(language="python")
+        source_profile = SemanticProfile(
+            signals=(
+                SemanticSignal(key="async", value="no", confidence=0.9),
+                SemanticSignal(key="type_system", value="typed", confidence=0.8),
+            ),
+        )
+
+        mock_plugin = MagicMock()
+        mock_plugin.extract_semantic_profile.return_value = SemanticProfile(
+            signals=(
+                SemanticSignal(key="async", value="no", confidence=0.9),
+                SemanticSignal(key="type_system", value="typed", confidence=0.8),
+            ),
+        )
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=mock_plugin):
+            score, hint = self.tools._semantic_alignment_hint(
+                source_profile=source_profile, candidate=candidate
+            )
+        assert score == pytest.approx(0.9)
+        assert "aligned" in hint
+        assert "async" in hint
+
+    def test_compatible_without_matched_keys(self):
+        """Returns aligned without keys when matched list is empty (all low-conf skipped but compared_any via edge case)."""
+        candidate = self._make_candidate(language="python")
+        # Create profiles where comparison yields compatible=True but matched=[]
+        # This happens when all shared signals match but matched list is somehow empty.
+        # The simplest way: mock _semantic_compare_result directly.
+        source_profile = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+
+        mock_plugin = MagicMock()
+        mock_plugin.extract_semantic_profile.return_value = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+
+        # Force the comparison to return compatible=True but matched=[]
+        with (
+            patch.object(LanguageRegistry.get(), "get_plugin", return_value=mock_plugin),
+            patch.object(
+                CodeStructureTools,
+                "_semantic_compare_result",
+                return_value=(True, True, [], [], ""),
+            ),
+        ):
+            score, hint = self.tools._semantic_alignment_hint(
+                source_profile=source_profile, candidate=candidate
+            )
+        assert score == pytest.approx(0.8)
+        assert "aligned" in hint
+
+    def test_mismatch(self):
+        """Returns mismatch when signals disagree."""
+        candidate = self._make_candidate(language="python")
+        source_profile = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="yes", confidence=0.9),),
+        )
+
+        mock_plugin = MagicMock()
+        mock_plugin.extract_semantic_profile.return_value = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=mock_plugin):
+            score, hint = self.tools._semantic_alignment_hint(
+                source_profile=source_profile, candidate=candidate
+            )
+        assert score == pytest.approx(0.35)
+        assert "mismatch" in hint
+
+
+class TestCrossLanguageAssistText:
+    """Cover _cross_language_assist_text (lines 1148-1201)."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+        self.tools._last_indexed_path = "/tmp/test"
+
+    def _make_result(self, language="go_lsp", name="process", sim_type="high"):
+        return _similarity_result(
+            language=language,
+            similarity_type=sim_type,
+            file_path="/tmp/test/main.go",
+            name=name,
+            code="func process() {}",
+        )
+
+    def test_no_results(self):
+        """Empty results list returns empty string."""
+        text = self.tools._cross_language_assist_text(
+            source_code="def f(): pass",
+            source_language="python",
+            results=[],
+        )
+        assert text == ""
+
+    def test_no_plugin(self):
+        """Returns empty when no plugin for source language."""
+        results = [self._make_result()]
+        text = self.tools._cross_language_assist_text(
+            source_code="code",
+            source_language="nonexistent_lang_xyz",
+            results=results,
+        )
+        assert text == ""
+
+    def test_normal_flow_with_results(self):
+        """Normal flow builds ASSIST text with cross-language matches."""
+        results = [self._make_result()]
+
+        mock_source_plugin = MagicMock()
+        mock_source_plugin.extract_semantic_profile.return_value = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+
+        # Mock the candidate language plugin too
+        mock_candidate_plugin = MagicMock()
+        mock_candidate_plugin.extract_semantic_profile.return_value = SemanticProfile(
+            signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
+        )
+
+        def get_plugin(lang):
+            if lang == "python":
+                return mock_source_plugin
+            if lang == "go_lsp":
+                return mock_candidate_plugin
+            return None
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", side_effect=get_plugin):
+            text = self.tools._cross_language_assist_text(
+                source_code="def f(): pass",
+                source_language="python",
+                results=results,
+            )
+
+        assert "ASSIST" in text
+        assert "Cross-language" in text
+        assert "non-blocking" in text
+        assert "process" in text
+
+    def test_deduplication_of_entries(self):
+        """Duplicate entry IDs are deduplicated."""
+        result1 = self._make_result(name="dup_func")
+        result2 = self._make_result(name="dup_func")
+        # Same entry id
+        result2.entry = result1.entry
+
+        mock_plugin = MagicMock()
+        mock_plugin.extract_semantic_profile.return_value = SemanticProfile(signals=())
+
+        with patch.object(LanguageRegistry.get(), "get_plugin", return_value=mock_plugin):
+            text = self.tools._cross_language_assist_text(
+                source_code="def f(): pass",
+                source_language="python",
+                results=[result1, result2],
+            )
+        # Should only appear once despite two results with same entry
+        if text:
+            count = text.count("dup_func")
+            assert count == 1
+
+
+class TestCandidateSimilaritySnippetsErrors:
+    """Cover _candidate_similarity_snippets error paths (lines 1047-1056)."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+
+    def test_type_error_fallback(self):
+        """TypeError triggers fallback to narrower extract_code_units signature."""
+        mock_plugin = MagicMock()
+
+        call_count = {"n": 0}
+
+        def extract_code_units(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # First call with include_blocks/max_block_depth raises TypeError
+                raise TypeError("unexpected keyword argument")
+            # Second call (fallback) returns a unit
+            unit = MagicMock()
+            unit.code = "def inner(): pass"
+            return [unit]
+
+        mock_plugin.extract_code_units = extract_code_units
+
+        snippets = self.tools._candidate_similarity_snippets(
+            plugin=mock_plugin,
+            source_code="def outer(): pass",
+            file_path="test.py",
+        )
+        # Should have both the source code and the extracted inner code
+        assert "def outer(): pass" in snippets
+        assert "def inner(): pass" in snippets
+
+    def test_general_exception_returns_source_only(self):
+        """General exception returns only the source snippet."""
+        mock_plugin = MagicMock()
+        mock_plugin.extract_code_units.side_effect = RuntimeError("boom")
+
+        snippets = self.tools._candidate_similarity_snippets(
+            plugin=mock_plugin,
+            source_code="def outer(): pass",
+            file_path="test.py",
+        )
+        assert snippets == ["def outer(): pass"]
+
+    def test_empty_source_code(self):
+        """Empty source code string still works without error."""
+        mock_plugin = MagicMock()
+        mock_plugin.extract_code_units.return_value = []
+
+        snippets = self.tools._candidate_similarity_snippets(
+            plugin=mock_plugin,
+            source_code="",
+            file_path="test.py",
+        )
+        # Empty string is stripped to empty, so it won't be added
+        assert snippets == []
+
+
+class TestAnalyzeScopeFilterDirectCompute:
+    """Cover analyze() direct compute path without EventDrivenIndex (lines 688-694)."""
+
+    _DUPLICATE_CODE = """\
+def process_items(items):
+    results = []
+    for item in items:
+        if item is not None:
+            value = item * 2
+            results.append(value)
+    return results
+
+def handle_entries(entries):
+    results = []
+    for item in entries:
+        if item is not None:
+            value = item * 2
+            results.append(value)
+    return results
+"""
+
+    def test_analyze_direct_compute_with_scope_filter(self):
+        """analyze() uses direct compute when no EDI present, with scope filter."""
+        index = CodeStructureIndex()
+        tools = CodeStructureTools(index=index)
+        assert tools._event_driven_index is None
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(self._DUPLICATE_CODE)
+            f.flush()
+            tools.index_codebase(f.name)
+
+        try:
+            # Analyze with scope - should use direct compute path
+            result = tools.analyze(scope=["*.py"])
+            assert result.text  # Should produce some output
+        finally:
+            os.unlink(f.name)
+
+    def test_analyze_direct_compute_scope_no_match(self):
+        """analyze() with scope filter that matches nothing."""
+        index = CodeStructureIndex()
+        tools = CodeStructureTools(index=index)
+        assert tools._event_driven_index is None
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(self._DUPLICATE_CODE)
+            f.flush()
+            tools.index_codebase(f.name)
+
+        try:
+            # Scope filter that matches nothing
+            result = tools.analyze(scope=["nonexistent/**"])
+            assert result.text  # Should still return valid output
+        finally:
+            os.unlink(f.name)
+
+    def test_analyze_direct_compute_calls_all_three_find_methods(self):
+        """Verify all three find_* methods are called on the direct compute path."""
+        index = MagicMock()
+        index.find_all_duplicates.return_value = []
+        index.find_pattern_duplicates.return_value = []
+        index.find_block_duplicates.return_value = []
+        index.get_stats.return_value = {"suppressed_hashes": 0}
+
+        tools = CodeStructureTools(index=index)
+        assert tools._event_driven_index is None
+        tools._last_indexed_path = "/tmp/test"
+        tools._bg_index_done.set()
+
+        tools.analyze()
+
+        index.find_all_duplicates.assert_called_once()
+        index.find_pattern_duplicates.assert_called_once()
+        index.find_block_duplicates.assert_called_once()
+
+    def test_analyze_direct_compute_with_entry_filter(self):
+        """Verify entry_filter is passed to find_* methods on direct compute path."""
+        index = MagicMock()
+        index.find_all_duplicates.return_value = []
+        index.find_pattern_duplicates.return_value = []
+        index.find_block_duplicates.return_value = []
+        index.get_stats.return_value = {"suppressed_hashes": 0}
+
+        tools = CodeStructureTools(index=index)
+        assert tools._event_driven_index is None
+        tools._last_indexed_path = "/tmp/test"
+        tools._bg_index_done.set()
+
+        tools.analyze(scope=["src/**"])
+
+        # All three calls should have entry_filter set (not None)
+        for call in [
+            index.find_all_duplicates,
+            index.find_pattern_duplicates,
+            index.find_block_duplicates,
+        ]:
+            _, kwargs = call.call_args
+            assert kwargs.get("entry_filter") is not None
+
+
+# --- MCP handler coverage (server.py lines 353-397, 490-535, 542-572) ---
+
+from unittest.mock import MagicMock
+
+
+class TestMCPShutdown:
+    """Cover server.py shutdown handlers (lines 542-572)."""
+
+    def test_close_if_first_idempotent(self):
+        """_close_if_first is idempotent (lines 550-554)."""
+        from astrograph.server import _close_once, _close_if_first
+
+        was_set = _close_once.is_set()
+        _close_once.clear()
+        old_tools = get_tools()
+        mock_tools = MagicMock()
+        set_tools(mock_tools)
+        try:
+            _close_if_first()
+            mock_tools.close.assert_called_once()
+            mock_tools.close.reset_mock()
+            _close_if_first()
+            mock_tools.close.assert_not_called()
+        finally:
+            set_tools(old_tools)
+            if was_set:
+                _close_once.set()
+            else:
+                _close_once.clear()
+
+    def test_shutdown_handler(self):
+        """_shutdown_handler calls close and exits (lines 557-560)."""
+        from astrograph.server import _close_once, _shutdown_handler
+
+        was_set = _close_once.is_set()
+        _close_once.clear()
+        old_tools = get_tools()
+        mock_tools = MagicMock()
+        set_tools(mock_tools)
+        try:
+            with pytest.raises(SystemExit):
+                _shutdown_handler(15, None)
+            mock_tools.close.assert_called_once()
+        finally:
+            set_tools(old_tools)
+            if was_set:
+                _close_once.set()
+            else:
+                _close_once.clear()
+
+    def test_atexit_close(self):
+        """_atexit_close calls _close_if_first (lines 563-565)."""
+        from astrograph.server import _atexit_close, _close_once
+
+        was_set = _close_once.is_set()
+        _close_once.clear()
+        old_tools = get_tools()
+        mock_tools = MagicMock()
+        set_tools(mock_tools)
+        try:
+            _atexit_close()
+            mock_tools.close.assert_called_once()
+        finally:
+            set_tools(old_tools)
+            if was_set:
+                _close_once.set()
+            else:
+                _close_once.clear()

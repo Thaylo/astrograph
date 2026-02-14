@@ -12,6 +12,7 @@ Uses SQLite persistence with file watching for automatic index updates.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -21,7 +22,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import networkx as nx
 
@@ -36,21 +37,6 @@ from .ignorefile import ASTROGRAPHIGNORE_FILENAME, IgnoreSpec
 from .index import CodeStructureIndex, DuplicateGroup, IndexEntry, SimilarityResult
 from .languages.base import SemanticProfile, node_match
 from .languages.registry import LanguageRegistry
-from .lsp_setup import (
-    auto_bind_missing_servers,
-    bundled_lsp_specs,
-    collect_lsp_statuses,
-    format_command,
-    get_lsp_spec,
-    language_variant_policy,
-    load_lsp_bindings,
-    lsp_bindings_path,
-    parse_attach_endpoint,
-    parse_command,
-    probe_command,
-    set_lsp_binding,
-    unset_lsp_binding,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +47,7 @@ LEGACY_ANALYSIS_REPORT = "analysis_report.txt"
 _SEMANTIC_MODES = frozenset({"off", "annotate", "differentiate"})
 _MUTATING_TOOL_NAMES = frozenset(
     {
+        "configure_domains",
         "edit",
         "generate_ignore",
         "index_codebase",
@@ -494,6 +481,69 @@ class CodeStructureTools(CloseOnExitMixin):
         except ValueError:
             return file_path
 
+    # ------------------------------------------------------------------
+    # Scope & domain helpers
+    # ------------------------------------------------------------------
+
+    def _make_scope_filter(
+        self, scope: list[str]
+    ) -> Callable[[IndexEntry], bool]:
+        """Build an entry filter from glob patterns relative to workspace root."""
+        root = self._last_indexed_path or ""
+
+        def matches(entry: IndexEntry) -> bool:
+            rel = self._relative_path(entry.code_unit.file_path)
+            return any(fnmatch.fnmatch(rel, pat) for pat in scope)
+
+        return matches
+
+    def _load_domains(self) -> dict[str, list[str]] | None:
+        """Load domain configuration from .metadata_astrograph/domains.json."""
+        if not self._last_indexed_path:
+            return None
+        domains_file = _get_persistence_path(self._last_indexed_path) / "domains.json"
+        if not domains_file.exists():
+            return None
+        try:
+            data = json.loads(domains_file.read_text())
+            domains = data.get("domains", {})
+            if not isinstance(domains, dict) or not domains:
+                return None
+            return domains
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _match_domain(
+        self, rel_path: str, domains: dict[str, list[str]]
+    ) -> str | None:
+        """Return the domain name a relative path belongs to, or None."""
+        for name, patterns in domains.items():
+            if any(fnmatch.fnmatch(rel_path, pat) for pat in patterns):
+                return name
+        return None
+
+    def _assign_domains(
+        self,
+        findings: list[dict[str, Any]],
+        domains: dict[str, list[str]],
+    ) -> None:
+        """Tag each finding with its domain (mutates in place).
+
+        A finding belongs to a domain if ALL its locations match that domain.
+        If locations span multiple domains, the finding is tagged "cross-domain".
+        If locations match no domain, the finding is tagged None (unscoped).
+        """
+        for f in findings:
+            location_domains: set[str | None] = set()
+            for loc in f["locations"]:
+                # Locations are formatted as "rel_path:name:Lstart-end"
+                rel_path = loc.split(":")[0]
+                location_domains.add(self._match_domain(rel_path, domains))
+            if len(location_domains) == 1:
+                f["domain"] = next(iter(location_domains))
+            else:
+                f["domain"] = "cross-domain"
+
     def _resolve_path(self, path: str) -> str:
         """
         Resolve path, handling Docker volume mounts.
@@ -598,13 +648,20 @@ class CodeStructureTools(CloseOnExitMixin):
                 pass
 
     @_requires_index
-    def analyze(self, auto_reindex: bool = True) -> ToolResult:
+    def analyze(
+        self,
+        auto_reindex: bool = True,
+        scope: list[str] | None = None,
+    ) -> ToolResult:
         """
         Analyze the indexed codebase for duplicates and similar patterns.
 
         Args:
             auto_reindex: Kept for API compatibility. The event-driven index
                          keeps the index current via file watching automatically.
+            scope: Optional list of glob patterns to restrict analysis
+                   (e.g. ``["src/**"]``).  Only entries whose relative path
+                   matches at least one pattern are included.
 
         Returns findings sorted by relevance:
         - Exact duplicates (verified via graph isomorphism)
@@ -615,16 +672,28 @@ class CodeStructureTools(CloseOnExitMixin):
         # Check for invalidated suppressions (proactive notification)
         invalidation_warning = self._check_invalidated_suppressions()
 
+        # Build optional scope filter
+        entry_filter: Callable[[IndexEntry], bool] | None = None
+        if scope:
+            entry_filter = self._make_scope_filter(scope)
+
         # Event-driven index keeps things current via file watching + cache.
         edi = self._event_driven_index
         if edi is not None:
-            exact_groups, pattern_groups, block_groups = edi.get_cached_analysis()
+            exact_groups, pattern_groups, block_groups = edi.get_cached_analysis(
+                entry_filter=entry_filter
+            )
         else:
             # Testing path: direct compute (no EventDrivenIndex)
-            exact_groups = self.index.find_all_duplicates(min_node_count=5)
-            pattern_groups = self.index.find_pattern_duplicates(min_node_count=5)
+            exact_groups = self.index.find_all_duplicates(
+                min_node_count=5, entry_filter=entry_filter
+            )
+            pattern_groups = self.index.find_pattern_duplicates(
+                min_node_count=5, entry_filter=entry_filter
+            )
             block_groups = self.index.find_block_duplicates(
-                min_node_count=self._MIN_BLOCK_DUPLICATE_NODES
+                min_node_count=self._MIN_BLOCK_DUPLICATE_NODES,
+                entry_filter=entry_filter,
             )
 
         # Filter block groups by analyze threshold (cache uses min_node_count=5,
@@ -719,6 +788,11 @@ class CodeStructureTools(CloseOnExitMixin):
         for f in findings:
             f["is_test"] = all(_is_test_location(loc) for loc in f["locations"])
 
+        # Domain partitioning (only when domains are configured and scope is not active)
+        domains = self._load_domains() if not scope else None
+        if domains:
+            self._assign_domains(findings, domains)
+
         # Sort: source findings first, then test findings
         source_findings = [f for f in findings if not f["is_test"]]
         test_findings = [f for f in findings if f["is_test"]]
@@ -751,19 +825,52 @@ class CodeStructureTools(CloseOnExitMixin):
             result.append("")
             return result
 
-        # Emit section headers when both source and test findings exist
-        has_both = bool(source_findings) and bool(test_findings)
-        num = 1
-        for header, section in [
-            ("=== Source code ===", source_findings),
-            ("=== Tests ===", test_findings),
-        ]:
-            if has_both:
+        # --- Domain-partitioned output ---
+        if domains:
+            # Group findings by domain
+            domain_sections: dict[str | None, list[dict[str, Any]]] = {}
+            for f in findings:
+                d = f.get("domain")
+                domain_sections.setdefault(d, []).append(f)
+
+            # Ordered: named domains first, then unscoped (None), then cross-domain
+            ordered_keys: list[str | None] = [
+                k for k in domains if k in domain_sections
+            ]
+            if None in domain_sections:
+                ordered_keys.append(None)
+            if "cross-domain" in domain_sections:
+                ordered_keys.append("cross-domain")
+
+            num = 1
+            for key in ordered_keys:
+                section = domain_sections[key]
+                if key == "cross-domain":
+                    header = "=== Cross-domain ==="
+                elif key is None:
+                    header = "=== Unscoped ==="
+                else:
+                    globs = ", ".join(domains[key])
+                    header = f"=== Domain: {key} ({globs}) ==="
                 lines.append(header)
                 lines.append("")
-            for f in section:
-                lines.extend(_format_finding(num, f))
-                num += 1
+                for f in section:
+                    lines.extend(_format_finding(num, f))
+                    num += 1
+        else:
+            # --- Standard source/test output ---
+            has_both = bool(source_findings) and bool(test_findings)
+            num = 1
+            for header, section in [
+                ("=== Source code ===", source_findings),
+                ("=== Tests ===", test_findings),
+            ]:
+                if has_both:
+                    lines.append(header)
+                    lines.append("")
+                for f in section:
+                    lines.extend(_format_finding(num, f))
+                    num += 1
 
         # Compact footer
         if suppressed_line := _suppressed_line():
@@ -1358,101 +1465,45 @@ class CodeStructureTools(CloseOnExitMixin):
             "Next: call astrograph_lsp_setup(mode='inspect') for guided LSP setup actions."
         )
 
+    # -- LSP setup: thin wrappers delegating to lsp_tools module -----------
+
     def _lsp_setup_workspace(self) -> Path:
         """Resolve workspace root used for LSP binding persistence."""
-        if self._last_indexed_path:
-            indexed = Path(self._last_indexed_path)
-            return indexed.parent if indexed.is_file() else indexed
+        from . import lsp_tools
 
-        detected = self._detect_startup_workspace()
-        if detected:
-            return Path(detected)
-
-        return Path.cwd()
+        return lsp_tools.resolve_lsp_workspace(
+            self._last_indexed_path, self._detect_startup_workspace
+        )
 
     @staticmethod
     def _is_docker_runtime() -> bool:
         """Return whether the server appears to run inside Docker."""
-        return Path("/.dockerenv").exists()
+        from . import lsp_tools
+
+        return lsp_tools.is_docker_runtime()
 
     @staticmethod
     def _default_install_command(language_id: str) -> list[str] | None:
-        """Return a known install command for common language servers."""
-        if language_id == "python":
-            return ["python3", "-m", "pip", "install", "python-lsp-server>=1.11"]
-        if language_id in ("javascript_lsp", "typescript_lsp"):
-            return ["npm", "install", "-g", "typescript", "typescript-language-server"]
-        return None
+        from . import lsp_tools
+
+        return lsp_tools.default_install_command(language_id)
 
     @staticmethod
     def _dedupe_preserve_order(values: list[str]) -> list[str]:
-        """Return values with duplicates removed while preserving first occurrence."""
-        seen: set[str] = set()
-        result: list[str] = []
-        for value in values:
-            if value in seen:
-                continue
-            seen.add(value)
-            result.append(value)
-        return result
+        from . import lsp_tools
+
+        return lsp_tools.dedupe_preserve_order(values)
 
     def _attach_candidate_commands(self, status: dict[str, Any]) -> list[str]:
-        """Build endpoint candidates for attach-based language plugins."""
-        endpoint = parse_attach_endpoint(status.get("default_command"))
-        if endpoint is None:
-            endpoint = parse_attach_endpoint(status.get("effective_command"))
-        if endpoint is None:
-            return []
+        from . import lsp_tools
 
-        if endpoint["transport"] == "unix":
-            return [f"unix://{endpoint['path']}"]
-
-        port = int(endpoint["port"])
-        candidates = [
-            f"tcp://127.0.0.1:{port}",
-            f"tcp://localhost:{port}",
-        ]
-        if self._is_docker_runtime():
-            candidates = [
-                f"tcp://host.docker.internal:{port}",
-                f"tcp://gateway.docker.internal:{port}",
-                *candidates,
-            ]
-        return self._dedupe_preserve_order(candidates)
+        return lsp_tools.attach_candidate_commands(status, self._is_docker_runtime())
 
     @staticmethod
     def _server_bridge_info(language_id: str, candidate: str) -> dict[str, Any] | None:
-        """Return structured bridge info for attach-based adapters."""
-        endpoint = parse_attach_endpoint(candidate)
-        if endpoint is None or endpoint["transport"] != "tcp":
-            return None
+        from . import lsp_tools
 
-        port = int(endpoint["port"])
-        info: dict[str, Any] = {"requires": ["socat"], "port": port}
-        if language_id in {"c_lsp", "cpp_lsp"}:
-            info["server_binary"] = "clangd"
-            info["server_binary_alternatives"] = ["ccls"]
-            info["shared_with"] = "c_lsp" if language_id == "cpp_lsp" else "cpp_lsp"
-            info["socat_command"] = (
-                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" ' '"EXEC:clangd",stderr'
-            )
-            info["install_hints"] = {
-                "macos": "brew install llvm",
-                "linux": "apt-get install -y clangd",
-            }
-        elif language_id == "java_lsp":
-            info["server_binary"] = "jdtls"
-            info["socat_command"] = (
-                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" '
-                '"EXEC:jdtls -data /tmp/jdtls-workspace",stderr'
-            )
-            info["install_hints"] = {
-                "macos": "brew install jdtls",
-                "linux": "See https://github.com/eclipse-jdtls/eclipse.jdt.ls#installation",
-            }
-        else:
-            return None
-        return info
+        return lsp_tools.server_bridge_info(language_id, candidate)
 
     def _build_lsp_recommended_actions(
         self,
@@ -1460,393 +1511,25 @@ class CodeStructureTools(CloseOnExitMixin):
         statuses: list[dict[str, Any]],
         scope_language: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build actionable setup steps that AI agents can execute directly."""
-        missing = [status for status in statuses if not status.get("available")]
-        missing_required = [status for status in missing if status.get("required", True)]
-        scoped = bool(scope_language)
-        all_missing_optional = bool(missing) and not missing_required
-        has_missing_cpp = any(str(status.get("language")) == "cpp_lsp" for status in missing)
+        from . import lsp_tools
 
-        def _with_scope(arguments: dict[str, Any]) -> dict[str, Any]:
-            if not scoped:
-                return arguments
-            return {**arguments, "language": scope_language}
-
-        def _follow_up_auto_bind_arguments(language_id: str) -> dict[str, Any]:
-            if scoped:
-                return _with_scope({"mode": "auto_bind"})
-            return {"mode": "auto_bind", "language": language_id}
-
-        if not missing:
-            return [
-                {
-                    "id": "verify_lsp_setup",
-                    "priority": "low",
-                    "title": "Re-check language server health after environment changes",
-                    "tool": "astrograph_lsp_setup",
-                    "arguments": _with_scope({"mode": "inspect"}),
-                }
-            ]
-
-        actions: list[dict[str, Any]] = []
-        if not scoped and all_missing_optional and has_missing_cpp:
-            actions.append(
-                {
-                    "id": "focus_cpp_lsp",
-                    "priority": "high",
-                    "title": "Resolve cpp_lsp first",
-                    "why": (
-                        "Multiple attach languages are unavailable. Resolve them one at a time, "
-                        "starting with C++. Run the host_search_commands, then auto_bind."
-                    ),
-                    "tool": "astrograph_lsp_setup",
-                    "arguments": {"mode": "inspect", "language": "cpp_lsp"},
-                }
-            )
-        actions.append(
-            {
-                "id": "auto_bind_missing",
-                "priority": "high" if missing_required else "medium",
-                "title": "Auto-bind any reachable language servers",
-                "why": (
-                    f"{len(missing)} language server(s) are unreachable. Execute this action to probe "
-                    "all candidate endpoints and bind any that respond."
-                ),
-                "tool": "astrograph_lsp_setup",
-                "arguments": _with_scope({"mode": "auto_bind"}),
-            }
-        )
-        host_alias_action_added = False
-
-        spec_by_language = {spec.language_id: spec for spec in bundled_lsp_specs()}
-        for status in missing:
-            language = str(status["language"])
-            required = bool(status.get("required", True))
-            priority = "high" if required else "medium"
-            transport = str(status.get("transport", "subprocess"))
-            verification = status.get("verification", {})
-            if not isinstance(verification, dict):
-                verification = {}
-            verification_state = str(
-                status.get("verification_state") or verification.get("state") or "unknown"
-            )
-            compile_commands = status.get("compile_commands")
-            if not isinstance(compile_commands, dict):
-                compile_commands = verification.get("compile_commands")
-            if not isinstance(compile_commands, dict):
-                compile_commands = None
-
-            if transport == "subprocess":
-                effective_command = parse_command(status.get("effective_command"))
-                binary = effective_command[0] if effective_command else "<binary>"
-                search_commands = [f"which {binary}"]
-                if language == "python":
-                    search_commands.append("python3 -m pylsp --help")
-                if language == "javascript_lsp":
-                    search_commands.extend(
-                        [
-                            "which typescript-language-server",
-                            "npm list -g typescript-language-server",
-                        ]
-                    )
-
-                actions.append(
-                    {
-                        "id": f"search_{language}",
-                        "priority": priority,
-                        "title": f"Search host for a working {language} command",
-                        "language": language,
-                        "host_search_commands": search_commands,
-                        "follow_up_tool": "astrograph_lsp_setup",
-                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
-                    }
-                )
-
-                if install_command := self._default_install_command(language):
-                    actions.append(
-                        {
-                            "id": f"install_{language}",
-                            "priority": priority,
-                            "title": f"Install missing {language} language server",
-                            "language": language,
-                            "shell_command": format_command(install_command),
-                            "follow_up_tool": "astrograph_lsp_setup",
-                            "follow_up_arguments": _follow_up_auto_bind_arguments(language),
-                        }
-                    )
-
-                continue
-
-            if verification_state == "reachable_only":
-                actions.append(
-                    {
-                        "id": f"verify_{language}_protocol",
-                        "priority": "high" if language == "cpp_lsp" else priority,
-                        "title": f"Replace non-verified endpoint for {language}",
-                        "language": language,
-                        "note": (
-                            verification.get("reason")
-                            or "Endpoint accepts TCP connections but did not pass LSP verification."
-                        ),
-                        "host_search_commands": [
-                            "which clangd",
-                            "which ccls",
-                            "clangd --version",
-                            "ccls --version",
-                        ]
-                        if language in {"c_lsp", "cpp_lsp"}
-                        else [],
-                        "follow_up_tool": "astrograph_lsp_setup",
-                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
-                    }
-                )
-
-            if (
-                language in {"c_lsp", "cpp_lsp"}
-                and compile_commands is not None
-                and not bool(compile_commands.get("valid"))
-            ):
-                paths = compile_commands.get("paths")
-                known_paths = [str(path) for path in paths] if isinstance(paths, list) else []
-                actions.append(
-                    {
-                        "id": f"ensure_compile_commands_{language}",
-                        "priority": "high" if language == "cpp_lsp" else priority,
-                        "title": f"Generate a valid compile_commands.json for {language}",
-                        "language": language,
-                        "why": (
-                            compile_commands.get("reason")
-                            or "C/C++ language servers require compile_commands.json for "
-                            "production-grade type and operator resolution."
-                        ),
-                        "host_search_commands": [
-                            "find . -maxdepth 4 -name compile_commands.json",
-                        ],
-                        "shell_commands": [
-                            "cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-                            "ln -sf build/compile_commands.json compile_commands.json",
-                        ],
-                        "known_paths": known_paths,
-                        "follow_up_tool": "astrograph_lsp_setup",
-                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
-                    }
-                )
-
-            if self._is_docker_runtime() and not host_alias_action_added:
-                actions.append(
-                    {
-                        "id": "ensure_docker_host_alias",
-                        "priority": "high",
-                        "title": "Ensure Docker can reach host.docker.internal",
-                        "why": (
-                            "Attach endpoints for C/C++/Java usually run on the host. "
-                            "Add a host alias so tcp://host.docker.internal:<port> is routable."
-                        ),
-                        "docker_run_args": [
-                            "--add-host",
-                            "host.docker.internal:host-gateway",
-                        ],
-                        "follow_up_tool": "astrograph_lsp_setup",
-                        "follow_up_arguments": _with_scope({"mode": "inspect"}),
-                    }
-                )
-                host_alias_action_added = True
-
-            candidates = self._attach_candidate_commands(status)
-            endpoint = parse_attach_endpoint(candidates[0]) if candidates else None
-            port_hint = (
-                int(endpoint["port"]) if endpoint and endpoint["transport"] == "tcp" else None
-            )
-            bridge_info = self._server_bridge_info(language, candidates[0]) if candidates else None
-            endpoint_search_commands: list[str] = []
-            if port_hint is not None:
-                endpoint_search_commands = [
-                    f"lsof -nP -iTCP:{port_hint} -sTCP:LISTEN",
-                    f"ss -ltnp | rg ':{port_hint}'",
-                ]
-            if bridge_info:
-                endpoint_search_commands.append(f"which {bridge_info['server_binary']}")
-
-            action: dict[str, Any] = {
-                "id": f"discover_{language}_endpoint",
-                "priority": priority,
-                "title": f"Discover a reachable attach endpoint for {language}",
-                "why": (
-                    f"No server is listening on the expected {language} port. "
-                    "Run the host_search_commands on the host machine to check, "
-                    "then provide the working endpoint via auto_bind with observations."
-                ),
-                "language": language,
-                "candidate_endpoints": candidates,
-                "host_search_commands": endpoint_search_commands,
-            }
-            if candidates:
-                follow_up_arguments = {
-                    **_follow_up_auto_bind_arguments(language),
-                    "observations": [{"language": language, "command": candidates[0]}],
-                }
-
-                action["follow_up_tool"] = "astrograph_lsp_setup"
-                action["follow_up_arguments"] = follow_up_arguments
-                if bridge_info:
-                    action["server_bridge_info"] = bridge_info
-            actions.append(action)
-
-        actions.append(
-            {
-                "id": "verify_lsp_setup",
-                "priority": "high" if missing_required else "medium",
-                "title": "Verify missing_required_languages is empty",
-                "tool": "astrograph_lsp_setup",
-                "arguments": _with_scope({"mode": "inspect"}),
-            }
-        )
-        return actions
-
-    def _inject_lsp_setup_guidance(self, payload: dict[str, Any], *, workspace: Path) -> None:
-        """Attach agent-friendly setup guidance to lsp_setup responses."""
-        statuses_value = payload.get("servers")
-        if not isinstance(statuses_value, list):
-            statuses_value = payload.get("statuses")
-        statuses = (
-            [status for status in statuses_value if isinstance(status, dict)]
-            if statuses_value
-            else []
-        )
-        if not statuses:
-            statuses = collect_lsp_statuses(workspace)
-
-        missing = [status["language"] for status in statuses if not status.get("available")]
-        missing_required = [
-            status["language"]
-            for status in statuses
-            if status.get("required", True) and not status.get("available")
-        ]
-
-        payload["missing_languages"] = missing
-        payload["missing_required_languages"] = missing_required
-        payload["bindings"] = load_lsp_bindings(workspace)
-        payload["execution_context"] = "docker" if self._is_docker_runtime() else "host"
-        scope_language = payload.get("scope_language")
-        if not isinstance(scope_language, str):
-            scope_language = None
-
-        recommended_actions = self._build_lsp_recommended_actions(
+        return lsp_tools.build_lsp_recommended_actions(
             statuses=statuses,
             scope_language=scope_language,
+            docker_runtime=self._is_docker_runtime(),
         )
-        cpp_reachable_only = any(
-            str(status.get("language")) == "cpp_lsp"
-            and str(status.get("verification_state") or "") == "reachable_only"
-            for status in statuses
-        )
-        scope_status = (
-            next((status for status in statuses if status.get("language") == scope_language), None)
-            if scope_language
-            else None
-        )
-        attach_scope_ready = bool(
-            scope_status
-            and not missing
-            and str(scope_status.get("transport", "subprocess")) in {"tcp", "unix"}
-        )
-        if attach_scope_ready and scope_language:
-            recommended_actions.extend(
-                [
-                    {
-                        "id": f"verify_{scope_language}_analysis",
-                        "priority": "medium",
-                        "title": f"Run duplicate analysis after enabling {scope_language}",
-                        "why": (
-                            "Confirms the active index is healthy after LSP setup changes "
-                            "and generates a current duplicate report."
-                        ),
-                        "tool": "astrograph_analyze",
-                        "arguments": {"auto_reindex": True},
-                    },
-                    {
-                        "id": f"rebaseline_after_{scope_language}_binding",
-                        "priority": "medium",
-                        "title": "If this language was bound after startup, rebuild baseline",
-                        "why": (
-                            "Binding changes do not retroactively update already-indexed files. "
-                            "Recompute to apply extraction across the full workspace."
-                        ),
-                        "tool": "astrograph_metadata_recompute_baseline",
-                        "arguments": {},
-                        "note": (
-                            "metadata_recompute_baseline clears lsp_bindings.json. "
-                            "Run follow_up_steps immediately after recompute."
-                        ),
-                        "follow_up_steps": [
-                            {
-                                "tool": "astrograph_lsp_setup",
-                                "arguments": {"mode": "inspect", "language": scope_language},
-                            },
-                            {
-                                "tool": "astrograph_lsp_setup",
-                                "arguments": {"mode": "auto_bind", "language": scope_language},
-                            },
-                            {
-                                "tool": "astrograph_lsp_setup",
-                                "arguments": {"mode": "inspect", "language": scope_language},
-                            },
-                        ],
-                    },
-                ]
-            )
-        payload["recommended_actions"] = recommended_actions
 
-        inspect_arguments: dict[str, Any] = {"mode": "inspect"}
-        auto_bind_arguments: dict[str, Any] = {"mode": "auto_bind"}
-        if scope_language:
-            inspect_arguments["language"] = scope_language
-            auto_bind_arguments["language"] = scope_language
+    def _inject_lsp_setup_guidance(self, payload: dict[str, Any], *, workspace: Path) -> None:
+        from . import lsp_tools
 
-        payload["resolution_loop"] = [
-            {"tool": "astrograph_lsp_setup", "arguments": inspect_arguments},
-            {"tool": "astrograph_lsp_setup", "arguments": auto_bind_arguments},
-            {"tool": "astrograph_lsp_setup", "arguments": inspect_arguments},
-        ]
-        if missing_required:
-            payload["agent_directive"] = (
-                "Do not stop at diagnostics. Execute recommended_actions until "
-                "missing_required_languages is empty."
-            )
-        elif cpp_reachable_only:
-            payload["agent_directive"] = (
-                "cpp_lsp endpoint is reachable but not production-verified. "
-                "Treat it as unavailable and execute recommended_actions "
-                "(real C++ LSP endpoint, such as clangd/ccls, + valid compile_commands.json)."
-            )
-        elif missing:
-            missing_names = ", ".join(missing)
-            payload["agent_directive"] = (
-                f"{len(missing)} attach language(s) ({missing_names}) are unavailable. "
-                "Execute recommended_actions now: run the host_search_commands, "
-                "then call auto_bind with any discovered endpoints."
-            )
-        elif attach_scope_ready and scope_language:
-            payload["agent_directive"] = (
-                f"{scope_language} endpoint is reachable. "
-                "Run recommended_actions to verify analysis coverage. "
-                "If you recompute baseline, re-run auto_bind for this language afterward."
-            )
-        else:
-            payload["agent_directive"] = (
-                "All configured language servers are reachable. "
-                "Re-run inspect after environment changes."
-            )
-
-        if missing and self._is_docker_runtime():
-            payload["observation_note"] = (
-                "This MCP server runs inside Docker. When providing observations, "
-                "use host.docker.internal (not 127.0.0.1) to reach host-side servers."
-            )
+        lsp_tools.inject_lsp_setup_guidance(
+            payload, workspace=workspace, docker_runtime=self._is_docker_runtime()
+        )
 
     def _lsp_setup_result(self, payload: dict[str, Any]) -> ToolResult:
-        """Serialize structured LSP setup responses as JSON."""
-        return ToolResult(json.dumps(payload, indent=2, sort_keys=True))
+        from . import lsp_tools
+
+        return ToolResult(lsp_tools.lsp_setup_result_json(payload))
 
     def lsp_setup(
         self,
@@ -1859,246 +1542,20 @@ class CodeStructureTools(CloseOnExitMixin):
         project_root: str | None = None,
     ) -> ToolResult:
         """Inspect and configure LSP command bindings for language plugins."""
+        from . import lsp_tools
+
         workspace = self._lsp_setup_workspace()
-        normalized_mode = (mode or "inspect").strip().lower()
-        known_languages = [
-            spec.language_id for spec in sorted(bundled_lsp_specs(), key=lambda s: s.language_id)
-        ]
-
-        def _validate_language(mode_name: str, *, required: bool = False) -> ToolResult | None:
-            if not language:
-                if required:
-                    return self._lsp_setup_result(
-                        {
-                            "ok": False,
-                            "mode": mode_name,
-                            "error": f"'language' is required when mode='{mode_name}'",
-                            "supported_languages": known_languages,
-                        }
-                    )
-                return None
-
-            if get_lsp_spec(language) is None:
-                return self._lsp_setup_result(
-                    {
-                        "ok": False,
-                        "mode": mode_name,
-                        "error": f"Unsupported language '{language}'",
-                        "supported_languages": known_languages,
-                    }
-                )
-
-            return None
-
-        def _status_for_language(language_id: str) -> dict[str, Any] | None:
-            return next(
-                (
-                    current
-                    for current in collect_lsp_statuses(workspace)
-                    if current["language"] == language_id
-                ),
-                None,
-            )
-
-        if normalized_mode == "inspect":
-            if validation_error := _validate_language(normalized_mode):
-                return validation_error
-
-            statuses = collect_lsp_statuses(
-                workspace,
-                validation_mode=validation_mode,
-                compile_db_path=compile_db_path,
-                project_root=project_root,
-            )
-            if language:
-                statuses = [status for status in statuses if status["language"] == language]
-            missing = [status["language"] for status in statuses if not status["available"]]
-            missing_required = [
-                status["language"]
-                for status in statuses
-                if status.get("required", True) and not status["available"]
-            ]
-            cpp_reachable_only = any(
-                str(status.get("language")) == "cpp_lsp"
-                and str(status.get("verification_state") or "") == "reachable_only"
-                for status in statuses
-            )
-            payload: dict[str, Any] = {
-                "ok": True,
-                "mode": normalized_mode,
-                "workspace": str(workspace),
-                "bindings_path": str(lsp_bindings_path(workspace)),
-                "bindings": load_lsp_bindings(workspace),
-                "servers": statuses,
-                "missing_languages": missing,
-                "missing_required_languages": missing_required,
-                "supported_languages": known_languages,
-                "language_variant_policy": (
-                    language_variant_policy(language) if language else language_variant_policy()
-                ),
-            }
-            if language:
-                payload["scope_language"] = language
-
-            if missing_required:
-                if language:
-                    payload["next_step"] = (
-                        "Call astrograph_lsp_setup with mode='auto_bind' and this language. "
-                        "If still missing, provide observations with language + command."
-                    )
-                else:
-                    payload["next_step"] = (
-                        "Call astrograph_lsp_setup with mode='auto_bind'. "
-                        "If still missing, provide observations with language + command."
-                    )
-            elif cpp_reachable_only:
-                payload["next_step"] = (
-                    "cpp_lsp is reachable but not production-verified. "
-                    "Use a real C++ LSP endpoint (for example clangd/ccls) and a valid "
-                    "compile_commands.json, "
-                    "then re-run auto_bind and inspect."
-                )
-            elif missing:
-                if not language and "cpp_lsp" in missing:
-                    payload["next_step"] = (
-                        f"{len(missing)} attach endpoint(s) unreachable. "
-                        "Start by running the host_search_commands from recommended_actions "
-                        "to check if language servers are already running on the host. "
-                        "Then call astrograph_lsp_setup(mode='auto_bind') with any discovered endpoints as observations."
-                    )
-                else:
-                    payload["next_step"] = (
-                        f"{len(missing)} attach endpoint(s) unreachable. "
-                        "Run the host_search_commands from recommended_actions to discover running servers, "
-                        "then call astrograph_lsp_setup(mode='auto_bind') with results as observations."
-                    )
-
-            if missing:
-                payload["observation_format"] = {
-                    "language": language or "cpp_lsp",
-                    "command": "tcp://127.0.0.1:2088",
-                }
-                payload["observation_examples"] = [
-                    {
-                        "language": "python",
-                        "command": ["/absolute/path/to/pylsp"],
-                    },
-                    {
-                        "language": "java_lsp",
-                        "command": "tcp://127.0.0.1:2089",
-                    },
-                ]
-                if not language and "cpp_lsp" in missing:
-                    payload["focus_hint"] = (
-                        "Start by resolving one language at a time. "
-                        "Run astrograph_lsp_setup(mode='inspect', language='cpp_lsp') "
-                        "and execute its recommended_actions before moving to the next."
-                    )
-            if cpp_reachable_only:
-                payload["production_gate"] = {
-                    "language": "cpp_lsp",
-                    "state": "reachable_only",
-                    "requirement": (
-                        "In production mode, cpp_lsp is treated as unavailable until endpoint "
-                        "handshake, semantic probe, and compile_commands.json checks pass."
-                    ),
-                }
-            self._inject_lsp_setup_guidance(payload, workspace=workspace)
-            return self._lsp_setup_result(payload)
-
-        if normalized_mode == "auto_bind":
-            if validation_error := _validate_language(normalized_mode):
-                return validation_error
-
-            scope_languages = [language] if language else None
-            outcome = auto_bind_missing_servers(
+        return ToolResult(
+            lsp_tools.handle_lsp_setup(
                 workspace=workspace,
+                mode=mode,
+                language=language,
+                command=command,
                 observations=observations,
-                languages=scope_languages,
                 validation_mode=validation_mode,
                 compile_db_path=compile_db_path,
                 project_root=project_root,
             )
-            if outcome["changes"]:
-                LanguageRegistry.reset()
-            outcome["bindings"] = load_lsp_bindings(workspace)
-            outcome.update(
-                {
-                    "ok": True,
-                    "mode": normalized_mode,
-                    "supported_languages": known_languages,
-                }
-            )
-            if language:
-                outcome["scope_language"] = language
-            self._inject_lsp_setup_guidance(outcome, workspace=workspace)
-            return self._lsp_setup_result(outcome)
-
-        if normalized_mode == "bind":
-            if validation_error := _validate_language(normalized_mode, required=True):
-                return validation_error
-
-            target_language = cast(str, language)
-            parsed_command = parse_command(command)
-            if not parsed_command:
-                return self._lsp_setup_result(
-                    {
-                        "ok": False,
-                        "mode": normalized_mode,
-                        "error": "'command' must be a non-empty string or array",
-                    }
-                )
-
-            saved_command, path = set_lsp_binding(target_language, parsed_command, workspace)
-            LanguageRegistry.reset()
-
-            status = _status_for_language(target_language)
-            probe = probe_command(saved_command)
-            payload = {
-                "ok": True,
-                "mode": normalized_mode,
-                "language": target_language,
-                "workspace": str(workspace),
-                "bindings_path": str(path),
-                "bindings": load_lsp_bindings(workspace),
-                "saved_command": saved_command,
-                "saved_command_text": format_command(saved_command),
-                "available": probe["available"],
-                "executable": probe["executable"],
-                "status": status,
-            }
-            self._inject_lsp_setup_guidance(payload, workspace=workspace)
-            return self._lsp_setup_result(payload)
-
-        if normalized_mode == "unbind":
-            if validation_error := _validate_language(normalized_mode, required=True):
-                return validation_error
-
-            target_language = cast(str, language)
-            removed, path = unset_lsp_binding(target_language, workspace)
-            LanguageRegistry.reset()
-            status = _status_for_language(target_language)
-            payload = {
-                "ok": True,
-                "mode": normalized_mode,
-                "language": target_language,
-                "workspace": str(workspace),
-                "bindings_path": str(path),
-                "bindings": load_lsp_bindings(workspace),
-                "removed": removed,
-                "status": status,
-            }
-            self._inject_lsp_setup_guidance(payload, workspace=workspace)
-            return self._lsp_setup_result(payload)
-
-        return self._lsp_setup_result(
-            {
-                "ok": False,
-                "mode": normalized_mode,
-                "error": "Invalid mode",
-                "supported_modes": ["inspect", "auto_bind", "bind", "unbind"],
-                "supported_languages": known_languages,
-            }
         )
 
     def generate_ignore(self) -> ToolResult:
@@ -2126,6 +1583,55 @@ class CodeStructureTools(CloseOnExitMixin):
             display_path=ASTROGRAPHIGNORE_FILENAME,
         )
         return result
+
+    def configure_domains(
+        self,
+        domains: dict[str, list[str]] | None = None,
+    ) -> ToolResult:
+        """Configure named detection domains for partitioned analysis.
+
+        Each domain is a name mapped to a list of glob patterns (relative to
+        the workspace root).  When domains are configured, ``analyze()``
+        partitions its output by domain and reports cross-domain duplicates
+        separately.
+
+        Pass an empty dict to clear all domains.
+        """
+        if not self._last_indexed_path:
+            return ToolResult(
+                "No indexed codebase. Run index_codebase first to establish a workspace root."
+            )
+
+        persistence_dir = _get_persistence_path(self._last_indexed_path)
+        domains_file = persistence_dir / "domains.json"
+
+        if domains is None:
+            domains = {}
+
+        # Validate
+        for name, patterns in domains.items():
+            if not name or not isinstance(name, str):
+                return ToolResult(f"Invalid domain name: {name!r}")
+            if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+                return ToolResult(
+                    f"Domain '{name}' patterns must be a list of strings."
+                )
+            if not patterns:
+                return ToolResult(f"Domain '{name}' has no patterns.")
+
+        if not domains:
+            # Clear
+            domains_file.unlink(missing_ok=True)
+            return ToolResult("Detection domains cleared.")
+
+        # Write
+        domains_file.write_text(json.dumps({"domains": domains}, indent=2))
+
+        lines = [f"Configured {len(domains)} detection domain(s):"]
+        for name, patterns in domains.items():
+            lines.append(f"  {name}: {', '.join(patterns)}")
+        lines.append("Run analyze to see partitioned results.")
+        return ToolResult("\n".join(lines))
 
     def metadata_erase(self) -> ToolResult:
         """
@@ -2498,6 +2004,11 @@ class CodeStructureTools(CloseOnExitMixin):
         elif name == "analyze":
             return self.analyze(
                 auto_reindex=arguments.get("auto_reindex", True),
+                scope=arguments.get("scope"),
+            )
+        elif name == "configure_domains":
+            return self.configure_domains(
+                domains=arguments.get("domains"),
             )
         elif name == "check":
             return self.check(

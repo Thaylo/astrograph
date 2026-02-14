@@ -27,7 +27,8 @@ DOCKER_IMAGE = os.environ.get("ASTOGRAPH_TEST_IMAGE", "thaylo/astrograph")
 
 
 def _docker_cmd(workspace_path: str | None = None, read_only: bool = False) -> list[str]:
-    cmd = ["docker", "run", "--rm", "-i"]
+    cmd = ["docker", "run", "--rm", "-i",
+           "--user", f"{os.getuid()}:{os.getgid()}"]
     if workspace_path:
         mount_opt = "ro" if read_only else "rw"
         cmd.extend(["-v", f"{workspace_path}:/workspace:{mount_opt}"])

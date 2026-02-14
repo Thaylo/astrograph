@@ -329,6 +329,298 @@ class TestInstallLSPsCommand:
         assert len(payload["failed"]) == 1
 
 
+class TestLspStatusEdgeCases:
+    """Tests for LSP status computation edge cases."""
+
+    def test_empty_command_status(self):
+        spec = cli.LSPServerSpec(
+            language_id="python",
+            default_command=[],
+            required=True,
+        )
+        with patch("astrograph.cli.resolve_lsp_command", return_value=([], "default")):
+            status = cli._lsp_status(spec)
+        assert not status.available
+        assert status.reason == "command resolved to an empty value"
+
+    def test_binding_not_found_subprocess(self):
+        spec = cli.LSPServerSpec(
+            language_id="python",
+            default_command=["pylsp"],
+            required=True,
+        )
+        with patch("astrograph.cli.resolve_lsp_command", return_value=(["pylsp"], "binding")):
+            with patch(
+                "astrograph.cli.probe_command",
+                return_value={"available": False, "executable": None, "transport": "subprocess"},
+            ):
+                status = cli._lsp_status(spec)
+        assert status.reason == "bound command was not found; check the binding"
+
+    def test_binding_not_reachable_tcp(self):
+        spec = cli.LSPServerSpec(
+            language_id="cpp_lsp",
+            default_command=["tcp://127.0.0.1:2088"],
+            required=False,
+        )
+        with patch("astrograph.cli.resolve_lsp_command", return_value=(["tcp://127.0.0.1:2088"], "binding")):
+            with patch(
+                "astrograph.cli.probe_command",
+                return_value={
+                    "available": False,
+                    "executable": None,
+                    "transport": "tcp",
+                    "endpoint": "127.0.0.1:2088",
+                },
+            ):
+                status = cli._lsp_status(spec)
+        assert status.reason == "bound endpoint is not reachable; check the binding"
+
+    def test_default_attach_not_reachable(self):
+        spec = cli.LSPServerSpec(
+            language_id="cpp_lsp",
+            default_command=["tcp://127.0.0.1:2088"],
+            required=False,
+        )
+        with patch("astrograph.cli.resolve_lsp_command", return_value=(["tcp://127.0.0.1:2088"], "default")):
+            with patch(
+                "astrograph.cli.probe_command",
+                return_value={
+                    "available": False,
+                    "executable": None,
+                    "transport": "tcp",
+                    "endpoint": "127.0.0.1:2088",
+                },
+            ):
+                status = cli._lsp_status(spec)
+        assert status.reason == "default attach endpoint is not reachable"
+
+    def test_js_installable_without_npm(self):
+        spec = cli.LSPServerSpec(
+            language_id="javascript_lsp",
+            default_command=["typescript-language-server", "--stdio"],
+            required=True,
+        )
+        with (
+            patch("astrograph.cli.resolve_lsp_command", return_value=(["typescript-language-server", "--stdio"], "default")),
+            patch("astrograph.cli.probe_command", return_value={"available": False, "executable": None, "transport": "subprocess"}),
+            patch("shutil.which", return_value=None),
+        ):
+            status = cli._lsp_status(spec)
+        assert not status.installable
+        assert "npm is required" in status.reason
+
+
+class TestPrintDoctorEdgeCases:
+    """Tests for doctor output variations."""
+
+    def test_missing_optional_shows_note(self, capsys):
+        statuses = [
+            _status(
+                language_id="python",
+                available=True,
+                command=["pylsp"],
+                executable="/usr/bin/pylsp",
+                required=True,
+            ),
+            _status(
+                language_id="cpp_lsp",
+                available=False,
+                command=["tcp://127.0.0.1:2088"],
+                transport="tcp",
+                required=False,
+                reason="default attach endpoint is not reachable",
+            ),
+        ]
+        cli._print_doctor(statuses, as_json=False)
+        captured = capsys.readouterr()
+        assert "optional attach endpoint" in captured.out
+
+    def test_all_available_message(self, capsys):
+        statuses = [
+            _status(language_id="python", available=True, command=["pylsp"], required=True),
+        ]
+        cli._print_doctor(statuses, as_json=False)
+        captured = capsys.readouterr()
+        assert "All required and optional LSP servers are available" in captured.out
+
+    def test_reason_shown_for_non_installable(self, capsys):
+        statuses = [
+            _status(
+                language_id="go_lsp",
+                available=False,
+                command=["gopls"],
+                reason="no auto-install command is available",
+            ),
+        ]
+        cli._print_doctor(statuses, as_json=False)
+        captured = capsys.readouterr()
+        assert "note: no auto-install" in captured.out
+
+
+class TestRunInstallLsp:
+    """Tests for _run_install_lsp."""
+
+    def test_skip_already_installed(self):
+        status = _status(language_id="python", available=True, command=["pylsp"])
+        result, details = cli._run_install_lsp(status, dry_run=False)
+        assert result == "skipped"
+        assert "already installed" in details
+
+    def test_fail_not_installable(self):
+        status = _status(
+            language_id="go_lsp",
+            available=False,
+            command=["gopls"],
+            reason="no auto-install command",
+        )
+        result, details = cli._run_install_lsp(status, dry_run=False)
+        assert result == "failed"
+
+    def test_dry_run(self):
+        status = _status(
+            language_id="python",
+            available=False,
+            command=["pylsp"],
+            installable=True,
+            install_command=[sys.executable, "-m", "pip", "install", "python-lsp-server"],
+        )
+        result, details = cli._run_install_lsp(status, dry_run=True)
+        assert result == "skipped"
+        assert "dry-run" in details
+
+    def test_oserror_during_install(self):
+        status = _status(
+            language_id="python",
+            available=False,
+            command=["pylsp"],
+            installable=True,
+            install_command=["nonexistent-command-abc"],
+        )
+        result, details = cli._run_install_lsp(status, dry_run=False)
+        assert result == "failed"
+
+    def test_install_succeeds_but_executable_not_found(self):
+        status = _status(
+            language_id="python",
+            available=False,
+            command=["pylsp"],
+            installable=True,
+            install_command=["echo", "installed"],
+        )
+        with patch(
+            "astrograph.cli._lsp_status",
+            return_value=_status(language_id="python", available=False, command=["pylsp"]),
+        ):
+            result, details = cli._run_install_lsp(status, dry_run=False)
+        assert result == "failed"
+        assert "still not found" in details
+
+
+class TestDuplicatesCommandEdgeCases:
+    """Tests for duplicates command single-file path."""
+
+    def test_single_file(self, sample_file, capsys):
+        _run_cli(["cli", "duplicates", str(sample_file)])
+        captured = capsys.readouterr()
+        assert captured.out
+
+
+class TestCheckCommandEdgeCases:
+    """Tests for check command no-plugin path."""
+
+    def test_no_plugin_for_file(self, tmp_path, capsys):
+        indexed_dir = tmp_path / "indexed"
+        indexed_dir.mkdir()
+        (indexed_dir / "data.py").write_text("def f(): pass")
+        code_file = tmp_path / "code.xyz"
+        code_file.write_text("some code")
+        _run_cli(["cli", "check", str(indexed_dir), str(code_file)])
+        captured = capsys.readouterr()
+        assert "No language plugin" in captured.out
+
+    def test_no_similar_found(self, tmp_path, capsys):
+        indexed_dir = tmp_path / "indexed"
+        indexed_dir.mkdir()
+        (indexed_dir / "data.py").write_text(
+            "class BigClass:\n"
+            "    def __init__(self, a, b, c, d, e):\n"
+            "        self.a = a\n"
+            "        self.b = b\n"
+            "        self.c = c\n"
+            "        self.d = d\n"
+            "        self.e = e\n"
+        )
+        code_file = tmp_path / "check.py"
+        code_file.write_text(
+            "def compute_matrix(rows, cols):\n"
+            "    matrix = []\n"
+            "    for i in range(rows):\n"
+            "        row = []\n"
+            "        for j in range(cols):\n"
+            "            row.append(i * cols + j)\n"
+            "        matrix.append(row)\n"
+            "    return matrix\n"
+        )
+        _run_cli(["cli", "check", str(indexed_dir), str(code_file)])
+        captured = capsys.readouterr()
+        assert "No similar" in captured.out or "Safe" in captured.out or "Found" in captured.out
+
+
+class TestCompareCommandEdgeCases:
+    """Tests for compare command edge cases."""
+
+    def test_language_override_no_plugin(self, tmp_path, capsys):
+        f1 = tmp_path / "a.py"
+        f2 = tmp_path / "b.py"
+        f1.write_text("def f(): pass")
+        f2.write_text("def g(): pass")
+        _run_cli(["cli", "compare", str(f1), str(f2), "--language", "nonexistent_lang"])
+        captured = capsys.readouterr()
+        assert "No language plugin" in captured.out
+
+    def test_no_plugin_for_file(self, tmp_path, capsys):
+        f1 = tmp_path / "a.xyz"
+        f2 = tmp_path / "b.xyz"
+        f1.write_text("code1")
+        f2.write_text("code2")
+        _run_cli(["cli", "compare", str(f1), str(f2)])
+        captured = capsys.readouterr()
+        assert "No language plugin" in captured.out
+
+    def test_language_mismatch(self, tmp_path, capsys):
+        f1 = tmp_path / "a.py"
+        f2 = tmp_path / "b.js"
+        f1.write_text("def f(): pass")
+        f2.write_text("function f() {}")
+        _run_cli(["cli", "compare", str(f1), str(f2)])
+        captured = capsys.readouterr()
+        assert "Cannot compare different languages" in captured.out
+
+
+class TestInstallLSPsFailureOutput:
+    """Tests for install-lsps failure output."""
+
+    def test_failure_shows_message(self, capsys):
+        statuses = [
+            _status(
+                language_id="python",
+                available=False,
+                command=["pylsp"],
+                installable=True,
+                install_command=["echo", "fail"],
+            ),
+        ]
+        with (
+            patch("astrograph.cli._collect_lsp_statuses", return_value=statuses),
+            patch("astrograph.cli._run_install_lsp", return_value=("failed", "boom")),
+        ):
+            _run_cli(["cli", "install-lsps"])
+        captured = capsys.readouterr()
+        assert "failed" in captured.out.lower()
+        assert "astrograph-cli doctor" in captured.out
+
+
 class TestHelpCommand:
     """Tests for help output."""
 

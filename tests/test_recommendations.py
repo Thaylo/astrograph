@@ -466,6 +466,10 @@ class TestFormatRecommendationsReport:
 class TestIntegrationWithTools:
     """Integration tests with the tools module."""
 
+    @pytest.fixture(autouse=True)
+    def _clean_workspace(self, monkeypatch):
+        monkeypatch.setenv("ASTROGRAPH_WORKSPACE", "")
+
     def test_analyze_tool(self):
         """Test the analyze tool integration."""
         from astrograph.tools import CodeStructureTools

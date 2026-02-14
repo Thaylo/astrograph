@@ -382,6 +382,19 @@ class TestEntryStoreEnvironment:
             else:
                 del os.environ["ASTROGRAPH_MAX_ENTRIES"]
 
+    def test_invalid_env_var_max_resident(self):
+        """Invalid ASTROGRAPH_MAX_ENTRIES falls back to default (lines 38-39)."""
+        old_val = os.environ.get("ASTROGRAPH_MAX_ENTRIES")
+        os.environ["ASTROGRAPH_MAX_ENTRIES"] = "not_a_number"
+        try:
+            from astrograph.entry_store import _get_max_resident
+            assert _get_max_resident() == 50_000
+        finally:
+            if old_val is not None:
+                os.environ["ASTROGRAPH_MAX_ENTRIES"] = old_val
+            else:
+                del os.environ["ASTROGRAPH_MAX_ENTRIES"]
+
     def test_explicit_max_resident(self):
         """Explicit max_resident overrides env var."""
         store = EntryStore(max_resident=42)

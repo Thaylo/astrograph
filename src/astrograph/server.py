@@ -3,8 +3,9 @@ MCP server for code structure analysis.
 
 Auto-indexes the codebase at startup and maintains the index via file watching.
 
-Provides 12 tools (all prefixed with astrograph_):
-- astrograph_analyze: Find duplicates and similar patterns
+Provides 13 tools (all prefixed with astrograph_):
+- astrograph_analyze: Find duplicates and similar patterns (supports scope and domains)
+- astrograph_configure_domains: Configure detection domains for partitioned analysis
 - astrograph_write: Write file with duplicate detection (blocks if duplicate exists)
 - astrograph_edit: Edit file with duplicate detection (blocks if duplicate exists)
 - astrograph_suppress: Suppress one or more duplicates by WL hash (string or array)
@@ -86,6 +87,15 @@ def create_server() -> Server:
                             "type": "boolean",
                             "description": "Auto re-index if stale (default: true)",
                             "default": True,
+                        },
+                        "scope": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Glob patterns to restrict analysis scope "
+                                "(e.g. ['src/**']). Only entries matching "
+                                "these patterns are analyzed."
+                            ),
                         },
                     },
                 },
@@ -243,6 +253,31 @@ def create_server() -> Server:
                 },
             ),
             Tool(
+                name="astrograph_configure_domains",
+                description=(
+                    "Configure named detection domains for partitioned analysis. "
+                    "Entries are compared only within their domain; cross-domain "
+                    "matches are shown separately. Pass empty domains to clear."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "domains": {
+                            "type": "object",
+                            "description": (
+                                "Domain name to glob-pattern list mapping. "
+                                'Example: {"core": ["src/core/**"], "api": ["src/api/**"]}. '
+                                "Pass {} to clear all domains."
+                            ),
+                            "additionalProperties": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            ),
+            Tool(
                 name="astrograph_set_workspace",
                 description="Set or change the workspace directory. Re-indexes the codebase at the new path.",
                 inputSchema={
@@ -311,6 +346,7 @@ def create_server() -> Server:
         "astrograph_metadata_erase": "metadata_erase",
         "astrograph_metadata_recompute_baseline": "metadata_recompute_baseline",
         "astrograph_generate_ignore": "generate_ignore",
+        "astrograph_configure_domains": "configure_domains",
         "astrograph_set_workspace": "set_workspace",
     }
 
