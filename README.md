@@ -38,6 +38,7 @@ That's it. The codebase is indexed at startup and re-indexed on file changes.
 <summary><strong>Claude Desktop</strong></summary>
 
 macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+Linux: `~/.config/Claude/claude_desktop_config.json`
 Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
@@ -60,9 +61,9 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 </details>
 
 <details>
-<summary><strong>Codex</strong></summary>
+<summary><strong>Codex CLI</strong></summary>
 
-`~/.codex/config.toml`:
+`~/.codex/config.toml` (global — works for every project):
 
 ```toml
 [mcp_servers.astrograph]
@@ -70,10 +71,41 @@ command = "docker"
 args = [
   "run", "--rm", "-i", "--pull", "always",
   "--add-host", "host.docker.internal:host-gateway",
-  "-v", "/absolute/path/to/project:/workspace",
-  "-v", "/absolute/path/to/project/.metadata_astrograph:/workspace/.metadata_astrograph",
+  "-v", ".:/workspace",
+  "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
   "thaylo/astrograph:latest"
 ]
+```
+
+Codex resolves `.` from the current project directory, so the same config works
+everywhere. You can also use a project-scoped `.codex/config.toml` if preferred.
+
+> **Linux:** Docker must be installed and your user must be in the `docker`
+> group (`sudo usermod -aG docker $USER`, then log out and back in).
+
+</details>
+
+<details>
+<summary><strong>Global setup (all projects)</strong></summary>
+
+Add astrograph to `~/.claude/mcp_servers.json` so it is available in every project
+without a per-project `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "astrograph": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i", "--pull", "always",
+        "--add-host", "host.docker.internal:host-gateway",
+        "-v", ".:/workspace",
+        "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
+        "thaylo/astrograph:latest"
+      ]
+    }
+  }
+}
 ```
 
 </details>
@@ -82,20 +114,24 @@ args = [
 <summary><strong>Without Docker</strong></summary>
 
 ```bash
-pip install .
+pip install .          # macOS / venv
+pipx install .         # Linux (avoids PEP 668 externally-managed errors)
 ```
 
 ```json
 {
   "mcpServers": {
     "astrograph": {
-      "command": "python",
-      "args": ["-m", "astrograph.server"],
-      "cwd": "/path/to/astrograph"
+      "command": "astrograph",
+      "args": []
     }
   }
 }
 ```
+
+> **Linux note:** Modern distributions (Ubuntu 24.04+, Fedora 40+) mark the system
+> Python as externally managed. Use `pipx`, install inside a virtualenv, or use the
+> Docker method above.
 
 </details>
 
