@@ -104,27 +104,27 @@ class TestEntryPointsForGroup:
 
 
 class TestIterEntryPointPlugins:
-    def test_entry_point_load_exception(self):
-        mock_ep = MagicMock()
-        mock_ep.name = "broken"
-        mock_ep.load.side_effect = RuntimeError("boom")
+    @staticmethod
+    def _iter_from_single_entry_point(mock_ep: MagicMock):
         with patch(
             "astrograph.languages.plugin_loader._entry_points_for_group",
             return_value=[mock_ep],
         ):
-            result = _iter_entry_point_plugins("test_group")
-            assert result == []
+            return _iter_entry_point_plugins("test_group")
+
+    def test_entry_point_load_exception(self):
+        mock_ep = MagicMock()
+        mock_ep.name = "broken"
+        mock_ep.load.side_effect = RuntimeError("boom")
+        result = self._iter_from_single_entry_point(mock_ep)
+        assert result == []
 
     def test_entry_point_not_language_plugin(self):
         mock_ep = MagicMock()
         mock_ep.name = "not_plugin"
         mock_ep.load.return_value = lambda: 42  # returns int, not LanguagePlugin
-        with patch(
-            "astrograph.languages.plugin_loader._entry_points_for_group",
-            return_value=[mock_ep],
-        ):
-            result = _iter_entry_point_plugins("test_group")
-            assert result == []
+        result = self._iter_from_single_entry_point(mock_ep)
+        assert result == []
 
 
 class TestClosePluginQuietly:

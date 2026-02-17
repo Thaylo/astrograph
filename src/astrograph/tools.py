@@ -143,6 +143,23 @@ def _requires_index(func: Callable[..., ToolResult]) -> Callable[..., ToolResult
     return wrapper
 
 
+def _requires_workspace_root(
+    missing_message: str,
+) -> Callable[[Callable[..., ToolResult]], Callable[..., ToolResult]]:
+    """Guard a tool method so an indexed workspace root exists."""
+
+    def decorator(func: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
+        @wraps(func)
+        def wrapper(self: CodeStructureTools, *args: Any, **kwargs: Any) -> ToolResult:
+            if error := self._require_workspace_root(missing_message):
+                return error
+            return func(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def _get_persistence_path(indexed_path: str) -> Path:
     """
     Get metadata directory for an indexed codebase.
@@ -349,6 +366,12 @@ class CodeStructureTools(CloseOnExitMixin):
             error_detail = getattr(self, "_bg_index_error", "unknown error")
             return ToolResult(f"Background indexing failed: {error_detail}")
         return ToolResult("No code indexed. Call index_codebase first.")
+
+    def _require_workspace_root(self, missing_message: str) -> ToolResult | None:
+        """Ensure an indexed workspace root exists for metadata/config operations."""
+        if self._last_indexed_path:
+            return None
+        return ToolResult(missing_message)
 
     def _active_index(self) -> CodeStructureIndex | EventDrivenIndex:
         """Return event-driven index when enabled, otherwise in-memory index."""
@@ -904,6 +927,12 @@ class CodeStructureTools(CloseOnExitMixin):
             result.append("")
             return result
 
+        def _append_section(section: list[dict[str, Any]], start_num: int) -> int:
+            for finding in section:
+                lines.extend(_format_finding(start_num, finding))
+                start_num += 1
+            return start_num
+
         # --- Domain-partitioned output ---
         if domains:
             # Group findings by domain
@@ -931,9 +960,7 @@ class CodeStructureTools(CloseOnExitMixin):
                     header = f"=== Domain: {key} ({globs}) ==="
                 lines.append(header)
                 lines.append("")
-                for f in section:
-                    lines.extend(_format_finding(num, f))
-                    num += 1
+                num = _append_section(section, num)
         else:
             # --- Standard source/test output ---
             has_both = bool(source_findings) and bool(test_findings)
@@ -945,9 +972,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 if has_both:
                     lines.append(header)
                     lines.append("")
-                for f in section:
-                    lines.extend(_format_finding(num, f))
-                    num += 1
+                num = _append_section(section, num)
 
         # Compact footer
         if suppressed_line := _suppressed_line():
@@ -1638,14 +1663,15 @@ class CodeStructureTools(CloseOnExitMixin):
             result_json = result_json.replace(str(workspace), self._host_root)
         return ToolResult(result_json)
 
+    @_requires_workspace_root(
+        "No indexed codebase. Run index_codebase first to establish a workspace root."
+    )
     def generate_ignore(self) -> ToolResult:
         """Generate a .astrographignore file with sensible defaults."""
-        if not self._last_indexed_path:
-            return ToolResult(
-                "No indexed codebase. Run index_codebase first to establish a workspace root."
-            )
 
-        root = Path(self._last_indexed_path)
+        workspace_root = self._last_indexed_path
+        assert workspace_root is not None
+        root = Path(workspace_root)
         ignore_path = root / ASTROGRAPHIGNORE_FILENAME
 
         if ignore_path.exists():
@@ -1665,6 +1691,9 @@ class CodeStructureTools(CloseOnExitMixin):
         )
         return result
 
+    @_requires_workspace_root(
+        "No indexed codebase. Run index_codebase first to establish a workspace root."
+    )
     def configure_domains(
         self,
         domains: dict[str, list[str]] | None = None,
@@ -1678,12 +1707,9 @@ class CodeStructureTools(CloseOnExitMixin):
 
         Pass an empty dict to clear all domains.
         """
-        if not self._last_indexed_path:
-            return ToolResult(
-                "No indexed codebase. Run index_codebase first to establish a workspace root."
-            )
-
-        persistence_dir = _get_persistence_path(self._last_indexed_path)
+        workspace_root = self._last_indexed_path
+        assert workspace_root is not None
+        persistence_dir = _get_persistence_path(workspace_root)
         domains_file = persistence_dir / "domains.json"
 
         if domains is None:
@@ -1755,6 +1781,7 @@ class CodeStructureTools(CloseOnExitMixin):
             return ToolResult(message)
         return ToolResult("No metadata to erase. Server is idle.")
 
+    @_requires_workspace_root("No codebase has been indexed. Nothing to recompute.")
     def metadata_recompute_baseline(self) -> ToolResult:
         """
         Erase metadata and re-index the codebase from scratch.
@@ -1762,10 +1789,8 @@ class CodeStructureTools(CloseOnExitMixin):
         Equivalent to erasing all persisted data and running a fresh
         full index. Suppressions are cleared.
         """
-        if not self._last_indexed_path:
-            return ToolResult("No codebase has been indexed. Nothing to recompute.")
-
         path = self._last_indexed_path
+        assert path is not None
         bindings_removed = (_get_persistence_path(path) / "lsp_bindings.json").exists()
 
         # Erase everything

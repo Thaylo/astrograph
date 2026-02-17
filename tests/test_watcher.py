@@ -60,29 +60,41 @@ class TestDebouncedCallback:
 
 
 class TestSourceFileHandler:
-    def test_registry_none_returns_false(self):
-        """When LanguageRegistry.get() is None, _is_supported_source_file → False (line 120)."""
-        handler = SourceFileHandler(
+    @staticmethod
+    def _make_handler(**kwargs):
+        return SourceFileHandler(
             on_modified=lambda _p: None,
             on_created=lambda _p: None,
             on_deleted=lambda _p: None,
+            **kwargs,
         )
+
+    @staticmethod
+    def _is_supported_with_registry(handler, path: str, *, extensions: set[str]) -> bool:
+        mock_registry = MagicMock()
+        mock_registry.supported_extensions = frozenset(extensions)
+        with patch("astrograph.watcher.LanguageRegistry") as mock_reg:
+            mock_reg.get.return_value = mock_registry
+            return handler._is_supported_source_file(path)
+
+    def test_registry_none_returns_false(self):
+        """When LanguageRegistry.get() is None, _is_supported_source_file → False (line 120)."""
+        handler = self._make_handler()
         with patch("astrograph.watcher.LanguageRegistry") as mock_reg:
             mock_reg.get.return_value = None
             assert handler._is_supported_source_file("/some/file.py") is False
 
     def test_skip_dir_returns_false(self):
         """Files in skip dirs (node_modules etc.) are rejected (line 124)."""
-        handler = SourceFileHandler(
-            on_modified=lambda _p: None,
-            on_created=lambda _p: None,
-            on_deleted=lambda _p: None,
+        handler = self._make_handler()
+        assert (
+            self._is_supported_with_registry(
+                handler,
+                "/project/node_modules/test.py",
+                extensions={".py"},
+            )
+            is False
         )
-        mock_registry = MagicMock()
-        mock_registry.supported_extensions = frozenset({".py"})
-        with patch("astrograph.watcher.LanguageRegistry") as mock_reg:
-            mock_reg.get.return_value = mock_registry
-            assert handler._is_supported_source_file("/project/node_modules/test.py") is False
 
     def test_ignore_spec_filters_file(self):
         """Files matching ignore_spec are rejected (lines 126-131)."""
@@ -90,18 +102,18 @@ class TestSourceFileHandler:
 
         spec = IgnoreSpec.from_lines(["*.min.js"])
         root = Path("/project")
-        handler = SourceFileHandler(
-            on_modified=lambda _p: None,
-            on_created=lambda _p: None,
-            on_deleted=lambda _p: None,
+        handler = self._make_handler(
             ignore_spec=spec,
             root_path=root,
         )
-        mock_registry = MagicMock()
-        mock_registry.supported_extensions = frozenset({".js"})
-        with patch("astrograph.watcher.LanguageRegistry") as mock_reg:
-            mock_reg.get.return_value = mock_registry
-            assert handler._is_supported_source_file("/project/dist/app.min.js") is False
+        assert (
+            self._is_supported_with_registry(
+                handler,
+                "/project/dist/app.min.js",
+                extensions={".js"},
+            )
+            is False
+        )
 
     def test_ignore_spec_value_error_passes(self):
         """ValueError from relative_to is silently passed (line 130-131)."""

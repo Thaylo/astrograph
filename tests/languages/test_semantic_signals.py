@@ -7,6 +7,8 @@ Targets coverage gaps in:
 
 from __future__ import annotations
 
+import pytest
+
 from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
 from astrograph.languages.python_lsp_plugin import PythonLSPPlugin
 from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
@@ -438,6 +440,24 @@ class TestJavaScriptLanguageSignals:
 class TestTreeSitterResolveOperandType:
     """Cover _resolve_ts_operand_type with real tree-sitter parsed nodes."""
 
+    @staticmethod
+    def _resolve_node_operand_type(source: str, target_node_type: str):
+        from astrograph.languages._js_ts_treesitter import (
+            _resolve_ts_operand_type,
+            _ts_try_parse,
+            _ts_walk,
+        )
+
+        tree = _ts_try_parse(source, "javascript")
+        assert tree is not None
+        target = None
+        for node in _ts_walk(tree.root_node):
+            if node.type == target_node_type:
+                target = node
+                break
+        assert target is not None
+        return _resolve_ts_operand_type(target, {})
+
     def test_identifier_with_annotation(self):
         from astrograph.languages._js_ts_treesitter import (
             _resolve_ts_operand_type,
@@ -457,77 +477,21 @@ class TestTreeSitterResolveOperandType:
         result = _resolve_ts_operand_type(ident, {"a": "number"})
         assert result == "number"
 
-    def test_literal_string(self):
-        from astrograph.languages._js_ts_treesitter import (
-            _resolve_ts_operand_type,
-            _ts_try_parse,
-            _ts_walk,
-        )
-
-        tree = _ts_try_parse('const x = "hello";', "javascript")
-        assert tree is not None
-        str_node = None
-        for node in _ts_walk(tree.root_node):
-            if node.type == "string":
-                str_node = node
-                break
-        assert str_node is not None
-        result = _resolve_ts_operand_type(str_node, {})
-        assert result == "string"
-
-    def test_literal_number(self):
-        from astrograph.languages._js_ts_treesitter import (
-            _resolve_ts_operand_type,
-            _ts_try_parse,
-            _ts_walk,
-        )
-
-        tree = _ts_try_parse("const x = 42;", "javascript")
-        assert tree is not None
-        num_node = None
-        for node in _ts_walk(tree.root_node):
-            if node.type == "number":
-                num_node = node
-                break
-        assert num_node is not None
-        result = _resolve_ts_operand_type(num_node, {})
-        assert result == "number"
-
-    def test_template_literal(self):
-        from astrograph.languages._js_ts_treesitter import (
-            _resolve_ts_operand_type,
-            _ts_try_parse,
-            _ts_walk,
-        )
-
-        tree = _ts_try_parse("const x = `hello`;", "javascript")
-        assert tree is not None
-        tmpl_node = None
-        for node in _ts_walk(tree.root_node):
-            if node.type == "template_string":
-                tmpl_node = node
-                break
-        assert tmpl_node is not None
-        result = _resolve_ts_operand_type(tmpl_node, {})
-        assert result == "string"
-
-    def test_unknown_type(self):
-        from astrograph.languages._js_ts_treesitter import (
-            _resolve_ts_operand_type,
-            _ts_try_parse,
-            _ts_walk,
-        )
-
-        tree = _ts_try_parse("const x = foo();", "javascript")
-        assert tree is not None
-        call_node = None
-        for node in _ts_walk(tree.root_node):
-            if node.type == "call_expression":
-                call_node = node
-                break
-        assert call_node is not None
-        result = _resolve_ts_operand_type(call_node, {})
-        assert result is None
+    @pytest.mark.parametrize(
+        ("source", "target_node_type", "expected"),
+        [
+            ('const x = "hello";', "string", "string"),
+            ("const x = 42;", "number", "number"),
+            ("const x = `hello`;", "template_string", "string"),
+            ("const x = foo();", "call_expression", None),
+        ],
+        ids=["literal_string", "literal_number", "template_literal", "unknown_type"],
+    )
+    def test_literal_and_unknown_nodes(
+        self, source: str, target_node_type: str, expected: str | None
+    ):
+        result = self._resolve_node_operand_type(source, target_node_type)
+        assert result == expected
 
 
 # ---- Python LSP plugin semantic signal tests ----

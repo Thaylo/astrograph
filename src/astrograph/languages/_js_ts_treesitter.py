@@ -127,6 +127,12 @@ _FUNCTION_NODE_TYPES = frozenset(
 _JS_NUMERIC_TYPES = frozenset({"number", "bigint", "Number", "BigInt"})
 
 
+def _label_with_operator(node: Any, label: str, normalize_ops: bool) -> str:
+    """Build a structural label that includes operator text (or normalized Op)."""
+    op = _get_operator(node)
+    return f"{label}:Op" if normalize_ops else f"{label}:{op}"
+
+
 def _ts_node_label(node: Any, normalize_ops: bool = False) -> str:
     """Map a tree-sitter node type to an esprima-compatible structural label."""
     ntype = node.type
@@ -148,16 +154,13 @@ def _ts_node_label(node: Any, normalize_ops: bool = False) -> str:
 
     # Unary / update
     if ntype == "unary_expression":
-        op = _get_operator(node)
-        return "UnaryExpression:Op" if normalize_ops else f"UnaryExpression:{op}"
+        return _label_with_operator(node, "UnaryExpression", normalize_ops)
     if ntype == "update_expression":
-        op = _get_operator(node)
-        return "UpdateExpression:Op" if normalize_ops else f"UpdateExpression:{op}"
+        return _label_with_operator(node, "UpdateExpression", normalize_ops)
 
     # Assignment
     if ntype == "assignment_expression":
-        op = _get_operator(node)
-        return "AssignmentExpression:Op" if normalize_ops else f"AssignmentExpression:{op}"
+        return _label_with_operator(node, "AssignmentExpression", normalize_ops)
 
     # Variable declarations
     if ntype == "variable_declaration":

@@ -358,6 +358,13 @@ class TestEntryStoreDictInterface:
 class TestEntryStoreEnvironment:
     """Tests for environment variable configuration."""
 
+    @staticmethod
+    def _restore_env_max_entries(old_val: str | None) -> None:
+        if old_val is not None:
+            os.environ["ASTROGRAPH_MAX_ENTRIES"] = old_val
+            return
+        os.environ.pop("ASTROGRAPH_MAX_ENTRIES", None)
+
     def test_default_max_resident(self):
         """Default max_resident is used when env var not set."""
         # Remove env var if set
@@ -377,10 +384,7 @@ class TestEntryStoreEnvironment:
             store = EntryStore()
             assert store._max_resident == 1000
         finally:
-            if old_val is not None:
-                os.environ["ASTROGRAPH_MAX_ENTRIES"] = old_val
-            else:
-                del os.environ["ASTROGRAPH_MAX_ENTRIES"]
+            self._restore_env_max_entries(old_val)
 
     def test_invalid_env_var_max_resident(self):
         """Invalid ASTROGRAPH_MAX_ENTRIES falls back to default (lines 38-39)."""
@@ -391,10 +395,7 @@ class TestEntryStoreEnvironment:
 
             assert _get_max_resident() == 50_000
         finally:
-            if old_val is not None:
-                os.environ["ASTROGRAPH_MAX_ENTRIES"] = old_val
-            else:
-                del os.environ["ASTROGRAPH_MAX_ENTRIES"]
+            self._restore_env_max_entries(old_val)
 
     def test_explicit_max_resident(self):
         """Explicit max_resident overrides env var."""

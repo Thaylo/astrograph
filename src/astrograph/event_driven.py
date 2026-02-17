@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+from ._sync_helpers import pop_attr_with_lock
 from .cloud_detect import check_and_warn_cloud_sync, is_cloud_synced_path
 from .context import CloseOnExitMixin
 from .ignorefile import IgnoreSpec
@@ -212,9 +213,7 @@ class EventDrivenIndex(CloseOnExitMixin):
         self._shutdown.set()
         self.stop_watching()
 
-        with self._bg_lock:
-            bg = self._bg_thread
-            self._bg_thread = None
+        bg = pop_attr_with_lock(self._bg_lock, self, "_bg_thread")
         if bg is not None:
             bg.join(timeout=2.0)
 

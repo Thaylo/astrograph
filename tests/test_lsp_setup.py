@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1555,6 +1556,19 @@ class TestRunVersionProbe:
 class TestNormalizeWorkspaceRoot:
     """Cover _normalize_workspace_root edge cases."""
 
+    @contextmanager
+    def _without_active_workspace(self):
+        old_active = lsp_setup._active_workspace
+        lsp_setup._active_workspace = None
+        try:
+            yield
+        finally:
+            lsp_setup._active_workspace = old_active
+
+    def _normalize_without_active_workspace(self):
+        with self._without_active_workspace():
+            return _normalize_workspace_root(None)
+
     def test_workspace_is_file_returns_parent(self, tmp_path):
         """When workspace points to a file, its parent directory is returned."""
         test_file = tmp_path / "some_file.py"
@@ -1572,24 +1586,13 @@ class TestNormalizeWorkspaceRoot:
         test_file = tmp_path / "config.yaml"
         test_file.write_text("key: value")
         monkeypatch.setenv("ASTROGRAPH_WORKSPACE", str(test_file))
-        # Clear _active_workspace to avoid it taking precedence
-        old_active = lsp_setup._active_workspace
-        lsp_setup._active_workspace = None
-        try:
-            result = _normalize_workspace_root(None)
-            assert result == tmp_path.resolve()
-        finally:
-            lsp_setup._active_workspace = old_active
+        result = self._normalize_without_active_workspace()
+        assert result == tmp_path.resolve()
 
     def test_env_var_is_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ASTROGRAPH_WORKSPACE", str(tmp_path))
-        old_active = lsp_setup._active_workspace
-        lsp_setup._active_workspace = None
-        try:
-            result = _normalize_workspace_root(None)
-            assert result == tmp_path.resolve()
-        finally:
-            lsp_setup._active_workspace = old_active
+        result = self._normalize_without_active_workspace()
+        assert result == tmp_path.resolve()
 
     def test_env_var_empty_falls_through_to_cwd(self, monkeypatch):
         """Empty ASTROGRAPH_WORKSPACE falls through to cwd."""

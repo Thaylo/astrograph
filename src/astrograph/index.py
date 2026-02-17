@@ -1079,8 +1079,7 @@ class CodeStructureIndex:
         entry_filter: Callable | None = None,
     ) -> list[DuplicateGroup]:
         """Find all groups of structurally equivalent code units."""
-        with self._lock:
-            return self._find_duplicates_in_buckets(self.hash_buckets, min_node_count, entry_filter)
+        return self._find_duplicates_in_buckets(self.hash_buckets, min_node_count, entry_filter)
 
     def find_pattern_duplicates(
         self,
@@ -1152,10 +1151,7 @@ class CodeStructureIndex:
             else:
                 combined_filter = block_type_filter
 
-        with self._lock:
-            return self._find_duplicates_in_buckets(
-                self.block_buckets, min_node_count, combined_filter
-            )
+        return self._find_duplicates_in_buckets(self.block_buckets, min_node_count, combined_filter)
 
     def has_duplicates(self, min_node_count: int = 5) -> bool:
         """Check if any duplicates exist above the trivial threshold.

@@ -162,9 +162,10 @@ class CppLSPPlugin(BraceLanguageLSPPlugin):
         for left, right in plus_pairs:
             left_type = var_types.get(left)
             right_type = var_types.get(right)
-            if left_type is None or right_type is None:
+            if any(candidate is None for candidate in (left_type, right_type)):
                 saw_unknown = True
                 continue
+            assert left_type is not None and right_type is not None
 
             if left_type == right_type and self._is_builtin_cpp_type(left_type):
                 saw_builtin = True

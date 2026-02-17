@@ -246,7 +246,7 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
             left_type = self._resolve_operand_type(node.left, annotation_map)
             right_type = self._resolve_operand_type(node.right, annotation_map)
 
-            if left_type is None or right_type is None:
+            if None in (left_type, right_type):
                 saw_unknown = True
                 continue
             if left_type in self._PYTHON_NUMERIC_TYPES and right_type in self._PYTHON_NUMERIC_TYPES:
@@ -322,6 +322,22 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
             )
         )
 
+    @classmethod
+    def _append_set_signal_if_any(
+        cls,
+        signals: list[SemanticSignal],
+        items: set[str],
+        key: str,
+        *,
+        confidence: float,
+        coverage_delta: float,
+    ) -> float:
+        """Append a set-derived signal and return coverage delta when emitted."""
+        if not items:
+            return 0.0
+        cls._append_set_signal(signals, items, key, confidence)
+        return coverage_delta
+
     def extract_semantic_profile(
         self,
         source: str,
@@ -341,9 +357,13 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
 
         # 1. Dunder methods
         dunders = self._collect_dunder_methods(tree)
-        if dunders:
-            self._append_set_signal(signals, dunders, "python.dunder_methods.defined", 0.95)
-            extra_coverage += 0.15
+        extra_coverage += self._append_set_signal_if_any(
+            signals,
+            dunders,
+            "python.dunder_methods.defined",
+            confidence=0.95,
+            coverage_delta=0.15,
+        )
 
         # 2. Annotation density (always emitted)
         density = self._compute_annotation_density(tree)
@@ -359,9 +379,13 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
 
         # 3. Decorators
         decorators = self._collect_decorators(tree)
-        if decorators:
-            self._append_set_signal(signals, decorators, "python.decorators.present", 0.95)
-            extra_coverage += 0.10
+        extra_coverage += self._append_set_signal_if_any(
+            signals,
+            decorators,
+            "python.decorators.present",
+            confidence=0.95,
+            coverage_delta=0.10,
+        )
 
         # 4. Async constructs (always emitted)
         has_async = self._detect_async_constructs(tree)

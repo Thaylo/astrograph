@@ -9,6 +9,7 @@ import logging
 import threading
 from pathlib import Path
 
+from .._sync_helpers import pop_attr_with_lock
 from .base import LanguagePlugin
 from .plugin_loader import discover_language_plugins
 
@@ -61,9 +62,7 @@ class LanguageRegistry:
     @classmethod
     def reset(cls) -> None:
         """Reset the singleton (for testing). Closes all plugin resources."""
-        with cls._lock:
-            inst = cls._instance
-            cls._instance = None
+        inst = pop_attr_with_lock(cls._lock, cls, "_instance")
         if inst is not None:
             inst._close_plugins()
 

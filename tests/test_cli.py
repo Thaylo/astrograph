@@ -332,6 +332,29 @@ class TestInstallLSPsCommand:
 class TestLspStatusEdgeCases:
     """Tests for LSP status computation edge cases."""
 
+    def _unreachable_attach_status(self, *, command_source: str) -> cli.LSPServerStatus:
+        spec = cli.LSPServerSpec(
+            language_id="cpp_lsp",
+            default_command=["tcp://127.0.0.1:2088"],
+            required=False,
+        )
+        with (
+            patch(
+                "astrograph.cli.resolve_lsp_command",
+                return_value=(["tcp://127.0.0.1:2088"], command_source),
+            ),
+            patch(
+                "astrograph.cli.probe_command",
+                return_value={
+                    "available": False,
+                    "executable": None,
+                    "transport": "tcp",
+                    "endpoint": "127.0.0.1:2088",
+                },
+            ),
+        ):
+            return cli._lsp_status(spec)
+
     def test_empty_command_status(self):
         spec = cli.LSPServerSpec(
             language_id="python",
@@ -360,51 +383,11 @@ class TestLspStatusEdgeCases:
         assert status.reason == "bound command was not found; check the binding"
 
     def test_binding_not_reachable_tcp(self):
-        spec = cli.LSPServerSpec(
-            language_id="cpp_lsp",
-            default_command=["tcp://127.0.0.1:2088"],
-            required=False,
-        )
-        with (
-            patch(
-                "astrograph.cli.resolve_lsp_command",
-                return_value=(["tcp://127.0.0.1:2088"], "binding"),
-            ),
-            patch(
-                "astrograph.cli.probe_command",
-                return_value={
-                    "available": False,
-                    "executable": None,
-                    "transport": "tcp",
-                    "endpoint": "127.0.0.1:2088",
-                },
-            ),
-        ):
-            status = cli._lsp_status(spec)
+        status = self._unreachable_attach_status(command_source="binding")
         assert status.reason == "bound endpoint is not reachable; check the binding"
 
     def test_default_attach_not_reachable(self):
-        spec = cli.LSPServerSpec(
-            language_id="cpp_lsp",
-            default_command=["tcp://127.0.0.1:2088"],
-            required=False,
-        )
-        with (
-            patch(
-                "astrograph.cli.resolve_lsp_command",
-                return_value=(["tcp://127.0.0.1:2088"], "default"),
-            ),
-            patch(
-                "astrograph.cli.probe_command",
-                return_value={
-                    "available": False,
-                    "executable": None,
-                    "transport": "tcp",
-                    "endpoint": "127.0.0.1:2088",
-                },
-            ),
-        ):
-            status = cli._lsp_status(spec)
+        status = self._unreachable_attach_status(command_source="default")
         assert status.reason == "default attach endpoint is not reachable"
 
     def test_js_installable_without_npm(self):

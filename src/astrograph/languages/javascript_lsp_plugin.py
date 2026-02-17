@@ -240,18 +240,21 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
             if op_text != "+":
                 continue
             found_plus = True
-            if left is None or right is None:
+            missing_operands = left is None or right is None
+            if missing_operands:
                 saw_unknown = True
                 continue
             left_type = _resolve_ts_operand_type(left, annotation_map)
             right_type = _resolve_ts_operand_type(right, annotation_map)
-            if left_type is None or right_type is None:
+            if left_type is not None and right_type is not None:
+                if left_type in _JS_NUMERIC_TYPES and right_type in _JS_NUMERIC_TYPES:
+                    saw_numeric = True
+                elif left_type == "string" and right_type == "string":
+                    saw_str = True
+                continue
+            else:
                 saw_unknown = True
                 continue
-            if left_type in _JS_NUMERIC_TYPES and right_type in _JS_NUMERIC_TYPES:
-                saw_numeric = True
-            elif left_type == "string" and right_type == "string":
-                saw_str = True
 
         if not found_plus:
             return None
