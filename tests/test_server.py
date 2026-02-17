@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -4155,6 +4155,24 @@ class TestStatusTool:
         tools = CodeStructureTools()
         _assert_status_reports_indexing(tools)
 
+    def test_status_explains_zero_code_units_with_blocks(self, tools, monkeypatch):
+        """Ready status should explain 0 code-unit cases when only blocks are indexed."""
+        tools.index.entries = {"dummy": MagicMock()}
+        monkeypatch.setattr(
+            tools.index,
+            "get_stats",
+            lambda: {
+                "function_entries": 0,
+                "block_entries": 12,
+                "indexed_files": 7,
+                "suppressed_hashes": 0,
+            },
+        )
+
+        result = tools.status()
+        assert "symbol-level code units are 0" in result.text
+        assert "astrograph_lsp_setup(mode='inspect')" in result.text
+
     def test_call_tool_status(self, tools, sample_python_file):
         """Test call_tool dispatch for status."""
         tools.index_codebase(sample_python_file)
@@ -5161,6 +5179,138 @@ class TestServerMCPResources:
             assert result.root.resourceTemplates == []
         finally:
             loop.close()
+
+    def test_call_tool_formats_plain_text_with_invocation_header(self):
+        """MCP tool responses include a concise invocation header for readability."""
+        from mcp.types import CallToolRequest
+
+        server = create_server()
+        handler = server.request_handlers[CallToolRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                handler(
+                    CallToolRequest(
+                        method="tools/call",
+                        params={"name": "astrograph_status", "arguments": {}},
+                    )
+                )
+            )
+            text = result.root.content[0].text
+            assert text.startswith("Tool: astrograph_status")
+            assert "\nOutcome: " in text
+            assert "\nArguments: none\nResult:\n" in text
+        finally:
+            loop.close()
+
+    def test_call_tool_keeps_lsp_setup_payload_as_json(self):
+        """Structured lsp_setup responses remain machine-parseable JSON."""
+        from mcp.types import CallToolRequest
+
+        server = create_server()
+        handler = server.request_handlers[CallToolRequest]
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                handler(
+                    CallToolRequest(
+                        method="tools/call",
+                        params={"name": "astrograph_lsp_setup", "arguments": {"mode": "inspect"}},
+                    )
+                )
+            )
+            text = result.root.content[0].text
+            assert not text.startswith("Tool: astrograph_lsp_setup")
+            payload = json.loads(text)
+            assert payload["mode"] == "inspect"
+        finally:
+            loop.close()
+
+    @staticmethod
+    def _call_mcp_tool_text(name: str, arguments: dict, *, fake_text: str) -> str:
+        from mcp.types import CallToolRequest
+
+        class _FakeTools:
+            def call_tool(self, _internal_name, _arguments):
+                return ToolResult(fake_text)
+
+        original = get_tools()
+        set_tools(_FakeTools())
+        try:
+            server = create_server()
+            handler = server.request_handlers[CallToolRequest]
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(
+                    handler(
+                        CallToolRequest(
+                            method="tools/call",
+                            params={"name": name, "arguments": arguments},
+                        )
+                    )
+                )
+                return result.root.content[0].text
+            finally:
+                loop.close()
+        finally:
+            set_tools(original)
+
+    def test_call_tool_argument_header_compacts_large_values(self):
+        """Invocation header should summarize argument types and sizes."""
+        text = self._call_mcp_tool_text(
+            "astrograph_status",
+            {
+                "none_value": None,
+                "flag": True,
+                "count": 7,
+                "snippet": "abc",
+                "items": [1, 2, 3],
+                "config": {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5},
+                "misc": ("x",),
+            },
+            fake_text="ok",
+        )
+        assert "none_value=null" in text
+        assert "flag=true" in text
+        assert "count=7" in text
+        assert "snippet=<str len=3>" in text
+        assert "items=<list len=3>" in text
+        assert "config=<object keys=[a, b, c, d, ...]>" in text
+        assert "misc=<tuple>" in text
+
+    @pytest.mark.parametrize(
+        ("tool_text", "expected_outcome"),
+        [
+            ("Error: failed", "error"),
+            ("Status: indexing (1 entries so far)", "warning"),
+            ("Done", "ok"),
+        ],
+    )
+    def test_call_tool_outcome_classification(self, tool_text, expected_outcome):
+        """Outcome header should classify error/warning/ok text responses."""
+        text = self._call_mcp_tool_text(
+            "astrograph_status",
+            {},
+            fake_text=tool_text,
+        )
+        assert f"\nOutcome: {expected_outcome}\n" in text
+
+    def test_call_tool_json_passthrough_and_invalid_json_wrap(self):
+        """Valid JSON payloads pass through, malformed JSON is wrapped for context."""
+        passthrough = self._call_mcp_tool_text(
+            "astrograph_status",
+            {},
+            fake_text='{"ok": true}',
+        )
+        assert passthrough == '{"ok": true}'
+
+        wrapped = self._call_mcp_tool_text(
+            "astrograph_status",
+            {},
+            fake_text="{not json",
+        )
+        assert wrapped.startswith("Tool: astrograph_status")
+        assert "\nResult:\n{not json" in wrapped
 
     def test_list_prompts(self):
         from mcp.types import ListPromptsRequest
@@ -6492,3 +6642,54 @@ class TestMCPShutdown:
             mock_tools.close.assert_called_once()
         finally:
             self._restore_tools_and_close_flag(was_set, old_tools)
+
+    @pytest.mark.asyncio
+    async def test_run_server_uses_stdio_transport(self):
+        """run_server wires server.run through dual_stdio_server streams."""
+        import astrograph.server as server_module
+
+        fake_server = MagicMock()
+        fake_server.run = AsyncMock()
+        fake_server.create_initialization_options.return_value = {"init": True}
+
+        class _FakeStdio:
+            async def __aenter__(self):
+                return ("read_stream", "write_stream")
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with (
+            patch.object(server_module, "create_server", return_value=fake_server),
+            patch.object(server_module, "dual_stdio_server", return_value=_FakeStdio()),
+        ):
+            await server_module.run_server()
+
+        fake_server.run.assert_awaited_once_with(
+            "read_stream",
+            "write_stream",
+            {"init": True},
+        )
+
+    def test_main_registers_shutdown_and_runs_server(self):
+        """main registers handlers and runs run_server through asyncio.run."""
+        import astrograph.server as server_module
+
+        with (
+            patch.object(server_module.signal, "signal") as mock_signal,
+            patch.object(server_module.atexit, "register") as mock_register,
+            patch.object(server_module.asyncio, "run") as mock_asyncio_run,
+            patch.object(
+                server_module,
+                "run_server",
+                new=MagicMock(return_value="run-server-coro"),
+            ) as mock_run_server,
+        ):
+            server_module.main()
+
+        mock_signal.assert_called_once_with(
+            server_module.signal.SIGTERM, server_module._shutdown_handler
+        )
+        mock_register.assert_called_once_with(server_module._atexit_close)
+        mock_run_server.assert_called_once_with()
+        mock_asyncio_run.assert_called_once_with("run-server-coro")

@@ -21,6 +21,7 @@ Also exposes 3 MCP resources, 2 prompts, and prompt argument completions.
 
 import asyncio
 import atexit
+import json
 import signal
 import sys
 import threading
@@ -350,11 +351,73 @@ def create_server() -> Server:
         "astrograph_set_workspace": "set_workspace",
     }
 
+    def _summarize_arg(value: object) -> str:
+        """Render concise argument summaries for tool invocation headers."""
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, int | float):
+            return str(value)
+        if isinstance(value, str):
+            return f"<str len={len(value)}>"
+        if isinstance(value, list):
+            return f"<list len={len(value)}>"
+        if isinstance(value, dict):
+            keys = sorted(str(k) for k in value)
+            preview = ", ".join(keys[:4])
+            if len(keys) > 4:
+                preview += ", ..."
+            return f"<object keys=[{preview}]>"
+        return f"<{type(value).__name__}>"
+
+    def _summarize_arguments(arguments: dict | None) -> str:
+        """Summarize call arguments without dumping large payloads."""
+        if not arguments:
+            return "none"
+        return ", ".join(f"{key}={_summarize_arg(arguments[key])}" for key in sorted(arguments))
+
+    def _classify_outcome(text: str) -> str:
+        """Classify textual tool output for quick operator scanning."""
+        stripped = text.lstrip()
+        if (
+            stripped.startswith("Error:")
+            or stripped.startswith("Unknown tool:")
+            or stripped.startswith("Failed")
+            or stripped.startswith("BLOCKED:")
+        ):
+            return "error"
+        if "WARNING:" in text or stripped.startswith("Status: indexing"):
+            return "warning"
+        return "ok"
+
+    def _format_tool_response(name: str, arguments: dict, text: str) -> str:
+        """Add consistent invocation framing for plain-text tool responses."""
+        # Keep structured JSON payloads backward-compatible for machine parsing.
+        if name == "astrograph_lsp_setup":
+            return text
+        stripped = text.lstrip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                json.loads(stripped)
+                return text
+            except json.JSONDecodeError:
+                pass
+
+        header = [
+            f"Tool: {name}",
+            f"Outcome: {_classify_outcome(text)}",
+            f"Arguments: {_summarize_arguments(arguments)}",
+            "Result:",
+        ]
+        return "\n".join(header) + "\n" + text
+
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         internal_name = TOOL_NAME_MAP.get(name, name)
         result = await asyncio.to_thread(_tools.call_tool, internal_name, arguments)
-        return [TextContent(type="text", text=result.text)]
+        formatted = _format_tool_response(name, arguments, result.text)
+        return [TextContent(type="text", text=formatted)]
 
     # --- MCP Resources ---
 

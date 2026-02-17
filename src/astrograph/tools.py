@@ -500,6 +500,22 @@ class CodeStructureTools(CloseOnExitMixin):
             return ToolResult(message)
         return None
 
+    @staticmethod
+    def _code_unit_extraction_note(stats: dict[str, int]) -> str | None:
+        """Explain why code-unit count can be zero while block extraction succeeds."""
+        if stats.get("indexed_files", 0) <= 0:
+            return None
+        if stats.get("function_entries", 0) > 0:
+            return None
+        if stats.get("block_entries", 0) <= 0:
+            return None
+        return (
+            "Note: symbol-level code units are 0 while block extraction succeeded. "
+            "This usually means language-symbol extraction is unavailable in the current "
+            "runtime (e.g., LSP endpoint/binding not ready). "
+            "Next: run astrograph_lsp_setup(mode='inspect') and follow recommended_actions."
+        )
+
     def _has_significant_duplicates(self) -> bool:
         """Check if there are duplicates above the trivial threshold."""
         return self.index.has_duplicates(min_node_count=5)
@@ -637,6 +653,9 @@ class CodeStructureTools(CloseOnExitMixin):
             f"Indexed {stats['function_entries']} code units from {stats['indexed_files']} files.",
             f"Extracted {stats['block_entries']} code blocks.",
         ]
+        extraction_note = self._code_unit_extraction_note(stats)
+        if extraction_note:
+            result_parts.append(extraction_note)
         if self._has_significant_duplicates():
             result_parts.append("\nDuplicates found. Run analyze().")
         else:
@@ -1677,18 +1696,25 @@ class CodeStructureTools(CloseOnExitMixin):
         """Return current server status without blocking."""
         if not self._bg_index_done.is_set():
             entry_count = len(self.index.entries)
-            return ToolResult(f"Status: indexing ({entry_count} entries so far)")
+            return ToolResult(
+                f"Status: indexing ({entry_count} entries so far). "
+                "Indexing runs asynchronously; use status again for completion."
+            )
         if not self.index.entries:
             return ToolResult(
                 "Status: idle (no codebase indexed). "
                 "Next: call index_codebase(path=...) and astrograph_lsp_setup(mode='inspect')."
             )
         stats = self.index.get_stats()
-        return ToolResult(
+        lines = [
             f"Status: ready ({stats['function_entries']} code units, "
             f"{stats['indexed_files']} files). "
-            "Next: call astrograph_lsp_setup(mode='inspect') for guided LSP setup actions."
-        )
+            "Next: call astrograph_lsp_setup(mode='inspect') for guided LSP setup actions.",
+        ]
+        extraction_note = self._code_unit_extraction_note(stats)
+        if extraction_note:
+            lines.append(extraction_note)
+        return ToolResult("\n".join(lines))
 
     # -- LSP setup: thin wrappers delegating to lsp_tools module -----------
 
