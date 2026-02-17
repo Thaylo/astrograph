@@ -74,7 +74,7 @@ def _make_fake_probe(endpoint: str):
     ("binding", "expected_source", "expected_command"),
     [
         (["custom-pylsp"], "binding", ["custom-pylsp"]),
-        (None, "default", ["pylsp"]),
+        (None, "default", ["tcp://127.0.0.1:2090"]),
     ],
 )
 def test_resolve_lsp_command_precedence(
@@ -88,7 +88,7 @@ def test_resolve_lsp_command_precedence(
 
     command, source = resolve_lsp_command(
         language_id="python",
-        default_command=("pylsp",),
+        default_command=("tcp://127.0.0.1:2090",),
         workspace=tmp_path,
     )
 
@@ -823,9 +823,9 @@ class TestBindingPersistence:
 
 
 class TestEvaluateVersionStatusPython:
-    """Cover Python server unsupported and runtime best_effort/unsupported paths."""
+    """Python attach parity: subprocess version probes are informational only."""
 
-    def test_python_server_missing_pylsp_module_unsupported(self):
+    def test_python_server_missing_pylsp_module_reports_unknown(self):
         result = _evaluate_version_status(
             language_id="python",
             detected="/usr/local/bin/python3: No module named pylsp",
@@ -833,10 +833,10 @@ class TestEvaluateVersionStatusPython:
             transport="subprocess",
             available=True,
         )
-        assert result["state"] == "unsupported"
-        assert "not installed" in result["reason"]
+        assert result["state"] == "unknown"
+        assert "parseable semantic version" in result["reason"]
 
-    def test_python_server_unsupported_major_0(self):
+    def test_python_server_major_0_reports_unknown(self):
         result = _evaluate_version_status(
             language_id="python",
             detected="pylsp 0.5.0",
@@ -844,10 +844,10 @@ class TestEvaluateVersionStatusPython:
             transport="subprocess",
             available=True,
         )
-        assert result["state"] == "unsupported"
-        assert "below supported baseline" in result["reason"]
+        assert result["state"] == "unknown"
+        assert "No explicit compatibility rule" in result["reason"]
 
-    def test_python_server_unsupported_major_1_minor_10(self):
+    def test_python_server_major_1_minor_10_reports_unknown(self):
         result = _evaluate_version_status(
             language_id="python",
             detected="pylsp 1.10.0",
@@ -855,9 +855,10 @@ class TestEvaluateVersionStatusPython:
             transport="subprocess",
             available=True,
         )
-        assert result["state"] == "unsupported"
+        assert result["state"] == "unknown"
+        assert "No explicit compatibility rule" in result["reason"]
 
-    def test_python_server_supported_1_11(self):
+    def test_python_server_1_11_reports_unknown(self):
         result = _evaluate_version_status(
             language_id="python",
             detected="pylsp 1.11.0",
@@ -865,9 +866,10 @@ class TestEvaluateVersionStatusPython:
             transport="subprocess",
             available=True,
         )
-        assert result["state"] == "supported"
+        assert result["state"] == "unknown"
+        assert "No explicit compatibility rule" in result["reason"]
 
-    def test_python_runtime_315_best_effort(self):
+    def test_python_runtime_315_reports_unknown(self):
         result = _evaluate_version_status(
             language_id="python",
             detected="Python 3.15.0",
@@ -875,10 +877,10 @@ class TestEvaluateVersionStatusPython:
             transport="subprocess",
             available=True,
         )
-        assert result["state"] == "best_effort"
-        assert "3.15" in result["reason"]
+        assert result["state"] == "unknown"
+        assert "No explicit compatibility rule" in result["reason"]
 
-    def test_python_runtime_unsupported_2_7(self):
+    def test_python_runtime_2_7_reports_unknown(self):
         result = _evaluate_version_status(
             language_id="python",
             detected="Python 2.7.18",
@@ -886,10 +888,10 @@ class TestEvaluateVersionStatusPython:
             transport="subprocess",
             available=True,
         )
-        assert result["state"] == "unsupported"
-        assert "outside the supported variant window" in result["reason"]
+        assert result["state"] == "unknown"
+        assert "No explicit compatibility rule" in result["reason"]
 
-    def test_python_runtime_supported_312(self):
+    def test_python_runtime_312_reports_unknown(self):
         result = _evaluate_version_status(
             language_id="python",
             detected="Python 3.12.1",
@@ -897,7 +899,8 @@ class TestEvaluateVersionStatusPython:
             transport="subprocess",
             available=True,
         )
-        assert result["state"] == "supported"
+        assert result["state"] == "unknown"
+        assert "No explicit compatibility rule" in result["reason"]
 
 
 class TestEvaluateVersionStatusNodeJS:
@@ -1465,12 +1468,12 @@ class TestVersionProbeCandidates:
         commands = [cmd for cmd, _kind in candidates]
         assert ["clangd", "-version"] in commands
 
-    def test_python_pylsp_adds_runtime_probe(self):
+    def test_python_pylsp_uses_server_probe_only(self):
         candidates = _version_probe_candidates("python", ["/usr/bin/python3", "-m", "pylsp"])
         kinds = {kind for _cmd, kind in candidates}
-        assert "runtime" in kinds
-        runtime_cmds = [cmd for cmd, kind in candidates if kind == "runtime"]
-        assert ["/usr/bin/python3", "--version"] in runtime_cmds
+        assert kinds == {"server"}
+        server_cmds = [cmd for cmd, kind in candidates if kind == "server"]
+        assert ["/usr/bin/python3", "-m", "pylsp", "--version"] in server_cmds
 
     def test_javascript_adds_node_version(self):
         candidates = _version_probe_candidates("javascript_lsp", ["typescript-language-server"])
@@ -1768,6 +1771,18 @@ class TestSaveBindingsAtomicWrite:
 
 class TestEvaluateVersionStatusEdgeCases:
     """Cover edge cases in _evaluate_version_status."""
+
+    def test_attach_transport_reports_host_managed_reason(self):
+        result = _evaluate_version_status(
+            language_id="python",
+            detected="pylsp 1.11.0",
+            probe_kind="server",
+            transport="tcp",
+            available=True,
+        )
+        assert result["state"] == "unknown"
+        assert "host-managed" in result["reason"]
+        assert "cannot be inferred" in result["reason"]
 
     def test_unavailable_command(self):
         """When available is False, returns unknown with skipped reason."""

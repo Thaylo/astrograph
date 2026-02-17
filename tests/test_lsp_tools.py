@@ -114,9 +114,9 @@ class TestBuildRecommendedActions:
                 "language": "python",
                 "available": False,
                 "required": True,
-                "transport": "subprocess",
-                "effective_command": ["pylsp"],
-                "default_command": ["pylsp"],
+                "transport": "tcp",
+                "effective_command": ["tcp://127.0.0.1:2090"],
+                "default_command": ["tcp://127.0.0.1:2090"],
             }
         ]
         actions = lsp_tools.build_lsp_recommended_actions(statuses=statuses)

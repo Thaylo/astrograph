@@ -2411,12 +2411,12 @@ class TestLSPSetupTool:
         }
         missing_python_status = {
             "language": "python",
-            "required": True,
+            "required": False,
             "available": False,
-            "transport": "subprocess",
-            "effective_command": ["pylsp"],
+            "transport": "tcp",
+            "effective_command": ["tcp://127.0.0.1:2090"],
             "effective_source": "default",
-            "default_command": ["pylsp"],
+            "default_command": ["tcp://127.0.0.1:2090"],
         }
 
         with patch.object(CodeStructureTools, "_is_docker_runtime", return_value=False):
@@ -2427,13 +2427,14 @@ class TestLSPSetupTool:
         discover_cpp = next(
             action for action in actions if action["id"] == "discover_cpp_lsp_endpoint"
         )
-        search_python = next(action for action in actions if action["id"] == "search_python")
-        install_python = next(action for action in actions if action["id"] == "install_python")
+        discover_python = next(
+            action for action in actions if action["id"] == "discover_python_endpoint"
+        )
 
         assert discover_cpp["follow_up_arguments"]["language"] == "cpp_lsp"
         assert discover_cpp["follow_up_arguments"]["mode"] == "auto_bind"
-        assert search_python["follow_up_arguments"]["language"] == "python"
-        assert install_python["follow_up_arguments"]["language"] == "python"
+        assert discover_python["follow_up_arguments"]["language"] == "python"
+        assert discover_python["follow_up_arguments"]["mode"] == "auto_bind"
 
     def test_lsp_setup_recommended_actions_include_cpp_validation_fixes(self, tools):
         missing_cpp_status = {

@@ -199,8 +199,10 @@ class TestDoctorCommand:
             _status(
                 language_id="python",
                 available=True,
-                command=["pylsp"],
-                executable="/usr/bin/pylsp",
+                command=["tcp://127.0.0.1:2090"],
+                executable="127.0.0.1:2090",
+                transport="tcp",
+                endpoint="127.0.0.1:2090",
             ),
             _status(
                 language_id="javascript_lsp",
@@ -226,7 +228,13 @@ class TestDoctorCommand:
 
     def test_doctor_json(self, capsys):
         statuses = [
-            _status(language_id="python", available=True, command=["pylsp"]),
+            _status(
+                language_id="python",
+                available=True,
+                command=["tcp://127.0.0.1:2090"],
+                transport="tcp",
+                endpoint="127.0.0.1:2090",
+            ),
             _status(
                 language_id="javascript_lsp",
                 available=True,
@@ -242,7 +250,14 @@ class TestDoctorCommand:
 
     def test_doctor_json_optional_attach_missing_is_still_ready(self, capsys):
         statuses = [
-            _status(language_id="python", available=True, command=["pylsp"], required=True),
+            _status(
+                language_id="python",
+                available=True,
+                command=["tcp://127.0.0.1:2090"],
+                transport="tcp",
+                endpoint="127.0.0.1:2090",
+                required=True,
+            ),
             _status(
                 language_id="c_lsp",
                 available=False,
@@ -292,7 +307,13 @@ class TestInstallLSPsCommand:
 
     def test_install_lsps_runs_selected_language(self, capsys):
         statuses = [
-            _status(language_id="python", available=False, command=["pylsp"], installable=True),
+            _status(
+                language_id="python",
+                available=False,
+                command=["pylsp"],
+                command_source="binding",
+                installable=True,
+            ),
             _status(
                 language_id="javascript_lsp",
                 available=False,
@@ -315,7 +336,13 @@ class TestInstallLSPsCommand:
 
     def test_install_lsps_json(self, capsys):
         statuses = [
-            _status(language_id="python", available=False, command=["pylsp"], installable=True)
+            _status(
+                language_id="python",
+                available=False,
+                command=["pylsp"],
+                command_source="binding",
+                installable=True,
+            )
         ]
 
         with (
@@ -369,7 +396,7 @@ class TestLspStatusEdgeCases:
     def test_binding_not_found_subprocess(self):
         spec = cli.LSPServerSpec(
             language_id="python",
-            default_command=["pylsp"],
+            default_command=["tcp://127.0.0.1:2090"],
             required=True,
         )
         with (
@@ -420,8 +447,10 @@ class TestPrintDoctorEdgeCases:
             _status(
                 language_id="python",
                 available=True,
-                command=["pylsp"],
-                executable="/usr/bin/pylsp",
+                command=["tcp://127.0.0.1:2090"],
+                executable="127.0.0.1:2090",
+                transport="tcp",
+                endpoint="127.0.0.1:2090",
                 required=True,
             ),
             _status(
@@ -439,7 +468,14 @@ class TestPrintDoctorEdgeCases:
 
     def test_all_available_message(self, capsys):
         statuses = [
-            _status(language_id="python", available=True, command=["pylsp"], required=True),
+            _status(
+                language_id="python",
+                available=True,
+                command=["tcp://127.0.0.1:2090"],
+                transport="tcp",
+                endpoint="127.0.0.1:2090",
+                required=True,
+            ),
         ]
         cli._print_doctor(statuses, as_json=False)
         captured = capsys.readouterr()
@@ -463,7 +499,12 @@ class TestRunInstallLsp:
     """Tests for _run_install_lsp."""
 
     def test_skip_already_installed(self):
-        status = _status(language_id="python", available=True, command=["pylsp"])
+        status = _status(
+            language_id="python",
+            available=True,
+            command=["pylsp"],
+            command_source="binding",
+        )
         result, details = cli._run_install_lsp(status, dry_run=False)
         assert result == "skipped"
         assert "already installed" in details
@@ -483,6 +524,7 @@ class TestRunInstallLsp:
             language_id="python",
             available=False,
             command=["pylsp"],
+            command_source="binding",
             installable=True,
             install_command=[sys.executable, "-m", "pip", "install", "python-lsp-server"],
         )
@@ -495,6 +537,7 @@ class TestRunInstallLsp:
             language_id="python",
             available=False,
             command=["pylsp"],
+            command_source="binding",
             installable=True,
             install_command=["nonexistent-command-abc"],
         )
@@ -506,12 +549,18 @@ class TestRunInstallLsp:
             language_id="python",
             available=False,
             command=["pylsp"],
+            command_source="binding",
             installable=True,
             install_command=["echo", "installed"],
         )
         with patch(
             "astrograph.cli._lsp_status",
-            return_value=_status(language_id="python", available=False, command=["pylsp"]),
+            return_value=_status(
+                language_id="python",
+                available=False,
+                command=["pylsp"],
+                command_source="binding",
+            ),
         ):
             result, details = cli._run_install_lsp(status, dry_run=False)
         assert result == "failed"
@@ -608,6 +657,7 @@ class TestInstallLSPsFailureOutput:
                 language_id="python",
                 available=False,
                 command=["pylsp"],
+                command_source="binding",
                 installable=True,
                 install_command=["echo", "fail"],
             ),

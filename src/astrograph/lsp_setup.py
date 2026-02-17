@@ -152,10 +152,6 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
         LSPServerSpec(
             language_id="python",
             default_command=("tcp://127.0.0.1:2090",),
-            probe_commands=(
-                ("python", "-m", "pylsp"),
-                ("python3", "-m", "pylsp"),
-            ),
             required=False,
         ),
         LSPServerSpec(
@@ -651,7 +647,10 @@ def _availability_validation(
     # Attach-mode endpoints don't have a subprocess to version-probe.
     verification["version_status"] = {
         "state": "unknown",
-        "reason": "Attach transport; no version probe available.",
+        "reason": (
+            "Attach transport is host-managed; version cannot be inferred from "
+            "inside this MCP container."
+        ),
     }
 
     attach_probe = _probe_attach_lsp_semantics(
@@ -727,9 +726,6 @@ def _version_probe_candidates(
     if language_id in {"c_lsp", "cpp_lsp"}:
         candidates.append(([*parsed, "-version"], "server"))
 
-    if language_id == "python" and len(parsed) >= 3 and parsed[1] == "-m" and parsed[2] == "pylsp":
-        candidates.append(([parsed[0], "--version"], "runtime"))
-
     if language_id in {"javascript_lsp", "typescript_lsp"}:
         candidates.append((["node", "--version"], "runtime"))
 
@@ -799,7 +795,10 @@ def _evaluate_version_status(
             "state": "unknown",
             "detected": None,
             "probe_kind": None,
-            "reason": "Attach endpoint version cannot be inferred from inside the MCP container.",
+            "reason": (
+                "Attach transport is host-managed; server version cannot be inferred "
+                "from inside this MCP container."
+            ),
             "variant_policy": dict(policy),
         }
 
@@ -809,23 +808,6 @@ def _evaluate_version_status(
             "detected": None,
             "probe_kind": None,
             "reason": "Command is unavailable, so version probing was skipped.",
-            "variant_policy": dict(policy),
-        }
-
-    detected_lower = (detected or "").lower()
-    # Common Python failure mode: executable exists but pylsp module is missing.
-    # Treat this as unsupported so setup guidance can nudge installation.
-    if (
-        language_id == "python"
-        and probe_kind == "server"
-        and "no module named" in detected_lower
-        and "pylsp" in detected_lower
-    ):
-        return {
-            "state": "unsupported",
-            "detected": detected,
-            "probe_kind": probe_kind,
-            "reason": "python-lsp-server (pylsp) is not installed in this interpreter.",
             "variant_policy": dict(policy),
         }
 
@@ -843,25 +825,7 @@ def _evaluate_version_status(
     state = "unknown"
     reason = "No explicit compatibility rule is defined for this adapter."
 
-    if language_id == "python":
-        if probe_kind == "server":
-            if major > 1 or (major == 1 and minor >= 11):
-                state = "supported"
-                reason = "python-lsp-server version is within supported range (>=1.11)."
-            else:
-                state = "unsupported"
-                reason = "python-lsp-server version is below supported baseline (1.11)."
-        elif probe_kind == "runtime":
-            if major == 3 and minor in {11, 12, 13, 14}:
-                state = "supported"
-                reason = "Python runtime matches the primary supported variants."
-            elif major == 3 and minor == 15:
-                state = "best_effort"
-                reason = "Python 3.15 is currently treated as best-effort."
-            else:
-                state = "unsupported"
-                reason = "Python runtime is outside the supported variant window."
-    elif language_id in {"javascript_lsp", "typescript_lsp"}:
+    if language_id in {"javascript_lsp", "typescript_lsp"}:
         if probe_kind == "runtime":
             # Node.js runtime version probing
             if major in {20, 22, 24}:
