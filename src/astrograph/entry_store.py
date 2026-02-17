@@ -17,7 +17,7 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .index import IndexEntry
@@ -177,7 +177,7 @@ class EntryStore:
     # Hot metadata access (no full entry load)
     # ------------------------------------------------------------------
 
-    def _get_meta_attr(self, eid: str, attr: str):
+    def _get_meta_attr(self, eid: str, attr: str) -> Any:
         """Thread-safe access to a single hot-metadata attribute."""
         with self._lock:
             meta = self._meta.get(eid)
@@ -185,11 +185,13 @@ class EntryStore:
 
     def get_node_count(self, eid: str) -> int | None:
         """Get node_count from hot metadata without loading the full entry."""
-        return self._get_meta_attr(eid, "node_count")
+        result: int | None = self._get_meta_attr(eid, "node_count")
+        return result
 
     def get_hierarchy_hashes(self, eid: str) -> list[str] | None:
         """Get hierarchy_hashes from hot metadata without loading the full entry."""
-        return self._get_meta_attr(eid, "hierarchy_hashes")
+        result: list[str] | None = self._get_meta_attr(eid, "hierarchy_hashes")
+        return result
 
     def get_meta(self, eid: str) -> EntryMeta | None:
         """Get full hot metadata for bucket cleanup in remove_file()."""

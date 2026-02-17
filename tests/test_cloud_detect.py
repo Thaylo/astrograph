@@ -41,25 +41,30 @@ class TestGetCloudStoragePaths:
         result = get_cloud_storage_paths()
         assert isinstance(result, dict)
 
-    def test_with_fake_dropbox(self, tmp_path, monkeypatch):
+    def test_with_fake_dropbox(self, tmp_path):
         """Simulate Dropbox folder existing."""
         dropbox_dir = tmp_path / "Dropbox"
         dropbox_dir.mkdir()
-        with patch(
-            "astrograph.cloud_detect.CLOUD_PATTERNS",
-            {"linux": {"Dropbox": [str(dropbox_dir)]}},
-        ), patch("astrograph.cloud_detect._get_platform_key", return_value="linux"):
+        with (
+            patch(
+                "astrograph.cloud_detect.CLOUD_PATTERNS",
+                {"linux": {"Dropbox": [str(dropbox_dir)]}},
+            ),
+            patch("astrograph.cloud_detect._get_platform_key", return_value="linux"),
+        ):
             result = get_cloud_storage_paths()
         assert "Dropbox" in result
         assert dropbox_dir.resolve() in result["Dropbox"]
 
     def test_oserror_in_resolve_skipped(self, tmp_path):
         """OSError during path.resolve() is silently skipped."""
-        with patch(
-            "astrograph.cloud_detect.CLOUD_PATTERNS",
-            {"linux": {"Test": [str(tmp_path)]}},
-        ), patch("astrograph.cloud_detect._get_platform_key", return_value="linux"), patch.object(
-            Path, "resolve", side_effect=OSError("boom")
+        with (
+            patch(
+                "astrograph.cloud_detect.CLOUD_PATTERNS",
+                {"linux": {"Test": [str(tmp_path)]}},
+            ),
+            patch("astrograph.cloud_detect._get_platform_key", return_value="linux"),
+            patch.object(Path, "resolve", side_effect=OSError("boom")),
         ):
             result = get_cloud_storage_paths()
         assert "Test" not in result

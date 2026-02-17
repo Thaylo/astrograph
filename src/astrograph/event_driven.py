@@ -251,10 +251,12 @@ class EventDrivenIndex(CloseOnExitMixin):
         # Update in-memory index
         entries = self.index.index_file(path, include_blocks=True)
 
-        # Persist incrementally
+        # Persist incrementally (save counter so restart doesn't regenerate
+        # colliding IDs — fixes UNIQUE constraint crash on container restart).
         if self._persistence is not None and path in self.index.file_metadata:
             metadata = self.index.file_metadata[path]
             self._persistence.save_file_entries(path, entries, metadata)
+            self._persistence.save_index_metadata(self.index)
 
         self._invalidate_cache_and_recompute()
 

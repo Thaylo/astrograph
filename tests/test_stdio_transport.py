@@ -34,8 +34,9 @@ async def _run_roundtrip(request: bytes) -> bytes:
     fake_stdin = io.BytesIO(request)
     fake_stdout = io.BytesIO()
 
-    with patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()), patch.object(
-        sys, "stdout", type("", (), {"buffer": fake_stdout})()
+    with (
+        patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()),
+        patch.object(sys, "stdout", type("", (), {"buffer": fake_stdout})()),
     ):
         async with dual_stdio_server() as (read_stream, write_stream):
             msg = await read_stream.receive()
@@ -241,8 +242,9 @@ class TestDualStdioServer:
         fake_stdin = io.BytesIO(b"")
         fake_stdout = io.BytesIO()
 
-        with patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()), patch.object(
-            sys, "stdout", type("", (), {"buffer": fake_stdout})()
+        with (
+            patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()),
+            patch.object(sys, "stdout", type("", (), {"buffer": fake_stdout})()),
         ):
             async with dual_stdio_server() as (read_stream, write_stream):
                 # stdin is empty, so reader hits EOF immediately.

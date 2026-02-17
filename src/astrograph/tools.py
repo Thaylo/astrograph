@@ -485,11 +485,8 @@ class CodeStructureTools(CloseOnExitMixin):
     # Scope & domain helpers
     # ------------------------------------------------------------------
 
-    def _make_scope_filter(
-        self, scope: list[str]
-    ) -> Callable[[IndexEntry], bool]:
+    def _make_scope_filter(self, scope: list[str]) -> Callable[[IndexEntry], bool]:
         """Build an entry filter from glob patterns relative to workspace root."""
-        root = self._last_indexed_path or ""
 
         def matches(entry: IndexEntry) -> bool:
             rel = self._relative_path(entry.code_unit.file_path)
@@ -513,9 +510,7 @@ class CodeStructureTools(CloseOnExitMixin):
         except (json.JSONDecodeError, OSError):
             return None
 
-    def _match_domain(
-        self, rel_path: str, domains: dict[str, list[str]]
-    ) -> str | None:
+    def _match_domain(self, rel_path: str, domains: dict[str, list[str]]) -> str | None:
         """Return the domain name a relative path belongs to, or None."""
         for name, patterns in domains.items():
             if any(fnmatch.fnmatch(rel_path, pat) for pat in patterns):
@@ -821,7 +816,9 @@ class CodeStructureTools(CloseOnExitMixin):
 
             if f.get("keep"):
                 result.append(f"   Keep: {f['keep']} ({f['keep_reason']})")
-            result.append(f'   Action: refactor to eliminate duplication, or suppress(wl_hash="{wl_hash}") if intentional.')
+            result.append(
+                f'   Action: refactor to eliminate duplication, or suppress(wl_hash="{wl_hash}") if intentional.'
+            )
             result.append("")
             return result
 
@@ -834,9 +831,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 domain_sections.setdefault(d, []).append(f)
 
             # Ordered: named domains first, then unscoped (None), then cross-domain
-            ordered_keys: list[str | None] = [
-                k for k in domains if k in domain_sections
-            ]
+            ordered_keys: list[str | None] = [k for k in domains if k in domain_sections]
             if None in domain_sections:
                 ordered_keys.append(None)
             if "cross-domain" in domain_sections:
@@ -910,7 +905,9 @@ class CodeStructureTools(CloseOnExitMixin):
             summary_parts.append(
                 f"Details: {PERSISTENCE_DIR}/{report_path.name} ({line_count_report} lines)"
             )
-            summary_parts.append("Read the file to see locations and refactoring opportunities.\nRefactor duplicates first. Only suppress intentional patterns (API symmetry, test isolation, framework boilerplate).")
+            summary_parts.append(
+                "Read the file to see locations and refactoring opportunities.\nRefactor duplicates first. Only suppress intentional patterns (API symmetry, test isolation, framework boilerplate)."
+            )
             return ToolResult(invalidation_warning + "\n".join(summary_parts))
 
         # Fallback: file write failed or no indexed path — return full output inline
@@ -1259,7 +1256,7 @@ class CodeStructureTools(CloseOnExitMixin):
             False,
             [],
             [],
-            "insufficient overlapping semantic signals" f"{note_suffix}",
+            f"insufficient overlapping semantic signals{note_suffix}",
         )
 
     def compare(
@@ -1323,9 +1320,7 @@ class CodeStructureTools(CloseOnExitMixin):
         mismatch_text = "; ".join(mismatches[:3])
         if structural_kind == "equivalent":
             if mode == "annotate":
-                return ToolResult(
-                    "EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: " f"{mismatch_text}."
-                )
+                return ToolResult(f"EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: {mismatch_text}.")
             return ToolResult(
                 "DIFFERENT: Structurally equivalent snippets diverge semantically "
                 f"({mismatch_text})."
@@ -1613,9 +1608,7 @@ class CodeStructureTools(CloseOnExitMixin):
             if not name or not isinstance(name, str):
                 return ToolResult(f"Invalid domain name: {name!r}")
             if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
-                return ToolResult(
-                    f"Domain '{name}' patterns must be a list of strings."
-                )
+                return ToolResult(f"Domain '{name}' patterns must be a list of strings.")
             if not patterns:
                 return ToolResult(f"Domain '{name}' has no patterns.")
 

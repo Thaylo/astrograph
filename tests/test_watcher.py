@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from astrograph.watcher import (
     DebouncedCallback,
@@ -34,6 +31,7 @@ class TestDebouncedCallback:
         cb = DebouncedCallback(lambda p: results.append(p), delay=0.01)
         cb("test.py")
         import time
+
         time.sleep(0.1)
         assert "test.py" in results
 
@@ -43,17 +41,20 @@ class TestDebouncedCallback:
         cb("test.py")
         cb.cancel_all()
         import time
+
         time.sleep(0.05)
         assert results == []
 
     def test_callback_exception_logged(self):
         """Exception in callback is caught and logged (lines 84-85)."""
-        def boom(path):
+
+        def boom(_path):
             raise RuntimeError("boom")
 
         cb = DebouncedCallback(boom, delay=0.01)
         cb("test.py")
         import time
+
         time.sleep(0.1)
         # Should not raise — exception is logged
 
@@ -62,9 +63,9 @@ class TestSourceFileHandler:
     def test_registry_none_returns_false(self):
         """When LanguageRegistry.get() is None, _is_supported_source_file → False (line 120)."""
         handler = SourceFileHandler(
-            on_modified=lambda p: None,
-            on_created=lambda p: None,
-            on_deleted=lambda p: None,
+            on_modified=lambda _p: None,
+            on_created=lambda _p: None,
+            on_deleted=lambda _p: None,
         )
         with patch("astrograph.watcher.LanguageRegistry") as mock_reg:
             mock_reg.get.return_value = None
@@ -73,9 +74,9 @@ class TestSourceFileHandler:
     def test_skip_dir_returns_false(self):
         """Files in skip dirs (node_modules etc.) are rejected (line 124)."""
         handler = SourceFileHandler(
-            on_modified=lambda p: None,
-            on_created=lambda p: None,
-            on_deleted=lambda p: None,
+            on_modified=lambda _p: None,
+            on_created=lambda _p: None,
+            on_deleted=lambda _p: None,
         )
         mock_registry = MagicMock()
         mock_registry.supported_extensions = frozenset({".py"})
@@ -90,9 +91,9 @@ class TestSourceFileHandler:
         spec = IgnoreSpec.from_lines(["*.min.js"])
         root = Path("/project")
         handler = SourceFileHandler(
-            on_modified=lambda p: None,
-            on_created=lambda p: None,
-            on_deleted=lambda p: None,
+            on_modified=lambda _p: None,
+            on_created=lambda _p: None,
+            on_deleted=lambda _p: None,
             ignore_spec=spec,
             root_path=root,
         )
@@ -109,9 +110,9 @@ class TestSourceFileHandler:
         spec = IgnoreSpec.from_lines(["*.min.js"])
         root = Path("/project")
         handler = SourceFileHandler(
-            on_modified=lambda p: None,
-            on_created=lambda p: None,
-            on_deleted=lambda p: None,
+            on_modified=lambda _p: None,
+            on_created=lambda _p: None,
+            on_deleted=lambda _p: None,
             ignore_spec=spec,
             root_path=root,
         )
@@ -129,9 +130,9 @@ class TestFileWatcher:
         """Starting a watcher that's already started is a no-op (lines 214-215)."""
         watcher = FileWatcher(
             root_path=tmp_path,
-            on_file_changed=lambda p: None,
-            on_file_created=lambda p: None,
-            on_file_deleted=lambda p: None,
+            on_file_changed=lambda _p: None,
+            on_file_created=lambda _p: None,
+            on_file_deleted=lambda _p: None,
         )
         watcher.start()
         try:
@@ -145,9 +146,9 @@ class TestFileWatcher:
         """Stopping a watcher that hasn't started is a no-op (line 229)."""
         watcher = FileWatcher(
             root_path="/tmp",
-            on_file_changed=lambda p: None,
-            on_file_created=lambda p: None,
-            on_file_deleted=lambda p: None,
+            on_file_changed=lambda _p: None,
+            on_file_created=lambda _p: None,
+            on_file_deleted=lambda _p: None,
         )
         watcher.stop()  # Should not raise
         assert watcher.is_watching is False
@@ -159,18 +160,18 @@ class TestFileWatcherPool:
         pool = FileWatcherPool()
         watcher = pool.watch(
             root_path=tmp_path,
-            on_file_changed=lambda p: None,
-            on_file_created=lambda p: None,
-            on_file_deleted=lambda p: None,
+            on_file_changed=lambda _p: None,
+            on_file_created=lambda _p: None,
+            on_file_deleted=lambda _p: None,
         )
         assert watcher.is_watching is True
 
         # Watch same path returns same watcher
         watcher2 = pool.watch(
             root_path=tmp_path,
-            on_file_changed=lambda p: None,
-            on_file_created=lambda p: None,
-            on_file_deleted=lambda p: None,
+            on_file_changed=lambda _p: None,
+            on_file_created=lambda _p: None,
+            on_file_deleted=lambda _p: None,
         )
         assert watcher2 is watcher
 
@@ -189,8 +190,8 @@ class TestFileWatcherPool:
         d2 = tmp_path / "b"
         d1.mkdir()
         d2.mkdir()
-        w1 = pool.watch(d1, lambda p: None, lambda p: None, lambda p: None)
-        w2 = pool.watch(d2, lambda p: None, lambda p: None, lambda p: None)
+        w1 = pool.watch(d1, lambda _p: None, lambda _p: None, lambda _p: None)
+        w2 = pool.watch(d2, lambda _p: None, lambda _p: None, lambda _p: None)
         assert w1.is_watching and w2.is_watching
         pool.stop_all()
         assert not w1.is_watching and not w2.is_watching

@@ -373,7 +373,7 @@ def create_server() -> Server:
     @server.list_resources()
     async def list_resources() -> list[Resource]:
         return [
-            Resource(name=name, uri=uri, description=desc, mimeType="text/plain")
+            Resource(name=name, uri=AnyUrl(uri), description=desc, mimeType="text/plain")
             for uri, (name, desc) in _RESOURCE_URIS.items()
         ]
 

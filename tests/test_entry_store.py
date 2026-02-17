@@ -388,6 +388,7 @@ class TestEntryStoreEnvironment:
         os.environ["ASTROGRAPH_MAX_ENTRIES"] = "not_a_number"
         try:
             from astrograph.entry_store import _get_max_resident
+
             assert _get_max_resident() == 50_000
         finally:
             if old_val is not None:

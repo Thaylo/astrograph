@@ -249,7 +249,7 @@ function sum(x, y) {
         assert index.has_duplicates(min_node_count=3)
 
     def test_extract_code_units_skips_import_symbol_noise(self):
-        source = 'import { Foo } from "./foo";\n\n' "class Greeter {\n" "  greet() {}\n" "}\n"
+        source = 'import { Foo } from "./foo";\n\nclass Greeter {\n  greet() {}\n}\n'
         plugin = JavaScriptLSPPlugin(lsp_client=FakeImportNoiseClient())
         units = list(plugin.extract_code_units(source, "sample.js"))
         assert all(unit.name != "Foo" for unit in units)

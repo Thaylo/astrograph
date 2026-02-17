@@ -8,12 +8,12 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from astrograph.index import CodeStructureIndex, IndexEntry, SimilarityResult
-from astrograph.languages.base import CodeUnit
+from astrograph.languages.base import CodeUnit, SemanticProfile, SemanticSignal
 from astrograph.languages.registry import LanguageRegistry
 from astrograph.server import create_server, get_tools, set_tools
 from astrograph.tools import (
@@ -779,29 +779,27 @@ def _extract_signal_map(plugin_cls: type, source: str, filename: str) -> dict:
     return {s.key: s.value for s in profile.signals}
 
 
-class TestEsprimaGraph:
-    """Unit tests for esprima AST graph builder and TS annotation stripping."""
+class TestTreeSitterGraph:
+    """Unit tests for tree-sitter AST graph builder and TS parsing."""
 
-    def test_js_esprima_graph_node_count(self):
-        """Esprima AST graph has more nodes than line-level parser for same code."""
-        from astrograph.languages.javascript_lsp_plugin import _esprima_ast_to_graph
+    def test_js_treesitter_graph_node_count(self):
+        """Tree-sitter AST graph has more nodes than line-level parser for same code."""
+        from astrograph.languages._js_ts_treesitter import _ts_ast_to_graph
 
         source = "function add(a, b) { return a + b; }"
-        esprima_graph = _esprima_ast_to_graph(source)
-        assert esprima_graph is not None
-        # Esprima AST produces a richer graph than line-level
-        assert len(esprima_graph.nodes) > 5
+        graph = _ts_ast_to_graph(source, language="javascript")
+        assert graph is not None
+        # Tree-sitter AST produces a richer graph than line-level
+        assert len(graph.nodes) > 5
 
     def test_js_normalize_graph_collapses_operators(self):
         """normalize_graph_for_pattern collapses operator specifics."""
-        from astrograph.languages.javascript_lsp_plugin import (
-            JavaScriptLSPPlugin,
-            _esprima_ast_to_graph,
-        )
+        from astrograph.languages._js_ts_treesitter import _ts_ast_to_graph
+        from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
 
         plugin = JavaScriptLSPPlugin.__new__(JavaScriptLSPPlugin)
         source = "function f(a, b) { return a + b; }"
-        graph = _esprima_ast_to_graph(source)
+        graph = _ts_ast_to_graph(source, language="javascript")
         assert graph is not None
         # Original graph has specific operator
         labels = [data["label"] for _, data in graph.nodes(data=True)]
@@ -812,71 +810,69 @@ class TestEsprimaGraph:
         assert any("BinaryExpression:Op" in lbl for lbl in norm_labels)
         assert not any("BinaryExpression:+" in lbl for lbl in norm_labels)
 
-    def test_ts_strip_annotations_basic(self):
-        """TS annotation stripping produces valid JS that esprima can parse."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+    def test_ts_native_parse_with_annotations(self):
+        """Tree-sitter parses TS natively, producing valid graph without stripping."""
+        from astrograph.languages._js_ts_treesitter import _ts_ast_to_graph
 
         ts_source = "function add(a: number, b: number): number { return a + b; }"
-        stripped = _strip_ts_annotations(ts_source)
-        # Type annotations removed
-        assert ": number" not in stripped
-        # Function structure preserved
-        assert "function" in stripped
-        assert "return" in stripped
+        graph = _ts_ast_to_graph(ts_source, language="typescript")
+        assert graph is not None
+        assert len(graph.nodes) > 5
+        # Type annotations are skipped — no type_annotation labels in graph
+        labels = [data["label"] for _, data in graph.nodes(data=True)]
+        assert "type_annotation" not in labels
+        assert "predefined_type" not in labels
 
-    def test_ts_strip_interface_blocks(self):
-        """TS annotation stripping removes interface declarations."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+    def test_ts_native_parse_interface(self):
+        """Tree-sitter parses TS with interfaces, skipping type-only nodes."""
+        from astrograph.languages._js_ts_treesitter import _ts_ast_to_graph
 
         ts_source = "interface Foo { bar: string; baz: number; }\nfunction f() { return 1; }"
-        stripped = _strip_ts_annotations(ts_source)
-        assert "interface" not in stripped
-        assert "function f()" in stripped
+        graph = _ts_ast_to_graph(ts_source, language="typescript")
+        assert graph is not None
+        labels = [data["label"] for _, data in graph.nodes(data=True)]
+        # interface_declaration is skipped as a type-only node
+        assert "interface_declaration" not in labels
 
     @pytest.mark.parametrize(
-        "ts_source,absent_pattern",
+        "ts_source",
         [
-            pytest.param("function identity<T>(x: T): T { return x; }", "<T>", id="generic-params"),
-            pytest.param("const x = value as string;", "as string", id="as-cast"),
-            pytest.param("const x = obj!.prop;", "!", id="non-null-assertion"),
+            pytest.param(
+                "function identity<T>(x: T): T { return x; }",
+                id="generic-params",
+            ),
+            pytest.param(
+                "const x = value as string;",
+                id="as-cast",
+            ),
         ],
     )
-    def test_ts_strip_simple_patterns(self, ts_source, absent_pattern):
-        """TS annotation stripping removes simple type patterns."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+    def test_ts_native_parse_patterns(self, ts_source):
+        """Tree-sitter parses TS patterns natively, producing valid graphs."""
+        from astrograph.languages._js_ts_treesitter import _ts_ast_to_graph
 
-        stripped = _strip_ts_annotations(ts_source)
-        assert absent_pattern not in stripped
+        graph = _ts_ast_to_graph(ts_source, language="typescript")
+        assert graph is not None
+        assert len(graph.nodes) > 0
 
-    # -- TS 5.x annotation stripping tests --
-
-    def test_ts_strip_decorators(self):
-        """TS annotation stripping removes decorators (Stage 3)."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+    def test_ts_native_parse_decorators(self):
+        """Tree-sitter parses TS with decorators natively."""
+        from astrograph.languages._js_ts_treesitter import _ts_ast_to_graph
 
         ts_source = "@injectable()\nclass Service {\n  @log\n  process() { return 1; }\n}"
-        stripped = _strip_ts_annotations(ts_source)
-        assert "@injectable" not in stripped
-        assert "@log" not in stripped
-        assert "class Service" in stripped
+        graph = _ts_ast_to_graph(ts_source, language="typescript")
+        assert graph is not None
+        labels = [data["label"] for _, data in graph.nodes(data=True)]
+        assert any("ClassDeclaration" in lbl for lbl in labels)
 
-    def test_ts_strip_using_keyword(self):
-        """TS annotation stripping converts 'using' to 'const'."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
-
-        ts_source = "using resource = getResource();"
-        stripped = _strip_ts_annotations(ts_source)
-        assert "using" not in stripped or "const" in stripped
-        assert "resource" in stripped
-
-    def test_ts_strip_satisfies_operator(self):
-        """TS annotation stripping removes 'satisfies Type'."""
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
+    def test_ts_native_parse_satisfies(self):
+        """Tree-sitter parses TS satisfies operator natively."""
+        from astrograph.languages._js_ts_treesitter import _ts_ast_to_graph
 
         ts_source = 'const config = { key: "value" } satisfies Config;'
-        stripped = _strip_ts_annotations(ts_source)
-        assert "satisfies Config" not in stripped
-        assert "config" in stripped
+        graph = _ts_ast_to_graph(ts_source, language="typescript")
+        assert graph is not None
+        assert len(graph.nodes) > 0
 
     # -- C23 feature detection tests --
 
@@ -1209,10 +1205,9 @@ class TestEsprimaGraph:
 
     def test_js_block_extraction_for_loop(self):
         """JS block extraction finds for-loop blocks inside functions."""
-        import esprima
-
-        from astrograph.languages.javascript_lsp_plugin import (
-            _esprima_extract_function_blocks,
+        from astrograph.languages._js_ts_treesitter import (
+            _ts_extract_function_blocks,
+            _ts_try_parse,
         )
 
         source = (
@@ -1222,9 +1217,10 @@ class TestEsprimaGraph:
             "  }\n"
             "}"
         )
-        tree = esprima.parseScript(source, loc=True)
+        tree = _ts_try_parse(source, "javascript")
+        assert tree is not None
         blocks = list(
-            _esprima_extract_function_blocks(
+            _ts_extract_function_blocks(
                 tree, source.splitlines(), "test.js", max_depth=3, language="javascript_lsp"
             )
         )
@@ -1234,10 +1230,9 @@ class TestEsprimaGraph:
 
     def test_js_block_extraction_if_statement(self):
         """JS block extraction finds if-statement blocks."""
-        import esprima
-
-        from astrograph.languages.javascript_lsp_plugin import (
-            _esprima_extract_function_blocks,
+        from astrograph.languages._js_ts_treesitter import (
+            _ts_extract_function_blocks,
+            _ts_try_parse,
         )
 
         source = (
@@ -1249,9 +1244,10 @@ class TestEsprimaGraph:
             "  }\n"
             "}"
         )
-        tree = esprima.parseScript(source, loc=True)
+        tree = _ts_try_parse(source, "javascript")
+        assert tree is not None
         blocks = list(
-            _esprima_extract_function_blocks(
+            _ts_extract_function_blocks(
                 tree, source.splitlines(), "test.js", max_depth=3, language="javascript_lsp"
             )
         )
@@ -1260,10 +1256,9 @@ class TestEsprimaGraph:
 
     def test_js_block_extraction_nested_depth(self):
         """JS block extraction respects max_depth parameter."""
-        import esprima
-
-        from astrograph.languages.javascript_lsp_plugin import (
-            _esprima_extract_function_blocks,
+        from astrograph.languages._js_ts_treesitter import (
+            _ts_extract_function_blocks,
+            _ts_try_parse,
         )
 
         source = (
@@ -1275,28 +1270,27 @@ class TestEsprimaGraph:
             "  }\n"
             "}"
         )
-        tree = esprima.parseScript(source, loc=True)
+        tree = _ts_try_parse(source, "javascript")
+        assert tree is not None
         # depth=1 should only get the for-loop, not nested if
         blocks_d1 = list(
-            _esprima_extract_function_blocks(
+            _ts_extract_function_blocks(
                 tree, source.splitlines(), "test.js", max_depth=1, language="javascript_lsp"
             )
         )
         blocks_d3 = list(
-            _esprima_extract_function_blocks(
+            _ts_extract_function_blocks(
                 tree, source.splitlines(), "test.js", max_depth=3, language="javascript_lsp"
             )
         )
         assert len(blocks_d3) >= len(blocks_d1)
 
     def test_ts_block_extraction_with_types(self):
-        """TS block extraction works after annotation stripping."""
-        import esprima
-
-        from astrograph.languages.javascript_lsp_plugin import (
-            _esprima_extract_function_blocks,
+        """TS block extraction works with native tree-sitter TS parsing."""
+        from astrograph.languages._js_ts_treesitter import (
+            _ts_extract_function_blocks,
+            _ts_try_parse,
         )
-        from astrograph.languages.typescript_lsp_plugin import _strip_ts_annotations
 
         source = (
             "function process(items: number[]): void {\n"
@@ -1305,10 +1299,10 @@ class TestEsprimaGraph:
             "  }\n"
             "}"
         )
-        stripped = _strip_ts_annotations(source)
-        tree = esprima.parseScript(stripped, loc=True)
+        tree = _ts_try_parse(source, "typescript")
+        assert tree is not None
         blocks = list(
-            _esprima_extract_function_blocks(
+            _ts_extract_function_blocks(
                 tree, source.splitlines(), "test.ts", max_depth=3, language="typescript_lsp"
             )
         )
@@ -4805,9 +4799,7 @@ class TestSetWorkspace:
             tools.close()
 
 
-def _create_duplicate_files(
-    directory: str, subdir: str, prefix: str, depth: int = 3
-) -> list[str]:
+def _create_duplicate_files(directory: str, subdir: str, prefix: str, depth: int = 3) -> list[str]:
     """Create two Python files with duplicate functions in a subdirectory.
 
     ``depth`` controls the number of body statements so different calls
@@ -4884,9 +4876,7 @@ class TestConfigureDomains:
             _create_duplicate_files(tmpdir, "src", "core")
             tools.index_codebase(tmpdir)
 
-            result = tools.configure_domains(
-                domains={"core": ["src/**"], "tests": ["tests/**"]}
-            )
+            result = tools.configure_domains(domains={"core": ["src/**"], "tests": ["tests/**"]})
             assert "2 detection domain" in result.text
 
             # Verify file exists
@@ -4943,9 +4933,7 @@ class TestConfigureDomains:
             _create_duplicate_files(tmpdir, "lib", "helper", depth=5)
 
             tools.index_codebase(tmpdir)
-            tools.configure_domains(
-                domains={"source": ["src/**"], "library": ["lib/**"]}
-            )
+            tools.configure_domains(domains={"source": ["src/**"], "library": ["lib/**"]})
 
             result = tools.analyze()
             # Should have domain section headers
@@ -4969,20 +4957,14 @@ class TestConfigureDomains:
             os.makedirs(src_dir)
             os.makedirs(lib_dir)
 
-            code = (
-                "def shared_calc(a, b):\n"
-                "    result = a + b\n"
-                "    return result * 2\n"
-            )
+            code = "def shared_calc(a, b):\n    result = a + b\n    return result * 2\n"
             with open(os.path.join(src_dir, "shared.py"), "w") as f:
                 f.write(code)
             with open(os.path.join(lib_dir, "shared.py"), "w") as f:
                 f.write(code)
 
             tools.index_codebase(tmpdir)
-            tools.configure_domains(
-                domains={"source": ["src/**"], "library": ["lib/**"]}
-            )
+            tools.configure_domains(domains={"source": ["src/**"], "library": ["lib/**"]})
 
             result = tools.analyze()
             if "No significant duplicates" not in result.text:
@@ -5066,9 +5048,7 @@ class TestServerMCPResources:
         handler = server.request_handlers[ListPromptsRequest]
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(
-                handler(ListPromptsRequest(method="prompts/list"))
-            )
+            result = loop.run_until_complete(handler(ListPromptsRequest(method="prompts/list")))
             prompt_names = [p.name for p in result.root.prompts]
             assert "review-duplicates" in prompt_names
             assert "setup-lsp" in prompt_names
@@ -5095,7 +5075,7 @@ class TestServerMCPResources:
             loop.close()
 
     def test_completion_non_prompt_ref(self):
-        from mcp.types import CompleteRequest, CompletionArgument
+        from mcp.types import CompleteRequest
 
         server = create_server()
         handler = server.request_handlers[CompleteRequest]
@@ -5197,8 +5177,12 @@ class TestToolsInvalidatedSuppressions:
     def _populate_index(self, tools):
         """Add a dummy entry so self.index.entries is truthy."""
         unit = CodeUnit(
-            name="dummy", code="def dummy(): pass", file_path="d.py",
-            line_start=1, line_end=1, unit_type="function",
+            name="dummy",
+            code="def dummy(): pass",
+            file_path="d.py",
+            line_start=1,
+            line_end=1,
+            unit_type="function",
         )
         tools.index.add_code_unit(unit)
 
@@ -5232,33 +5216,37 @@ class TestToolsFormatIndexStats:
 
     def test_with_blocks(self, tools):
         tools._last_indexed_path = "/some/path"
-        with patch.object(
-            tools.index,
-            "get_stats",
-            return_value={
-                "function_entries": 5,
-                "indexed_files": 2,
-                "block_entries": 3,
-            },
+        with (
+            patch.object(
+                tools.index,
+                "get_stats",
+                return_value={
+                    "function_entries": 5,
+                    "indexed_files": 2,
+                    "block_entries": 3,
+                },
+            ),
+            patch.object(tools, "_has_significant_duplicates", return_value=False),
         ):
-            with patch.object(tools, "_has_significant_duplicates", return_value=False):
-                text = tools._format_index_stats(include_blocks=True)
+            text = tools._format_index_stats(include_blocks=True)
         assert "3 code blocks" in text
         assert "No duplicates" in text
 
     def test_with_duplicates(self, tools):
         tools._last_indexed_path = "/some/path"
-        with patch.object(
-            tools.index,
-            "get_stats",
-            return_value={
-                "function_entries": 5,
-                "indexed_files": 2,
-                "block_entries": 0,
-            },
+        with (
+            patch.object(
+                tools.index,
+                "get_stats",
+                return_value={
+                    "function_entries": 5,
+                    "indexed_files": 2,
+                    "block_entries": 0,
+                },
+            ),
+            patch.object(tools, "_has_significant_duplicates", return_value=True),
         ):
-            with patch.object(tools, "_has_significant_duplicates", return_value=True):
-                text = tools._format_index_stats(include_blocks=False)
+            text = tools._format_index_stats(include_blocks=False)
         assert "Duplicates found" in text
 
 
@@ -5267,8 +5255,12 @@ class TestToolsCheckNoPlugin:
 
     def test_unsupported_language(self, tools):
         unit = CodeUnit(
-            name="dummy", code="def dummy(): pass", file_path="d.py",
-            line_start=1, line_end=1, unit_type="function",
+            name="dummy",
+            code="def dummy(): pass",
+            file_path="d.py",
+            line_start=1,
+            line_end=1,
+            unit_type="function",
         )
         tools.index.add_code_unit(unit)
         result = tools.check("some code", language="nonexistent_lang_xyz")
@@ -5288,10 +5280,6 @@ class TestToolsVerifyGroup:
 # ---------------------------------------------------------------------------
 # Coverage-targeted tests appended below
 # ---------------------------------------------------------------------------
-
-from unittest.mock import MagicMock, PropertyMock
-
-from astrograph.languages.base import SemanticProfile, SemanticSignal
 
 
 class TestDockerResolveFastPath:
@@ -5388,9 +5376,13 @@ class TestSemanticCompareResult:
         profile2 = SemanticProfile(
             signals=(SemanticSignal(key="type", value="int", confidence=0.2),),
         )
-        available, compatible, mismatches, matched, reason = (
-            CodeStructureTools._semantic_compare_result(profile1, profile2)
-        )
+        (
+            available,
+            compatible,
+            mismatches,
+            matched,
+            reason,
+        ) = CodeStructureTools._semantic_compare_result(profile1, profile2)
         assert not available
         assert not compatible
         assert matched == []
@@ -5404,9 +5396,13 @@ class TestSemanticCompareResult:
         profile2 = SemanticProfile(
             signals=(SemanticSignal(key="type", value="int", confidence=0.9),),
         )
-        available, compatible, mismatches, matched, reason = (
-            CodeStructureTools._semantic_compare_result(profile1, profile2)
-        )
+        (
+            available,
+            compatible,
+            mismatches,
+            matched,
+            reason,
+        ) = CodeStructureTools._semantic_compare_result(profile1, profile2)
         assert not available
         assert "insufficient" in reason
 
@@ -5420,9 +5416,13 @@ class TestSemanticCompareResult:
             signals=(),
             notes=(),
         )
-        available, compatible, mismatches, matched, reason = (
-            CodeStructureTools._semantic_compare_result(profile1, profile2)
-        )
+        (
+            available,
+            compatible,
+            mismatches,
+            matched,
+            reason,
+        ) = CodeStructureTools._semantic_compare_result(profile1, profile2)
         assert not available
         assert "syntax-only extraction" in reason
 
@@ -5440,9 +5440,13 @@ class TestSemanticCompareResult:
                 SemanticSignal(key="type_system", value="typed", confidence=0.8),
             ),
         )
-        available, compatible, mismatches, matched, reason = (
-            CodeStructureTools._semantic_compare_result(profile1, profile2)
-        )
+        (
+            available,
+            compatible,
+            mismatches,
+            matched,
+            reason,
+        ) = CodeStructureTools._semantic_compare_result(profile1, profile2)
         assert available
         assert compatible
         assert "async" in matched
@@ -5457,9 +5461,13 @@ class TestSemanticCompareResult:
         profile2 = SemanticProfile(
             signals=(SemanticSignal(key="async", value="no", confidence=0.9),),
         )
-        available, compatible, mismatches, matched, reason = (
-            CodeStructureTools._semantic_compare_result(profile1, profile2)
-        )
+        (
+            available,
+            compatible,
+            mismatches,
+            matched,
+            reason,
+        ) = CodeStructureTools._semantic_compare_result(profile1, profile2)
         assert available
         assert not compatible
         assert len(mismatches) == 1
@@ -5497,11 +5505,11 @@ class TestCompareSemanticModes:
 
         call_count = {"graph": 0, "profile": 0}
 
-        def source_to_graph(code):
+        def source_to_graph(_code):
             call_count["graph"] += 1
             return g1 if call_count["graph"] == 1 else g2
 
-        def extract_semantic_profile(code, **kwargs):
+        def extract_semantic_profile(_code, **_kwargs):
             call_count["profile"] += 1
             return profile1 if call_count["profile"] == 1 else profile2
 
@@ -5515,9 +5523,7 @@ class TestCompareSemanticModes:
         plugin = self._make_mock_plugin(profile1=empty_profile, profile2=empty_profile)
 
         with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
-            result = mock_tools.compare(
-                "def a(): pass", "def b(): pass", semantic_mode="annotate"
-            )
+            result = mock_tools.compare("def a(): pass", "def b(): pass", semantic_mode="annotate")
         assert "SEMANTIC_INCONCLUSIVE" in result.text
         assert "astrograph_lsp_setup" in result.text
 
@@ -5541,9 +5547,7 @@ class TestCompareSemanticModes:
         plugin = self._make_mock_plugin(profile1=matching_profile, profile2=matching_profile)
 
         with patch.object(LanguageRegistry.get(), "get_plugin", return_value=plugin):
-            result = mock_tools.compare(
-                "def a(): pass", "def b(): pass", semantic_mode="annotate"
-            )
+            result = mock_tools.compare("def a(): pass", "def b(): pass", semantic_mode="annotate")
         assert "SEMANTIC_MATCH" in result.text
 
     def test_differentiate_equivalent_compatible(self, mock_tools):
@@ -5683,9 +5687,7 @@ class TestCompareSemanticModes:
 
     def test_compare_unsupported_language(self, mock_tools):
         """compare with unsupported language returns error."""
-        result = mock_tools.compare(
-            "code1", "code2", language="unknown_lang_xyz"
-        )
+        result = mock_tools.compare("code1", "code2", language="unknown_lang_xyz")
         assert "Unsupported language" in result.text
 
 
@@ -5947,7 +5949,7 @@ class TestCandidateSimilaritySnippetsErrors:
 
         call_count = {"n": 0}
 
-        def extract_code_units(*args, **kwargs):
+        def extract_code_units(*_args, **_kwargs):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 # First call with include_blocks/max_block_depth raises TypeError
@@ -6097,15 +6099,13 @@ def handle_entries(entries):
 
 # --- MCP handler coverage (server.py lines 353-397, 490-535, 542-572) ---
 
-from unittest.mock import MagicMock
-
 
 class TestMCPShutdown:
     """Cover server.py shutdown handlers (lines 542-572)."""
 
     def test_close_if_first_idempotent(self):
         """_close_if_first is idempotent (lines 550-554)."""
-        from astrograph.server import _close_once, _close_if_first
+        from astrograph.server import _close_if_first, _close_once
 
         was_set = _close_once.is_set()
         _close_once.clear()

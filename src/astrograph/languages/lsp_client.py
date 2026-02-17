@@ -556,7 +556,7 @@ class SocketLSPClient(SubprocessLSPClient):
         if self._path_prefix_map is not None:
             container_pfx, host_pfx = self._path_prefix_map
             if file_path.startswith(container_pfx):
-                file_path = host_pfx + file_path[len(container_pfx):]
+                file_path = host_pfx + file_path[len(container_pfx) :]
         return super()._path_to_uri(file_path)
 
     def _start_process(self) -> bool:

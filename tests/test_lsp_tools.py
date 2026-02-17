@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from astrograph import lsp_tools
 
 
@@ -138,9 +136,7 @@ class TestInjectLspSetupGuidance:
         payload = {
             "servers": [{"language": "python", "available": True, "required": True}],
         }
-        lsp_tools.inject_lsp_setup_guidance(
-            payload, workspace=tmp_path, docker_runtime=False
-        )
+        lsp_tools.inject_lsp_setup_guidance(payload, workspace=tmp_path, docker_runtime=False)
         assert "missing_languages" in payload
         assert "recommended_actions" in payload
         assert "resolution_loop" in payload
@@ -150,9 +146,7 @@ class TestInjectLspSetupGuidance:
         payload = {
             "servers": [{"language": "python", "available": False, "required": True}],
         }
-        lsp_tools.inject_lsp_setup_guidance(
-            payload, workspace=tmp_path, docker_runtime=True
-        )
+        lsp_tools.inject_lsp_setup_guidance(payload, workspace=tmp_path, docker_runtime=True)
         assert payload["execution_context"] == "docker"
         assert "observation_note" in payload
 

@@ -231,10 +231,13 @@ class SQLitePersistence:
                 # Delete old entries for this file
                 conn.execute("DELETE FROM entries WHERE file_path = ?", (file_path,))
 
-                # Insert new entries
+                # Insert new entries (OR REPLACE guards against stale entry_counter
+                # after crash: if a restarted server regenerates an ID that
+                # already exists in the DB, the row is replaced instead of
+                # raising UNIQUE constraint violation).
                 if entries:
                     conn.executemany(
-                        "INSERT INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT OR REPLACE INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
                         [
                             (e.id, file_path, e.wl_hash, e.pattern_hash, json.dumps(e.to_dict()))
                             for e in entries
@@ -337,10 +340,10 @@ class SQLitePersistence:
                 conn.execute("DELETE FROM suppressed_hashes")
                 conn.execute("DELETE FROM index_metadata")
 
-                # Save entries
+                # Save entries (OR REPLACE for crash safety — see save_file_entries)
                 if index.entries:
                     conn.executemany(
-                        "INSERT INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT OR REPLACE INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
                         [
                             (
                                 eid,

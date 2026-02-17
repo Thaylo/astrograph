@@ -358,11 +358,19 @@ class CodeStructureIndex:
 
         Returns True if the file has changed or doesn't exist in metadata.
         Uses mtime for quick check, falls back to content hash for accuracy.
+
+        Also returns True for files with entry_count=0 so they get retried
+        when extraction capabilities change (e.g., after LSP binding).
         """
         if file_path not in self.file_metadata:
             return True  # Not tracked, treat as changed
 
         metadata = self.file_metadata[file_path]
+
+        # Retry files that previously produced zero entries — extraction may
+        # succeed now if an LSP server has been bound since the last attempt.
+        if metadata.entry_count == 0:
+            return True
 
         try:
             current_mtime = os.path.getmtime(file_path)
@@ -1072,9 +1080,7 @@ class CodeStructureIndex:
     ) -> list[DuplicateGroup]:
         """Find all groups of structurally equivalent code units."""
         with self._lock:
-            return self._find_duplicates_in_buckets(
-                self.hash_buckets, min_node_count, entry_filter
-            )
+            return self._find_duplicates_in_buckets(self.hash_buckets, min_node_count, entry_filter)
 
     def find_pattern_duplicates(
         self,

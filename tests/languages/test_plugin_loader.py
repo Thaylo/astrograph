@@ -1,9 +1,17 @@
 """Tests for language plugin discovery."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from astrograph.languages.base import BaseLanguagePlugin
-from astrograph.languages.plugin_loader import discover_language_plugins
+from astrograph.languages.plugin_loader import (
+    _close_plugin_quietly,
+    _entry_points_for_group,
+    _iter_entry_point_plugins,
+    _load_plugin_from_class_path,
+    discover_language_plugins,
+)
 
 
 class EnvPlugin(BaseLanguagePlugin):
@@ -64,15 +72,6 @@ def test_discover_handles_env_plugin_paths(monkeypatch, env_value, expected_lang
 
 
 # ----- Coverage tests for plugin_loader edge cases (lines 41-81, 127-130) -----
-
-from unittest.mock import MagicMock, patch
-
-from astrograph.languages.plugin_loader import (
-    _close_plugin_quietly,
-    _entry_points_for_group,
-    _iter_entry_point_plugins,
-    _load_plugin_from_class_path,
-)
 
 
 class TestLoadPluginFromClassPath:

@@ -286,6 +286,16 @@ _PROBE_DOCUMENTS: dict[str, dict[str, str]] = {
         "suffix": "_probe.go",
         "source": "package main\n\nfunc helper(value int) int { return value + 1 }\n",
     },
+    "javascript_lsp": {
+        "lsp_language_id": "javascript",
+        "suffix": "_probe.js",
+        "source": "function helper(value) { return value + 1; }\n",
+    },
+    "typescript_lsp": {
+        "lsp_language_id": "typescript",
+        "suffix": "_probe.ts",
+        "source": "function helper(value: number): number { return value + 1; }\n",
+    },
 }
 
 
@@ -1259,9 +1269,7 @@ def collect_lsp_statuses(
                     ),
                     "verification": {"state": "not_configured"},
                     "verification_state": "not_configured",
-                    "validation_mode": _normalized_validation_mode_with_override(
-                        validation_mode
-                    ),
+                    "validation_mode": _normalized_validation_mode_with_override(validation_mode),
                     "compile_commands": None,
                 }
             )

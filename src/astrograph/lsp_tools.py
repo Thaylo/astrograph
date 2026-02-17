@@ -133,9 +133,9 @@ def server_bridge_info(language_id: str, candidate: str) -> dict[str, Any] | Non
         info["server_binary"] = "clangd"
         info["server_binary_alternatives"] = ["ccls"]
         info["shared_with"] = "c_lsp" if language_id == "cpp_lsp" else "cpp_lsp"
-        info["socat_command"] = (
-            f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" ' '"EXEC:clangd",stderr'
-        )
+        info[
+            "socat_command"
+        ] = f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" "EXEC:clangd",stderr'
         info["install_hints"] = {
             "macos": "brew install llvm",
             "linux": "apt-get install -y clangd",
@@ -424,9 +424,7 @@ def inject_lsp_setup_guidance(
     if not isinstance(statuses_value, list):
         statuses_value = payload.get("statuses")
     statuses = (
-        [status for status in statuses_value if isinstance(status, dict)]
-        if statuses_value
-        else []
+        [status for status in statuses_value if isinstance(status, dict)] if statuses_value else []
     )
     if not statuses:
         statuses = collect_lsp_statuses(workspace)

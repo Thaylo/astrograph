@@ -5,13 +5,21 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import sys
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import astrograph.lsp_setup as lsp_setup
 from astrograph.lsp_setup import (
+    _availability_validation,
+    _compile_commands_status,
+    _evaluate_version_status,
+    _normalize_workspace_root,
+    _run_version_probe,
+    _version_probe_candidates,
     auto_bind_missing_servers,
     bundled_lsp_specs,
     collect_lsp_statuses,
@@ -589,9 +597,9 @@ class TestUnbundledLSPSpecs:
         """Every language must default to a tcp:// endpoint."""
         for spec in bundled_lsp_specs():
             cmd = " ".join(spec.default_command)
-            assert cmd.startswith("tcp://"), (
-                f"{spec.language_id} default_command should be tcp://, got {cmd}"
-            )
+            assert cmd.startswith(
+                "tcp://"
+            ), f"{spec.language_id} default_command should be tcp://, got {cmd}"
 
     def test_all_specs_are_optional(self):
         """No language should be required — all are attach-mode."""
@@ -771,22 +779,16 @@ class TestCompileCommandsStatus:
     def test_valid_compile_commands(self, tmp_path):
         cc = tmp_path / "compile_commands.json"
         cc.write_text('[{"directory": ".", "command": "clang++ -c f.cpp", "file": "f.cpp"}]')
-        status = lsp_setup._compile_commands_status(
-            language_id="cpp_lsp", workspace=tmp_path
-        )
+        status = lsp_setup._compile_commands_status(language_id="cpp_lsp", workspace=tmp_path)
         assert status is not None
         assert status["valid"] is True
 
     def test_non_cpp_returns_none(self, tmp_path):
-        status = lsp_setup._compile_commands_status(
-            language_id="python", workspace=tmp_path
-        )
+        status = lsp_setup._compile_commands_status(language_id="python", workspace=tmp_path)
         assert status is None
 
     def test_no_compile_commands(self, tmp_path):
-        status = lsp_setup._compile_commands_status(
-            language_id="cpp_lsp", workspace=tmp_path
-        )
+        status = lsp_setup._compile_commands_status(language_id="cpp_lsp", workspace=tmp_path)
         assert status is not None
         assert status["valid"] is False
 
@@ -817,19 +819,6 @@ class TestBindingPersistence:
 # ---------------------------------------------------------------------------
 # Additional coverage tests
 # ---------------------------------------------------------------------------
-
-import subprocess
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-from astrograph.lsp_setup import (
-    _availability_validation,
-    _compile_commands_status,
-    _evaluate_version_status,
-    _normalize_workspace_root,
-    _run_version_probe,
-    _version_probe_candidates,
-)
 
 
 class TestEvaluateVersionStatusPython:
@@ -1131,16 +1120,16 @@ class TestEvaluateVersionStatusGo:
     """Cover Go runtime and gopls version evaluation paths."""
 
     @pytest.mark.parametrize(
-        ("version_str", "minor", "expected_state"),
+        ("version_str", "expected_state"),
         [
-            ("go1.21.0", 21, "supported"),
-            ("go1.22.5", 22, "supported"),
-            ("go1.23.0", 23, "supported"),
-            ("go1.24.1", 24, "supported"),
-            ("go1.25.0", 25, "supported"),
+            ("go1.21.0", "supported"),
+            ("go1.22.5", "supported"),
+            ("go1.23.0", "supported"),
+            ("go1.24.1", "supported"),
+            ("go1.25.0", "supported"),
         ],
     )
-    def test_go_supported_range(self, version_str, minor, expected_state):
+    def test_go_supported_range(self, version_str, expected_state):
         result = _evaluate_version_status(
             language_id="go_lsp",
             detected=version_str,
@@ -1223,7 +1212,7 @@ class TestCompileCommandsStatusEdgeCases:
         assert status["readable"] is False
         assert "unreadable" in status["reason"]
 
-    def test_relative_path_falls_back_to_str(self, tmp_path, monkeypatch):
+    def test_relative_path_falls_back_to_str(self, tmp_path):
         """When path.relative_to raises, the full path string is used."""
         cc = tmp_path / "build" / "compile_commands.json"
         cc.parent.mkdir(parents=True)
@@ -1615,14 +1604,14 @@ class TestNormalizeWorkspaceRoot:
         finally:
             lsp_setup._active_workspace = old_active
 
-    def test_pwd_fallback(self, tmp_path, monkeypatch):
+    def test_pwd_fallback(self, monkeypatch):
         """When no other source is available, PWD env var is used."""
         monkeypatch.delenv("ASTROGRAPH_WORKSPACE", raising=False)
         old_active = lsp_setup._active_workspace
         lsp_setup._active_workspace = None
         try:
             # Mock /workspace not existing
-            with patch.object(Path, "is_dir", side_effect=lambda self=None: False):
+            with patch.object(Path, "is_dir", side_effect=lambda _self=None: False):
                 # This is tricky because is_dir is called on Path instances
                 # Instead, just test with the real env
                 pass

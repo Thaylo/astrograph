@@ -349,12 +349,14 @@ class TestLspStatusEdgeCases:
             default_command=["pylsp"],
             required=True,
         )
-        with patch("astrograph.cli.resolve_lsp_command", return_value=(["pylsp"], "binding")):
-            with patch(
+        with (
+            patch("astrograph.cli.resolve_lsp_command", return_value=(["pylsp"], "binding")),
+            patch(
                 "astrograph.cli.probe_command",
                 return_value={"available": False, "executable": None, "transport": "subprocess"},
-            ):
-                status = cli._lsp_status(spec)
+            ),
+        ):
+            status = cli._lsp_status(spec)
         assert status.reason == "bound command was not found; check the binding"
 
     def test_binding_not_reachable_tcp(self):
@@ -363,8 +365,12 @@ class TestLspStatusEdgeCases:
             default_command=["tcp://127.0.0.1:2088"],
             required=False,
         )
-        with patch("astrograph.cli.resolve_lsp_command", return_value=(["tcp://127.0.0.1:2088"], "binding")):
-            with patch(
+        with (
+            patch(
+                "astrograph.cli.resolve_lsp_command",
+                return_value=(["tcp://127.0.0.1:2088"], "binding"),
+            ),
+            patch(
                 "astrograph.cli.probe_command",
                 return_value={
                     "available": False,
@@ -372,8 +378,9 @@ class TestLspStatusEdgeCases:
                     "transport": "tcp",
                     "endpoint": "127.0.0.1:2088",
                 },
-            ):
-                status = cli._lsp_status(spec)
+            ),
+        ):
+            status = cli._lsp_status(spec)
         assert status.reason == "bound endpoint is not reachable; check the binding"
 
     def test_default_attach_not_reachable(self):
@@ -382,8 +389,12 @@ class TestLspStatusEdgeCases:
             default_command=["tcp://127.0.0.1:2088"],
             required=False,
         )
-        with patch("astrograph.cli.resolve_lsp_command", return_value=(["tcp://127.0.0.1:2088"], "default")):
-            with patch(
+        with (
+            patch(
+                "astrograph.cli.resolve_lsp_command",
+                return_value=(["tcp://127.0.0.1:2088"], "default"),
+            ),
+            patch(
                 "astrograph.cli.probe_command",
                 return_value={
                     "available": False,
@@ -391,8 +402,9 @@ class TestLspStatusEdgeCases:
                     "transport": "tcp",
                     "endpoint": "127.0.0.1:2088",
                 },
-            ):
-                status = cli._lsp_status(spec)
+            ),
+        ):
+            status = cli._lsp_status(spec)
         assert status.reason == "default attach endpoint is not reachable"
 
     def test_js_installable_without_npm(self):
@@ -402,8 +414,14 @@ class TestLspStatusEdgeCases:
             required=True,
         )
         with (
-            patch("astrograph.cli.resolve_lsp_command", return_value=(["typescript-language-server", "--stdio"], "default")),
-            patch("astrograph.cli.probe_command", return_value={"available": False, "executable": None, "transport": "subprocess"}),
+            patch(
+                "astrograph.cli.resolve_lsp_command",
+                return_value=(["typescript-language-server", "--stdio"], "default"),
+            ),
+            patch(
+                "astrograph.cli.probe_command",
+                return_value={"available": False, "executable": None, "transport": "subprocess"},
+            ),
             patch("shutil.which", return_value=None),
         ):
             status = cli._lsp_status(spec)

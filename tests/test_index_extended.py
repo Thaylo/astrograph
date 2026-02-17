@@ -595,11 +595,9 @@ class TestPatternHashRelabeling:
             "def f(x): return x",
             "def f(): pass",
         ],
-        ids=lambda code: code.split(":")[0]
-        .strip()
-        .replace("def f", "")
-        .replace("(", "_")
-        .replace(")", "")[:40],
+        ids=lambda code: (
+            code.split(":")[0].strip().replace("def f", "").replace("(", "_").replace(")", "")[:40]
+        ),
     )
     def test_relabel_hash_equals_reparse_hash(self, code):
         """Verify relabeled hash matches reparsed hash for all operator types."""
@@ -1777,7 +1775,7 @@ class TestEntryFilter:
         index.index_file(str(tmp_path / "b.py"))
 
         # Filter that matches nothing
-        groups = index.find_all_duplicates(entry_filter=lambda e: False)
+        groups = index.find_all_duplicates(entry_filter=lambda _e: False)
         assert groups == []
 
     def test_find_pattern_duplicates_with_entry_filter(self, tmp_path):
@@ -1789,7 +1787,7 @@ class TestEntryFilter:
         index.index_file(str(tmp_path / "mul.py"))
 
         # Filter that matches nothing — no groups
-        groups = index.find_pattern_duplicates(entry_filter=lambda e: False)
+        groups = index.find_pattern_duplicates(entry_filter=lambda _e: False)
         assert groups == []
 
     def test_find_block_duplicates_composes_filters(self, tmp_path):
@@ -1808,7 +1806,5 @@ class TestEntryFilter:
         index.index_file(str(tmp_path / "b.py"), include_blocks=True)
 
         # Filter that rejects everything — no block groups even with valid block_types
-        groups = index.find_block_duplicates(
-            block_types=["for"], entry_filter=lambda e: False
-        )
+        groups = index.find_block_duplicates(block_types=["for"], entry_filter=lambda _e: False)
         assert groups == []
