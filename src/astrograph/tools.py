@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Persistence directory name for cached index
 PERSISTENCE_DIR = ".metadata_astrograph"
+PERSISTENCE_DIR_ENV = "ASTROGRAPH_PERSISTENCE_DIR"
 LEGACY_ANALYSIS_REPORT = "analysis_report.txt"
 _SEMANTIC_MODES = frozenset({"off", "annotate", "differentiate"})
 _MUTATING_TOOL_NAMES = frozenset(
@@ -234,6 +236,9 @@ class CodeStructureTools(CloseOnExitMixin):
 
         self._last_indexed_path: str | None = None
         self._host_root: str | None = None
+        self._host_root_lock = threading.RLock()
+        self._active_persistence_path: Path | None = None
+        self._persistence_path_initialized = False
         self._ignore_spec: IgnoreSpec | None = None
 
         # In Docker, detect host root from mount metadata so path
@@ -241,10 +246,7 @@ class CodeStructureTools(CloseOnExitMixin):
         if os.path.isdir("/workspace") and os.path.exists("/.dockerenv"):
             detected = self._detect_host_root_from_mountinfo()
             if detected:
-                self._host_root = detected
-                from .lsp_setup import set_docker_path_map
-
-                set_docker_path_map("/workspace", detected)
+                self._set_host_root(detected)
 
         # Background indexing state
         self._bg_index_thread: threading.Thread | None = None
@@ -333,6 +335,79 @@ class CodeStructureTools(CloseOnExitMixin):
             pass
         return None
 
+    def _get_host_root(self) -> str | None:
+        """Read host root mapping under lock."""
+        with self._host_root_lock:
+            return self._host_root
+
+    def _set_host_root(self, host_root: str) -> None:
+        """Update host root mapping under lock and propagate to LSP layer."""
+        with self._host_root_lock:
+            self._host_root = host_root
+
+        from .lsp_setup import set_docker_path_map
+
+        set_docker_path_map("/workspace", host_root)
+
+    def _current_persistence_path(self) -> Path | None:
+        """Return the active metadata directory for the current workspace."""
+        if self._persistence_path_initialized:
+            return self._active_persistence_path
+        if self._last_indexed_path is None:
+            return None
+        configured = os.environ.get(PERSISTENCE_DIR_ENV)
+        if configured:
+            configured_path = Path(configured).expanduser()
+            if not configured_path.is_absolute():
+                base = Path(self._last_indexed_path).resolve()
+                if base.is_file():
+                    base = base.parent
+                configured_path = (base / configured_path).resolve()
+            return configured_path
+        return _get_persistence_path(self._last_indexed_path)
+
+    @staticmethod
+    def _ensure_writable_directory(path: Path) -> str | None:
+        """Ensure a directory exists and is writable. Returns error text on failure."""
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".astrograph_write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return None
+        except OSError as exc:
+            return str(exc)
+
+    def _select_persistence_path(self, indexed_path: str) -> tuple[Path | None, str | None]:
+        """Select metadata dir; return (path, error_text)."""
+        configured = os.environ.get(PERSISTENCE_DIR_ENV)
+        if configured:
+            persistence_path = Path(configured).expanduser()
+            if not persistence_path.is_absolute():
+                base = Path(indexed_path).resolve()
+                if base.is_file():
+                    base = base.parent
+                persistence_path = (base / persistence_path).resolve()
+        else:
+            persistence_path = _get_persistence_path(indexed_path)
+
+        write_error = self._ensure_writable_directory(persistence_path)
+        if write_error is not None:
+            display = self._host_display_path(str(persistence_path))
+            help_hint = (
+                f"Set {PERSISTENCE_DIR_ENV} to a writable directory."
+                if not configured
+                else f"Fix {PERSISTENCE_DIR_ENV} or unset it to use the default metadata path."
+            )
+            return (
+                None,
+                f"Error: Metadata directory {display} is not writable ({write_error}). {help_hint}",
+            )
+
+        self._active_persistence_path = persistence_path
+        self._persistence_path_initialized = True
+        return persistence_path, None
+
     def _background_index(self, path: str) -> None:
         """Index a codebase in the background."""
         try:
@@ -411,6 +486,13 @@ class CodeStructureTools(CloseOnExitMixin):
             return ", ".join(hashes[:max_shown]) + f" ... ({len(hashes)} total)"
         return ", ".join(hashes)
 
+    @staticmethod
+    def _is_index_error_result(text: str) -> bool:
+        """Detect index failures, including those prefixed by advisory warnings."""
+        if text.startswith("Error:"):
+            return True
+        return "\n\nError:" in text
+
     def _has_significant_duplicates(self) -> bool:
         """Check if there are duplicates above the trivial threshold."""
         return self.index.has_duplicates(min_node_count=5)
@@ -463,6 +545,11 @@ class CodeStructureTools(CloseOnExitMixin):
         if not os.path.exists(path):
             return ToolResult(f"Error: Path does not exist: {original_path}")
 
+        # Always include blocks - only 22% overhead for much better detection
+        result = self._index_codebase_event_driven(path, recursive)
+        if self._is_index_error_result(result.text):
+            return result
+
         # Store resolved path for auto-reindex and relative path computation
         self._last_indexed_path = str(Path(path).resolve())
 
@@ -477,8 +564,7 @@ class CodeStructureTools(CloseOnExitMixin):
         # relative, so stale plugins would use the wrong endpoint).
         LanguageRegistry.reset()
 
-        # Always include blocks - only 22% overhead for much better detection
-        return self._index_codebase_event_driven(path, recursive)
+        return result
 
     def set_workspace(self, path: str) -> ToolResult:
         """Switch to a new workspace directory and re-index."""
@@ -497,8 +583,13 @@ class CodeStructureTools(CloseOnExitMixin):
         # Check for cloud-synced folders and prepare warning
         cloud_warning = get_cloud_sync_warning(path)
 
-        persistence_path = _get_persistence_path(path)
-        persistence_path.mkdir(exist_ok=True)
+        persistence_path, persistence_error = self._select_persistence_path(path)
+        if persistence_path is None:
+            assert persistence_error is not None
+            output = persistence_error
+            if cloud_warning:
+                output = cloud_warning + "\n\n" + output
+            return ToolResult(output)
         sqlite_path = persistence_path / "index.db"
 
         # Close old event-driven index (stops watcher, closes SQLite connection)
@@ -509,11 +600,21 @@ class CodeStructureTools(CloseOnExitMixin):
         self._ignore_spec = IgnoreSpec.from_file(str(ignore_dir / ASTROGRAPHIGNORE_FILENAME))
 
         # Create new event-driven index with persistence
-        self._event_driven_index = EventDrivenIndex(
-            persistence_path=sqlite_path,
-            watch_enabled=True,
-            ignore_spec=self._ignore_spec,
-        )
+        try:
+            self._event_driven_index = EventDrivenIndex(
+                persistence_path=sqlite_path,
+                watch_enabled=True,
+                ignore_spec=self._ignore_spec,
+            )
+        except (OSError, sqlite3.Error) as exc:
+            output = (
+                "Error: Failed to initialize metadata persistence at "
+                f"{self._host_display_path(str(sqlite_path))} ({exc}). "
+                f"Fix permissions or set {PERSISTENCE_DIR_ENV} to a writable directory."
+            )
+            if cloud_warning:
+                output = cloud_warning + "\n\n" + output
+            return ToolResult(output)
         self.index = self._event_driven_index.index
 
         # Index the path (loads from cache if available)
@@ -529,7 +630,6 @@ class CodeStructureTools(CloseOnExitMixin):
             f"Indexed {stats['function_entries']} code units from {stats['indexed_files']} files.",
             f"Extracted {stats['block_entries']} code blocks.",
         ]
-
         if self._has_significant_duplicates():
             result_parts.append("\nDuplicates found. Run analyze().")
         else:
@@ -563,9 +663,10 @@ class CodeStructureTools(CloseOnExitMixin):
         When ``_host_root`` is known, replaces the ``/workspace`` prefix
         so agents see paths that match their host filesystem.
         """
-        if self._host_root and container_path.startswith("/workspace"):
+        host_root = self._get_host_root()
+        if host_root and container_path.startswith("/workspace"):
             suffix = container_path[len("/workspace") :]
-            return self._host_root + suffix
+            return host_root + suffix
         return container_path
 
     # ------------------------------------------------------------------
@@ -585,7 +686,10 @@ class CodeStructureTools(CloseOnExitMixin):
         """Load domain configuration from .metadata_astrograph/domains.json."""
         if not self._last_indexed_path:
             return None
-        domains_file = _get_persistence_path(self._last_indexed_path) / "domains.json"
+        persistence_path = self._current_persistence_path()
+        if persistence_path is None:
+            return None
+        domains_file = persistence_path / "domains.json"
         if not domains_file.exists():
             return None
         try:
@@ -641,8 +745,9 @@ class CodeStructureTools(CloseOnExitMixin):
             return path
 
         # Fast path: use learned mapping
-        if self._host_root is not None and path.startswith(self._host_root):
-            remainder = path[len(self._host_root) :]
+        host_root = self._get_host_root()
+        if host_root is not None and path.startswith(host_root):
+            remainder = path[len(host_root) :]
             if remainder.startswith("/"):
                 remainder = remainder[1:]
             # Filter traversal components from remainder
@@ -698,19 +803,18 @@ class CodeStructureTools(CloseOnExitMixin):
 
     def _learn_host_root(self, host_path: str, container_path: str) -> None:
         """Derive and store the host↔container root mapping."""
+        learned_host_root: str | None = None
         suffix = container_path[len("/workspace") :]
         if suffix and host_path.endswith(suffix):
-            self._host_root = host_path[: -len(suffix)]
+            learned_host_root = host_path[: -len(suffix)]
         elif not suffix:
             # container_path is exactly "/workspace" — host_path IS the root
-            self._host_root = host_path
+            learned_host_root = host_path
 
-        # Propagate mapping to LSP layer so SocketLSPClient translates
-        # container paths (/workspace/…) to host paths in URIs.
-        if self._host_root is not None:
-            from .lsp_setup import set_docker_path_map
-
-            set_docker_path_map("/workspace", self._host_root)
+        if learned_host_root is not None:
+            # Propagate mapping to LSP layer so SocketLSPClient translates
+            # container paths (/workspace/…) to host paths in URIs.
+            self._set_host_root(learned_host_root)
 
     def _format_locations(self, entries: list[IndexEntry]) -> list[str]:
         """Format entry locations for output."""
@@ -727,8 +831,10 @@ class CodeStructureTools(CloseOnExitMixin):
         if self._last_indexed_path is None:
             return None
         try:
-            persistence_path = _get_persistence_path(self._last_indexed_path)
-            persistence_path.mkdir(exist_ok=True)
+            persistence_path = self._current_persistence_path()
+            if persistence_path is None:
+                return None
+            persistence_path.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             report_file = persistence_path / f"analysis_report_{timestamp}.txt"
             report_file.write_text(content)
@@ -740,9 +846,10 @@ class CodeStructureTools(CloseOnExitMixin):
         """Remove stale legacy report alias when no findings."""
         if self._last_indexed_path is not None:
             try:
-                legacy_report = (
-                    _get_persistence_path(self._last_indexed_path) / LEGACY_ANALYSIS_REPORT
-                )
+                persistence_path = self._current_persistence_path()
+                if persistence_path is None:
+                    return
+                legacy_report = persistence_path / LEGACY_ANALYSIS_REPORT
                 legacy_report.unlink(missing_ok=True)
             except OSError:
                 pass
@@ -1538,7 +1645,9 @@ class CodeStructureTools(CloseOnExitMixin):
         """Return the latest analysis report text for the MCP resource."""
         if self._last_indexed_path is None:
             return "No codebase indexed yet."
-        persistence_path = _get_persistence_path(self._last_indexed_path)
+        persistence_path = self._current_persistence_path()
+        if persistence_path is None:
+            return "No analysis reports available."
         if not persistence_path.exists():
             return "No analysis reports available."
         reports = sorted(persistence_path.glob("analysis_report_*.txt"), reverse=True)
@@ -1659,8 +1768,9 @@ class CodeStructureTools(CloseOnExitMixin):
         )
         # Translate container paths to host paths so agents see
         # paths that match their host filesystem.
-        if self._host_root and str(workspace) != self._host_root:
-            result_json = result_json.replace(str(workspace), self._host_root)
+        host_root = self._get_host_root()
+        if host_root and str(workspace) != host_root:
+            result_json = result_json.replace(str(workspace), host_root)
         return ToolResult(result_json)
 
     @_requires_workspace_root(
@@ -1709,7 +1819,19 @@ class CodeStructureTools(CloseOnExitMixin):
         """
         workspace_root = self._last_indexed_path
         assert workspace_root is not None
-        persistence_dir = _get_persistence_path(workspace_root)
+        persistence_dir = self._current_persistence_path()
+        if persistence_dir is None:
+            return ToolResult(
+                "Metadata persistence is unavailable for the current workspace. "
+                f"Re-run index_codebase after fixing metadata directory permissions or setting {PERSISTENCE_DIR_ENV}."
+            )
+        try:
+            persistence_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return ToolResult(
+                f"Error: Failed to access metadata directory "
+                f"{self._host_display_path(str(persistence_dir))}: {exc}"
+            )
         domains_file = persistence_dir / "domains.json"
 
         if domains is None:
@@ -1726,11 +1848,17 @@ class CodeStructureTools(CloseOnExitMixin):
 
         if not domains:
             # Clear
-            domains_file.unlink(missing_ok=True)
+            try:
+                domains_file.unlink(missing_ok=True)
+            except OSError as exc:
+                return ToolResult(f"Error: Failed to clear detection domains: {exc}")
             return ToolResult("Detection domains cleared.")
 
         # Write
-        domains_file.write_text(json.dumps({"domains": domains}, indent=2))
+        try:
+            domains_file.write_text(json.dumps({"domains": domains}, indent=2))
+        except OSError as exc:
+            return ToolResult(f"Error: Failed to write detection domains: {exc}")
 
         lines = [f"Configured {len(domains)} detection domain(s):"]
         for name, patterns in domains.items():
@@ -1758,17 +1886,20 @@ class CodeStructureTools(CloseOnExitMixin):
         erased = False
         bindings_removed = False
         if self._last_indexed_path:
-            persistence_path = _get_persistence_path(self._last_indexed_path)
-            bindings_removed = (persistence_path / "lsp_bindings.json").exists()
-            if persistence_path.exists():
-                shutil.rmtree(persistence_path, ignore_errors=True)
-                erased = True
+            persistence_path = self._current_persistence_path()
+            if persistence_path is not None:
+                bindings_removed = (persistence_path / "lsp_bindings.json").exists()
+                if persistence_path.exists():
+                    shutil.rmtree(persistence_path, ignore_errors=True)
+                    erased = True
 
         # Create fresh event-driven index (no persistence until next index_codebase)
         self._event_driven_index = EventDrivenIndex(
             persistence_path=None,
             watch_enabled=True,
         )
+        self._active_persistence_path = None
+        self._persistence_path_initialized = False
         self.index = self._event_driven_index.index
 
         if erased:
@@ -1791,7 +1922,10 @@ class CodeStructureTools(CloseOnExitMixin):
         """
         path = self._last_indexed_path
         assert path is not None
-        bindings_removed = (_get_persistence_path(path) / "lsp_bindings.json").exists()
+        persistence_path = self._current_persistence_path()
+        bindings_removed = (
+            (persistence_path / "lsp_bindings.json").exists() if persistence_path else False
+        )
 
         # Erase everything
         self.metadata_erase()

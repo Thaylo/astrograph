@@ -108,10 +108,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Static checks
+      - name: Pre-commit checks
         run: |
-          uv run ruff check .
-          uv run mypy
+          uv run pre-commit run --all-files --show-diff-on-failure
 
       - name: Build local Docker image for e2e tests
         run: docker build -t astrograph-local:test .

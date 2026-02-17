@@ -54,6 +54,16 @@ class _StdioReader:
         self._stream = stream
         self._buf = b""
         self.mode: str | None = None  # "newline" or "framed"
+        self._first_mode_determined = anyio.Event()
+
+    def mark_first_mode_determined(self) -> None:
+        """Signal that framing is known, or that stdin ended before detection."""
+        self._first_mode_determined.set()
+
+    async def wait_for_first_mode(self) -> str | None:
+        """Wait until the first framing decision is available."""
+        await self._first_mode_determined.wait()
+        return self.mode
 
     async def _fill(self, min_bytes: int = 1) -> None:
         """Read more data from the stream into the buffer."""
@@ -97,6 +107,7 @@ class _StdioReader:
     async def read_message(self) -> bytes:
         """Read and return the next complete JSON-RPC message as bytes."""
         self.mode = await self._detect_mode()
+        self.mark_first_mode_determined()
         mode = self.mode
 
         if mode == "newline":
@@ -210,6 +221,7 @@ async def dual_stdio_server() -> (
                     msg = JSONRPCMessage.model_validate_json(data)
                     await read_send.send(SessionMessage(message=msg))
                 except EOFError:
+                    reader.mark_first_mode_determined()
                     break
                 except Exception as exc:
                     await read_send.send(exc)
@@ -224,7 +236,11 @@ async def dual_stdio_server() -> (
                     by_alias=True, exclude_none=True
                 ).encode("utf-8")
 
-                if reader.mode == "framed":
+                mode = reader.mode
+                if mode is None:
+                    mode = await reader.wait_for_first_mode()
+
+                if mode == "framed":
                     header = f"Content-Length: {len(json_bytes)}\r\n\r\n".encode("ascii")
                     await stdout.write(header + json_bytes)
                 else:

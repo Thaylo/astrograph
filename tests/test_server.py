@@ -29,6 +29,7 @@ def _clear_lsp_env(monkeypatch, tmp_path):
     """Keep LSP state isolated across tests/modules."""
     LanguageRegistry.reset()
     monkeypatch.delenv("ASTROGRAPH_COMPILE_COMMANDS_PATH", raising=False)
+    monkeypatch.delenv("ASTROGRAPH_PERSISTENCE_DIR", raising=False)
     # Disable startup auto-indexing in tests; fixtures call index_codebase explicitly.
     monkeypatch.setenv("ASTROGRAPH_WORKSPACE", "")
 
@@ -3299,6 +3300,98 @@ class TestPersistence:
             assert "Indexed" in result.text
             tools2.close()
 
+    def test_index_fails_when_default_metadata_dir_not_writable(self, monkeypatch):
+        """Indexing fails fast with actionable guidance when metadata dir is unwritable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(os.path.join(tmpdir, "file1.py")).write_text("def foo(): pass")
+            tools = CodeStructureTools()
+
+            monkeypatch.setattr(
+                tools,
+                "_ensure_writable_directory",
+                lambda _path: "Permission denied",
+            )
+
+            result = tools.index_codebase(tmpdir)
+            assert result.text.startswith("Error: Metadata directory")
+            assert "is not writable (Permission denied)" in result.text
+            assert "ASTROGRAPH_PERSISTENCE_DIR" in result.text
+            assert tools._last_indexed_path is None
+            tools.close()
+
+    def test_index_failure_with_cloud_warning_remains_error(self, monkeypatch):
+        """Cloud warnings should not mask index failures as successful indexing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(os.path.join(tmpdir, "file1.py")).write_text("def foo(): pass")
+            tools = CodeStructureTools()
+
+            monkeypatch.setattr(
+                "astrograph.cloud_detect.get_cloud_sync_warning",
+                lambda _path: "Cloud sync warning",
+            )
+            monkeypatch.setattr(
+                tools,
+                "_select_persistence_path",
+                lambda _path: (None, "Error: Metadata directory is not writable"),
+            )
+
+            result = tools.index_codebase(tmpdir)
+            assert result.text.startswith("Cloud sync warning")
+            assert "\n\nError: Metadata directory is not writable" in result.text
+            assert tools._last_indexed_path is None
+            tools.close()
+
+    def test_index_init_failure_includes_cloud_warning_and_actionable_error(self, monkeypatch):
+        """SQLite init failures should include warning context and explicit remediation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(os.path.join(tmpdir, "file1.py")).write_text("def foo(): pass")
+            tools = CodeStructureTools()
+
+            import sqlite3
+
+            monkeypatch.setattr(
+                "astrograph.cloud_detect.get_cloud_sync_warning",
+                lambda _path: "Cloud sync warning",
+            )
+            with patch("astrograph.tools.EventDrivenIndex", side_effect=sqlite3.Error("db locked")):
+                result = tools.index_codebase(tmpdir)
+
+            assert result.text.startswith("Cloud sync warning")
+            assert "Error: Failed to initialize metadata persistence" in result.text
+            assert "ASTROGRAPH_PERSISTENCE_DIR" in result.text
+            assert tools._last_indexed_path is None
+            tools.close()
+
+    def test_index_uses_configured_metadata_dir_when_default_not_writable(self, monkeypatch):
+        """Explicit ASTROGRAPH_PERSISTENCE_DIR resolves the root-cause cleanly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(os.path.join(tmpdir, "file1.py")).write_text("def foo(): pass")
+            configured_dir = Path(tmpdir) / "custom-metadata"
+            tools = CodeStructureTools()
+
+            default_path = _get_persistence_path(tmpdir)
+            original = tools._ensure_writable_directory
+
+            def fake_ensure_writable(path: Path) -> str | None:
+                if path == default_path:
+                    return "Permission denied"
+                return original(path)
+
+            monkeypatch.setenv("ASTROGRAPH_PERSISTENCE_DIR", str(configured_dir))
+            monkeypatch.setattr(tools, "_ensure_writable_directory", fake_ensure_writable)
+
+            result = tools.index_codebase(tmpdir)
+            assert "Indexed" in result.text
+            assert tools._active_persistence_path is not None
+            assert os.path.realpath(str(tools._active_persistence_path)) == os.path.realpath(
+                str(configured_dir)
+            )
+            assert (configured_dir / "index.db").exists()
+
+            tools.metadata_erase()
+            assert not configured_dir.exists()
+            tools.close()
+
     def test_suppress_persists_across_sessions(self):
         """Test that suppression persists to SQLite across sessions."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5395,6 +5488,47 @@ class TestLearnHostRoot:
             # suffix is "/src", but host_path "/Users/other/path" doesn't end with "/src"
             assert self.tools._host_root is None
             mock_set.assert_not_called()
+
+
+class _CountingLock:
+    """Simple context-manager lock used to verify lock usage in tests."""
+
+    def __init__(self):
+        self.enter_count = 0
+
+    def __enter__(self):
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class TestHostRootLocking:
+    """Lock-sensitive checks for host root reads/writes."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+
+    def test_resolve_path_reads_host_root_under_lock(self):
+        self.tools._host_root = "/Users/dev/project"
+        counting_lock = _CountingLock()
+        self.tools._host_root_lock = counting_lock
+
+        result = self.tools._resolve_path("/Users/dev/project/src/main.py")
+        assert result == "/workspace/src/main.py"
+        assert counting_lock.enter_count >= 1
+
+    def test_learn_host_root_writes_under_lock(self):
+        counting_lock = _CountingLock()
+        self.tools._host_root_lock = counting_lock
+
+        with patch("astrograph.lsp_setup.set_docker_path_map"):
+            self.tools._learn_host_root("/Users/dev/project/src", "/workspace/src")
+
+        assert self.tools._host_root == "/Users/dev/project"
+        assert counting_lock.enter_count >= 1
 
 
 class TestDetectHostRootFromMountinfo:
