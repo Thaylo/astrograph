@@ -46,3 +46,10 @@ htmlcov/
 *.index.json
 .metadata_astograph/
 .metadata_astrograph/
+
+# Local workspace artifacts
+.claude/
+coverage.xml
+experiments.db
+llm_provider_api_usage.db
+.DS_Store
