@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to publish (vMAJOR.MINOR.PATCH)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: thaylo/astrograph
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release_meta.outputs.tag }}
+      version: ${{ steps.release_meta.outputs.version }}
+      major: ${{ steps.release_meta.outputs.major }}
+      minor: ${{ steps.release_meta.outputs.minor }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+            git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+            git checkout "refs/tags/${TAG}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+          else
+            echo "Tag '$TAG' must match vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+
+      - name: Verify git tag and project versions are synchronized
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${{ steps.release_meta.outputs.version }}"
+
+          PYPROJECT_VERSION="$(python - <<'PY'
+          import pathlib, tomllib
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          print(data["project"]["version"])
+          PY
+          )"
+
+          INIT_VERSION="$(python - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("src/astrograph/__init__.py").read_text()
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+          print(match.group(1) if match else "")
+          PY
+          )"
+
+          if [ "$PYPROJECT_VERSION" != "$TAG_VERSION" ]; then
+            echo "pyproject.toml version ($PYPROJECT_VERSION) != tag version ($TAG_VERSION)" >&2
+            exit 1
+          fi
+
+          if [ "$INIT_VERSION" != "$TAG_VERSION" ]; then
+            echo "__init__.py version ($INIT_VERSION) != tag version ($TAG_VERSION)" >&2
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Static checks
+        run: |
+          uv run ruff check .
+          uv run mypy
+
+      - name: Build local Docker image for e2e tests
+        run: docker build -t astrograph-local:test .
+
+      - name: Run test suite
+        env:
+          ASTOGRAPH_TEST_IMAGE: astrograph-local:test
+        run: uv run pytest -q
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.validate.outputs.version }}
+            type=raw,value=${{ needs.validate.outputs.tag }}
+            type=raw,value=${{ needs.validate.outputs.major }}.${{ needs.validate.outputs.minor }}
+            type=raw,value=${{ needs.validate.outputs.major }}
+            type=raw,value=latest
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          generate_release_notes: true

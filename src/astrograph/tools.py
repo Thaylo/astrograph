@@ -219,6 +219,16 @@ class CodeStructureTools(CloseOnExitMixin):
         self._host_root: str | None = None
         self._ignore_spec: IgnoreSpec | None = None
 
+        # In Docker, detect host root from mount metadata so path
+        # translation works from the very first tool call.
+        if os.path.isdir("/workspace") and os.path.exists("/.dockerenv"):
+            detected = self._detect_host_root_from_mountinfo()
+            if detected:
+                self._host_root = detected
+                from .lsp_setup import set_docker_path_map
+
+                set_docker_path_map("/workspace", detected)
+
         # Background indexing state
         self._bg_index_thread: threading.Thread | None = None
         self._bg_index_done = threading.Event()
@@ -261,6 +271,49 @@ class CodeStructureTools(CloseOnExitMixin):
             if candidate and candidate != "/" and os.path.isdir(candidate):
                 return candidate
 
+        return None
+
+    @staticmethod
+    def _detect_host_root_from_mountinfo() -> str | None:
+        """Detect the host-side path for ``/workspace`` from Docker mount metadata.
+
+        Parses ``/proc/self/mountinfo`` to find the bind mount source for
+        ``/workspace``.  Works on both Linux Docker (block device mounts)
+        and macOS Docker Desktop (``/run/host_mark/`` VM mounts).
+
+        Returns the host absolute path, or ``None`` if detection fails.
+        """
+        try:
+            with open("/proc/self/mountinfo") as f:
+                for line in f:
+                    fields = line.split()
+                    if len(fields) < 5 or fields[4] != "/workspace":
+                        continue
+                    root = fields[3]
+
+                    # Locate mount_source after the " - " separator.
+                    try:
+                        sep_idx = fields.index("-")
+                        mount_source = fields[sep_idx + 2] if sep_idx + 2 < len(fields) else ""
+                    except ValueError:
+                        mount_source = ""
+
+                    # Linux: mount_source is a block device → root is the host path.
+                    if mount_source.startswith("/dev/"):
+                        return root
+
+                    # macOS Docker Desktop: mount_source like /run/host_mark/Users.
+                    # Strip the VM-internal prefix to recover the host path.
+                    host_mark = "/run/host_mark"
+                    if mount_source.startswith(host_mark):
+                        host_prefix = mount_source[len(host_mark) :]
+                        return host_prefix + root
+
+                    # Best-effort fallback: use root if it looks absolute.
+                    if root.startswith("/") and len(root) > 1:
+                        return root
+        except OSError:
+            pass
         return None
 
     def _background_index(self, path: str) -> None:
@@ -320,7 +373,7 @@ class CodeStructureTools(CloseOnExitMixin):
         if not self.index.entries:
             return ""
 
-        invalidated = self.index.invalidate_stale_suppressions()
+        invalidated = self._active_index().invalidate_stale_suppressions()
         if invalidated:
             max_shown = 5
             hashes = [h for h, _ in invalidated]
@@ -406,9 +459,9 @@ class CodeStructureTools(CloseOnExitMixin):
 
     def set_workspace(self, path: str) -> ToolResult:
         """Switch to a new workspace directory and re-index."""
-        old_path = self._last_indexed_path or "(none)"
+        old_path = self._host_display_path(self._last_indexed_path or "(none)")
         result = self.index_codebase(path, recursive=True)
-        new_path = self._last_indexed_path or path
+        new_path = self._host_display_path(self._last_indexed_path or path)
 
         # Prepend workspace transition info
         header = f"Workspace changed: {old_path} -> {new_path}\n"
@@ -480,6 +533,17 @@ class CodeStructureTools(CloseOnExitMixin):
             return str(Path(file_path).relative_to(root))
         except ValueError:
             return file_path
+
+    def _host_display_path(self, container_path: str) -> str:
+        """Translate a container path to the host-side path for display.
+
+        When ``_host_root`` is known, replaces the ``/workspace`` prefix
+        so agents see paths that match their host filesystem.
+        """
+        if self._host_root and container_path.startswith("/workspace"):
+            suffix = container_path[len("/workspace") :]
+            return self._host_root + suffix
+        return container_path
 
     # ------------------------------------------------------------------
     # Scope & domain helpers
@@ -570,6 +634,11 @@ class CodeStructureTools(CloseOnExitMixin):
             return path
 
         p = Path(path)
+        # Paths already anchored in /workspace should stay container-relative.
+        if p.is_absolute() and len(p.parts) >= 2 and p.parts[1] == "workspace":
+            safe_parts = [pt for pt in p.parts[2:] if pt not in ("/", ".", "..")]
+            return str(workspace.joinpath(*safe_parts)) if safe_parts else str(workspace)
+
         # Skip leading '/' and filter traversal components (..)
         parts = tuple(pt for pt in p.parts if pt not in ("/", ".", ".."))
 
@@ -588,8 +657,21 @@ class CodeStructureTools(CloseOnExitMixin):
                 self._learn_host_root(str(p.parent), str(candidate))
                 return resolved
 
-        # Fallback: assume file is directly under /workspace
-        return str(workspace / p.name)
+        # The path may be the host-side mount source for /workspace
+        # (e.g., `-v /host/project:/workspace`).  The project dir name
+        # doesn't appear inside the container, so the component scan
+        # above can't match it.  Verify: /workspace was already indexed.
+        name_fallback = workspace / p.name
+        if (
+            not name_fallback.exists()
+            and self._last_indexed_path
+            and Path(self._last_indexed_path).resolve() == workspace.resolve()
+        ):
+            self._learn_host_root(path, str(workspace))
+            return str(workspace)
+
+        # Fallback for new files: assume file is directly under /workspace
+        return str(name_fallback)
 
     def _learn_host_root(self, host_path: str, container_path: str) -> None:
         """Derive and store the host↔container root mapping."""
@@ -1540,18 +1622,21 @@ class CodeStructureTools(CloseOnExitMixin):
         from . import lsp_tools
 
         workspace = self._lsp_setup_workspace()
-        return ToolResult(
-            lsp_tools.handle_lsp_setup(
-                workspace=workspace,
-                mode=mode,
-                language=language,
-                command=command,
-                observations=observations,
-                validation_mode=validation_mode,
-                compile_db_path=compile_db_path,
-                project_root=project_root,
-            )
+        result_json = lsp_tools.handle_lsp_setup(
+            workspace=workspace,
+            mode=mode,
+            language=language,
+            command=command,
+            observations=observations,
+            validation_mode=validation_mode,
+            compile_db_path=compile_db_path,
+            project_root=project_root,
         )
+        # Translate container paths to host paths so agents see
+        # paths that match their host filesystem.
+        if self._host_root and str(workspace) != self._host_root:
+            result_json = result_json.replace(str(workspace), self._host_root)
+        return ToolResult(result_json)
 
     def generate_ignore(self) -> ToolResult:
         """Generate a .astrographignore file with sensible defaults."""
@@ -1564,8 +1649,9 @@ class CodeStructureTools(CloseOnExitMixin):
         ignore_path = root / ASTROGRAPHIGNORE_FILENAME
 
         if ignore_path.exists():
+            display = self._host_display_path(str(ignore_path))
             return ToolResult(
-                f".astrographignore already exists at {ignore_path}. "
+                f".astrographignore already exists at {display}. "
                 "Edit it manually to change ignore patterns."
             )
 

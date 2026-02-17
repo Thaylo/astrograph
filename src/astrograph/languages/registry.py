@@ -106,16 +106,17 @@ class LanguageRegistry:
         """
         # Check for extension conflicts
         for ext in plugin.file_extensions:
-            if ext in self._extension_map:
-                existing_id = self._extension_map[ext]
+            norm_ext = ext.lower()
+            if norm_ext in self._extension_map:
+                existing_id = self._extension_map[norm_ext]
                 raise ValueError(
-                    f"Extension '{ext}' already registered by '{existing_id}', "
+                    f"Extension '{norm_ext}' already registered by '{existing_id}', "
                     f"cannot register '{plugin.language_id}'"
                 )
 
         self._plugins[plugin.language_id] = plugin
         for ext in plugin.file_extensions:
-            self._extension_map[ext] = plugin.language_id
+            self._extension_map[ext.lower()] = plugin.language_id
 
     def get_plugin(self, language_id: str) -> LanguagePlugin | None:
         """Get a plugin by language ID."""
@@ -123,7 +124,7 @@ class LanguageRegistry:
 
     def get_plugin_for_file(self, path: str | Path) -> LanguagePlugin | None:
         """Get the appropriate plugin for a file based on its extension."""
-        ext = Path(path).suffix
+        ext = Path(path).suffix.lower()
         language_id = self._extension_map.get(ext)
         return self._plugins.get(language_id) if language_id else None
 

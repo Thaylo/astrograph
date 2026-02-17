@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# DEPRECATED: use ./scripts/release.sh instead
-# This script used docker buildx --push which stalls on this machine.
-echo "This script is deprecated. Use: ./scripts/release.sh <version>"
+# DEPRECATED: Docker publishing is handled by GitHub Actions on git tag pushes.
+echo "This script is deprecated."
+echo "Use: ./scripts/release.sh <version> to create and push a release tag."
+echo "GitHub Actions will validate and publish Docker Hub images automatically."
 exit 1

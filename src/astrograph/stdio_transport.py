@@ -13,7 +13,7 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -234,7 +234,7 @@ async def dual_stdio_server() -> (
     async with anyio.create_task_group() as tg:
         tg.start_soon(stdin_task)
         tg.start_soon(stdout_task)
-        yield read_recv, write_proxy
+        yield read_recv, cast(MemoryObjectSendStream[SessionMessage], write_proxy)
         # server.run() returned — all request handlers have completed.
         # Close the real write_send so stdout_task drains and exits.
         await write_send.aclose()

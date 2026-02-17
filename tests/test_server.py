@@ -159,6 +159,15 @@ class TestResolveDockerPath:
             "/workspace",
         )
 
+    def test_resolve_container_path_new_file_at_root(self):
+        """Container paths under /workspace should resolve without collapsing to root."""
+        self._assert_docker_new_file_resolution(
+            "/workspace/new_file.py",
+            "/workspace/new_file.py",
+            ("/workspace", "/.dockerenv"),
+            "/workspace",
+        )
+
     def test_learned_root_mapping_speeds_up_subsequent_calls(self):
         """After first successful resolution, host_root is cached and reused."""
         original_exists = Path.exists
@@ -5363,6 +5372,134 @@ class TestLearnHostRoot:
             # suffix is "/src", but host_path "/Users/other/path" doesn't end with "/src"
             assert self.tools._host_root is None
             mock_set.assert_not_called()
+
+
+class TestDetectHostRootFromMountinfo:
+    """Cover _detect_host_root_from_mountinfo static method."""
+
+    @staticmethod
+    def _mock_mountinfo(mountinfo_path):
+        """Create a mock for builtins.open that redirects /proc/self/mountinfo."""
+        _real_open = open
+
+        def _open(f, *a, **kw):
+            if f == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_path), *a, **kw)
+            return _real_open(f, *a, **kw)
+
+        return _open
+
+    def test_linux_docker_block_device(self, tmp_path):
+        """Linux Docker: block device mount source → root is the host path."""
+        mi = tmp_path / "mountinfo"
+        mi.write_text("100 50 8:1 /home/user/project /workspace rw,relatime - ext4 /dev/sda1 rw\n")
+        with patch("builtins.open", side_effect=self._mock_mountinfo(mi)):
+            result = CodeStructureTools._detect_host_root_from_mountinfo()
+        assert result == "/home/user/project"
+
+    def test_macos_docker_desktop_host_mark(self, tmp_path):
+        """macOS Docker Desktop: /run/host_mark prefix is stripped."""
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "223 214 0:45 /thaylo/Projects/app /workspace rw - fakeowner /run/host_mark/Users rw\n"
+        )
+        with patch("builtins.open", side_effect=self._mock_mountinfo(mi)):
+            result = CodeStructureTools._detect_host_root_from_mountinfo()
+        assert result == "/Users/thaylo/Projects/app"
+
+    def test_no_workspace_mount(self, tmp_path):
+        """Returns None when /workspace is not mounted."""
+        mi = tmp_path / "mountinfo"
+        mi.write_text("100 50 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n")
+        with patch("builtins.open", side_effect=self._mock_mountinfo(mi)):
+            result = CodeStructureTools._detect_host_root_from_mountinfo()
+        assert result is None
+
+    def test_file_not_found(self):
+        """Returns None when /proc/self/mountinfo doesn't exist."""
+        with patch("builtins.open", side_effect=OSError("No such file")):
+            result = CodeStructureTools._detect_host_root_from_mountinfo()
+        assert result is None
+
+    def test_fallback_absolute_root(self, tmp_path):
+        """Fallback: unknown fs type with absolute root."""
+        mi = tmp_path / "mountinfo"
+        mi.write_text("100 50 0:99 /data/project /workspace rw - overlay overlay rw\n")
+        with patch("builtins.open", side_effect=self._mock_mountinfo(mi)):
+            result = CodeStructureTools._detect_host_root_from_mountinfo()
+        assert result == "/data/project"
+
+
+class TestHostDisplayPath:
+    """Cover _host_display_path method."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+
+    def test_translates_workspace_prefix(self):
+        """Translates /workspace prefix to host root."""
+        self.tools._host_root = "/home/user/project"
+        assert (
+            self.tools._host_display_path("/workspace/src/foo.py")
+            == "/home/user/project/src/foo.py"
+        )
+
+    def test_translates_workspace_itself(self):
+        """Translates /workspace to host root."""
+        self.tools._host_root = "/home/user/project"
+        assert self.tools._host_display_path("/workspace") == "/home/user/project"
+
+    def test_no_host_root_passthrough(self):
+        """Without host_root, paths pass through unchanged."""
+        assert self.tools._host_display_path("/workspace/src/foo.py") == "/workspace/src/foo.py"
+
+    def test_non_workspace_path_unchanged(self):
+        """Non-workspace paths are not modified."""
+        self.tools._host_root = "/home/user/project"
+        assert self.tools._host_display_path("/app/main.py") == "/app/main.py"
+
+
+class TestResolvePathMountSourceFallback:
+    """Cover _resolve_path fallback for host project root → /workspace."""
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        self.tools = CodeStructureTools()
+
+    def test_host_project_root_resolves_to_workspace(self):
+        """When the host project root is sent and /workspace is indexed, map to /workspace."""
+        original_exists = Path.exists
+        original_is_dir = Path.is_dir
+        original_resolve = Path.resolve
+
+        def mock_exists(self):
+            s = str(self)
+            if s in ("/workspace", "/.dockerenv"):
+                return True
+            return original_exists(self)
+
+        def mock_is_dir(self):
+            if str(self) == "/workspace":
+                return True
+            return original_is_dir(self)
+
+        def mock_resolve(self):
+            if str(self) == "/workspace":
+                return Path("/workspace")
+            return original_resolve(self)
+
+        self.tools._last_indexed_path = "/workspace"
+
+        with (
+            patch.object(Path, "exists", mock_exists),
+            patch.object(Path, "is_dir", mock_is_dir),
+            patch.object(Path, "resolve", mock_resolve),
+            patch("astrograph.lsp_setup.set_docker_path_map"),
+        ):
+            result = self.tools._resolve_path("/home/thaylo/Projects/myproject")
+            assert result == "/workspace"
+            assert self.tools._host_root == "/home/thaylo/Projects/myproject"
 
 
 class TestSemanticCompareResult:

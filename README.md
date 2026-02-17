@@ -176,6 +176,39 @@ All languages require an explicit LSP binding via `astrograph_lsp_setup(mode='bi
 | C++ | C++17, C++20, C++23 | `tcp://127.0.0.1:2088` |
 | Java | 11, 17, 21, 25 | `tcp://127.0.0.1:2089` |
 
+## Automated releases
+
+Docker Hub publishing is automated from Git tags via GitHub Actions (`.github/workflows/release.yml`).
+
+When you push a tag in the form `vMAJOR.MINOR.PATCH`, the workflow:
+
+1. Verifies tag/version synchronization (`pyproject.toml` and `src/astrograph/__init__.py` must match the tag).
+2. Runs `ruff`, `mypy`, and the full test suite.
+3. Builds and pushes a multi-arch image (`linux/amd64`, `linux/arm64`) to Docker Hub.
+4. Publishes synchronized tags:
+   - `thaylo/astrograph:<major>.<minor>.<patch>`
+   - `thaylo/astrograph:v<major>.<minor>.<patch>`
+   - `thaylo/astrograph:<major>.<minor>`
+   - `thaylo/astrograph:<major>`
+   - `thaylo/astrograph:latest`
+
+### One-time repository setup
+
+Add these GitHub repository secrets:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN` (Docker Hub access token with push permissions)
+
+### Release command
+
+Use the helper script to bump version, run checks, and push the release tag:
+
+```bash
+./scripts/release.sh 0.5.74
+```
+
+That tag push triggers the automated Docker publish flow.
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Thaylo/astrograph&type=date&legend=top-left)](https://www.star-history.com/#Thaylo/astrograph&type=date&legend=top-left)

@@ -33,6 +33,7 @@ class TestLanguageRegistry:
         [
             lambda registry: registry.get_plugin_for_file("src/main.py"),
             lambda registry: registry.get_plugin_for_file("src/types.pyi"),
+            lambda registry: registry.get_plugin_for_file("src/MAIN.PY"),
             lambda registry: registry.get_plugin("python"),
         ],
     )
@@ -82,6 +83,18 @@ class TestLanguageRegistry:
         with pytest.raises(ValueError, match="already registered"):
             registry.register(ConflictPlugin())
 
+    def test_extension_conflict_is_case_insensitive(self):
+        """Registering .PY should conflict with existing .py registration."""
+        registry = LanguageRegistry.get()
+
+        class ConflictPluginUpper(BaseLanguagePlugin):
+            language_id = "conflict_upper"
+            file_extensions = frozenset({".PY"})
+            skip_dirs = frozenset()
+
+        with pytest.raises(ValueError, match="already registered"):
+            registry.register(ConflictPluginUpper())
+
     def test_register_new_language(self):
         """Can register a new language plugin."""
         registry = LanguageRegistry.get()
@@ -96,6 +109,19 @@ class TestLanguageRegistry:
         assert ".mock" in registry.supported_extensions
         assert "mock_cache" in registry.skip_dirs
         assert registry.get_plugin_for_file("test.mock") is not None
+
+    def test_register_uppercase_extension_lookup_is_case_insensitive(self):
+        """A plugin registered with uppercase extensions should match lowercase files."""
+        registry = LanguageRegistry.get()
+
+        class CapsMockPlugin(BaseLanguagePlugin):
+            language_id = "capsmock"
+            file_extensions = frozenset({".CAPSMOCK"})
+            skip_dirs = frozenset()
+
+        registry.register(CapsMockPlugin())
+        assert registry.get_plugin_for_file("example.capsmock") is not None
+        assert registry.get_plugin_for_file("example.CAPSMOCK") is not None
 
     def test_registered_languages_sorted(self):
         """Registered language list is stable and sorted."""

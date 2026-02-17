@@ -479,6 +479,18 @@ class EventDrivenIndex(CloseOnExitMixin):
         """Unsuppress a hash and persist."""
         return self._toggle_suppression(wl_hash, suppress=False)
 
+    def invalidate_stale_suppressions(self) -> list[tuple[str, str]]:
+        """Invalidate stale suppressions and persist removals."""
+        invalidated = self.index.invalidate_stale_suppressions()
+        if not invalidated:
+            return []
+
+        for wl_hash, _ in invalidated:
+            self._persist_unsuppression(wl_hash)
+
+        self._invalidate_cache_and_recompute()
+        return invalidated
+
     def _persist_suppression(self, wl_hash: str) -> None:
         """Persist a single suppression if persistence is enabled."""
         if self._persistence:
