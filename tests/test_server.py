@@ -6579,6 +6579,23 @@ def handle_entries(entries):
             _, kwargs = call.call_args
             assert kwargs.get("entry_filter") is not None
 
+    def test_analyze_zero_units_but_indexed_files_is_treated_as_indexed(self):
+        """Analyze should run when files were indexed but symbol extraction yielded zero units."""
+        index = MagicMock()
+        index.entries = {}
+        index.find_all_duplicates.return_value = []
+        index.find_pattern_duplicates.return_value = []
+        index.find_block_duplicates.return_value = []
+        index.get_stats.return_value = {"indexed_files": 2, "suppressed_hashes": 0}
+
+        tools = CodeStructureTools(index=index)
+        assert tools._event_driven_index is None
+        tools._last_indexed_path = "/tmp/test"
+        tools._bg_index_done.set()
+
+        result = tools.analyze()
+        assert "No significant duplicates" in result.text
+
 
 # --- MCP handler coverage (server.py lines 353-397, 490-535, 542-572) ---
 

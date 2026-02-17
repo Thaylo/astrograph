@@ -435,11 +435,25 @@ class CodeStructureTools(CloseOnExitMixin):
         tool has its own non-blocking path for quick readiness checks.
         """
         self._wait_for_background_index()
-        if self.index.entries:
-            return None
         if self._bg_index_progress == "error":
             error_detail = getattr(self, "_bg_index_error", "unknown error")
             return ToolResult(f"Background indexing failed: {error_detail}")
+
+        # Primary readiness signal: there are indexed entries available.
+        if self.index.entries:
+            return None
+
+        # Secondary readiness signal: indexing completed for one or more files,
+        # but extraction produced zero units (for example, LSP symbols unavailable
+        # while non-symbol metadata still indexed). In this state, tools should
+        # operate and report "no duplicates" rather than "No code indexed".
+        try:
+            stats = self.index.get_stats()
+        except Exception:
+            stats = {}
+        if isinstance(stats, dict) and int(stats.get("indexed_files", 0)) > 0:
+            return None
+
         return ToolResult("No code indexed. Call index_codebase first.")
 
     def _require_workspace_root(self, missing_message: str) -> ToolResult | None:
