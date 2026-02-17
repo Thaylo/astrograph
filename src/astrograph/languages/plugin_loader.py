@@ -93,11 +93,11 @@ def _env_plugin_paths() -> list[str]:
 
 def discover_language_plugins() -> list[LanguagePlugin]:
     """Discover language plugins from defaults, env class paths, and entry points."""
-    discovered: list[LanguagePlugin] = []
-    for class_path in [*DEFAULT_PLUGIN_CLASS_PATHS, *_env_plugin_paths()]:
-        plugin = _load_plugin_from_class_path(class_path)
-        if plugin is not None:
-            discovered.append(plugin)
+    discovered = [
+        plugin
+        for class_path in [*DEFAULT_PLUGIN_CLASS_PATHS, *_env_plugin_paths()]
+        if (plugin := _load_plugin_from_class_path(class_path)) is not None
+    ]
 
     discovered.extend(_iter_entry_point_plugins(PLUGIN_ENTRYPOINT_GROUP))
 

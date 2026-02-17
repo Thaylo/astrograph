@@ -493,6 +493,13 @@ class CodeStructureTools(CloseOnExitMixin):
             return True
         return "\n\nError:" in text
 
+    @staticmethod
+    def _none_error(value: object | None, message: str) -> ToolResult | None:
+        """Return a ToolResult when value is None, otherwise None."""
+        if value is None:
+            return ToolResult(message)
+        return None
+
     def _has_significant_duplicates(self) -> bool:
         """Check if there are duplicates above the trivial threshold."""
         return self.index.has_duplicates(min_node_count=5)
@@ -811,10 +818,12 @@ class CodeStructureTools(CloseOnExitMixin):
             # container_path is exactly "/workspace" — host_path IS the root
             learned_host_root = host_path
 
-        if learned_host_root is not None:
-            # Propagate mapping to LSP layer so SocketLSPClient translates
-            # container paths (/workspace/…) to host paths in URIs.
-            self._set_host_root(learned_host_root)
+        if learned_host_root is None:
+            return
+
+        # Propagate mapping to LSP layer so SocketLSPClient translates
+        # container paths (/workspace/…) to host paths in URIs.
+        self._set_host_root(learned_host_root)
 
     def _format_locations(self, entries: list[IndexEntry]) -> list[str]:
         """Format entry locations for output."""
@@ -1488,8 +1497,13 @@ class CodeStructureTools(CloseOnExitMixin):
             )
 
         plugin = LanguageRegistry.get().get_plugin(language)
-        if plugin is None:
-            return ToolResult(f"Unsupported language '{language}': no registered language plugin.")
+        missing_plugin = self._none_error(
+            plugin,
+            f"Unsupported language '{language}': no registered language plugin.",
+        )
+        if missing_plugin is not None:
+            return missing_plugin
+        assert plugin is not None
 
         g1 = plugin.source_to_graph(code1)
         g2 = plugin.source_to_graph(code2)
@@ -1820,11 +1834,14 @@ class CodeStructureTools(CloseOnExitMixin):
         workspace_root = self._last_indexed_path
         assert workspace_root is not None
         persistence_dir = self._current_persistence_path()
-        if persistence_dir is None:
-            return ToolResult(
-                "Metadata persistence is unavailable for the current workspace. "
-                f"Re-run index_codebase after fixing metadata directory permissions or setting {PERSISTENCE_DIR_ENV}."
-            )
+        missing_persistence = self._none_error(
+            persistence_dir,
+            "Metadata persistence is unavailable for the current workspace. "
+            f"Re-run index_codebase after fixing metadata directory permissions or setting {PERSISTENCE_DIR_ENV}.",
+        )
+        if missing_persistence is not None:
+            return missing_persistence
+        assert persistence_dir is not None
         try:
             persistence_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:

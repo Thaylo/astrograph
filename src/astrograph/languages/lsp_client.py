@@ -369,12 +369,7 @@ class SubprocessLSPClient(LSPClient):
         if not isinstance(items, list):
             return []
 
-        symbols: list[LSPSymbol] = []
-        for item in items:
-            parsed = self._parse_symbol(item)
-            if parsed is not None:
-                symbols.append(parsed)
-        return symbols
+        return [parsed for item in items if (parsed := self._parse_symbol(item)) is not None]
 
     def _parse_symbol(self, data: Any) -> LSPSymbol | None:
         if not isinstance(data, dict):
