@@ -130,6 +130,25 @@ class TestBuildRecommendedActions:
         )
         assert actions[0]["arguments"].get("language") == "python"
 
+    def test_missing_cpp_attach_includes_install_start_bridge_action(self):
+        statuses = [
+            {
+                "language": "cpp_lsp",
+                "available": False,
+                "required": False,
+                "transport": "tcp",
+                "effective_command": ["tcp://127.0.0.1:2088"],
+                "default_command": ["tcp://127.0.0.1:2088"],
+            }
+        ]
+        actions = lsp_tools.build_lsp_recommended_actions(statuses=statuses)
+        action = next(
+            action for action in actions if action["id"] == "install_start_cpp_lsp_bridge"
+        )
+        assert "clangd" in action["why"]
+        assert "socat" in action["shell_command"]
+        assert action["follow_up_arguments"]["language"] == "cpp_lsp"
+
 
 class TestInjectLspSetupGuidance:
     def test_inject_adds_fields(self, tmp_path):
@@ -149,6 +168,23 @@ class TestInjectLspSetupGuidance:
         lsp_tools.inject_lsp_setup_guidance(payload, workspace=tmp_path, docker_runtime=True)
         assert payload["execution_context"] == "docker"
         assert "observation_note" in payload
+
+    def test_inject_missing_directive_mentions_install_and_start(self, tmp_path):
+        payload = {
+            "servers": [
+                {
+                    "language": "cpp_lsp",
+                    "available": False,
+                    "required": False,
+                    "transport": "tcp",
+                    "effective_command": ["tcp://127.0.0.1:2088"],
+                    "default_command": ["tcp://127.0.0.1:2088"],
+                }
+            ],
+        }
+        lsp_tools.inject_lsp_setup_guidance(payload, workspace=tmp_path, docker_runtime=False)
+        directive = payload.get("agent_directive", "")
+        assert "install/start actions" in directive
 
 
 class TestLspSetupResultJson:

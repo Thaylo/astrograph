@@ -812,6 +812,23 @@ def _evaluate_version_status(
             "variant_policy": dict(policy),
         }
 
+    detected_lower = (detected or "").lower()
+    # Common Python failure mode: executable exists but pylsp module is missing.
+    # Treat this as unsupported so setup guidance can nudge installation.
+    if (
+        language_id == "python"
+        and probe_kind == "server"
+        and "no module named" in detected_lower
+        and "pylsp" in detected_lower
+    ):
+        return {
+            "state": "unsupported",
+            "detected": detected,
+            "probe_kind": probe_kind,
+            "reason": "python-lsp-server (pylsp) is not installed in this interpreter.",
+            "variant_policy": dict(policy),
+        }
+
     parsed = _parse_semver(detected)
     if parsed is None:
         return {

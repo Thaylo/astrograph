@@ -370,6 +370,29 @@ def build_lsp_recommended_actions(
             ]
         if bridge:
             endpoint_search_commands.append(f"which {bridge['server_binary']}")
+            follow_up_arguments: dict[str, Any] = _follow_up_auto_bind_arguments(language)
+            if candidates:
+                follow_up_arguments = {
+                    **follow_up_arguments,
+                    "observations": [{"language": language, "command": candidates[0]}],
+                }
+            actions.append(
+                {
+                    "id": f"install_start_{language}_bridge",
+                    "priority": "high" if language == "cpp_lsp" else priority,
+                    "title": f"Install and start bridge for {language}",
+                    "why": (
+                        f"Bring up a real {bridge['server_binary']} endpoint so auto_bind can "
+                        "bind it immediately."
+                    ),
+                    "language": language,
+                    "install_hints": bridge.get("install_hints", {}),
+                    "host_search_commands": [f"which {bridge['server_binary']}"],
+                    "shell_command": bridge.get("socat_command"),
+                    "follow_up_tool": "astrograph_lsp_setup",
+                    "follow_up_arguments": follow_up_arguments,
+                }
+            )
 
         action: dict[str, Any] = {
             "id": f"discover_{language}_endpoint",
@@ -537,8 +560,8 @@ def inject_lsp_setup_guidance(
         missing_names = ", ".join(missing)
         payload["agent_directive"] = (
             f"{len(missing)} attach language(s) ({missing_names}) are unavailable. "
-            "Execute recommended_actions now: run the host_search_commands, "
-            "then call auto_bind with any discovered endpoints."
+            "Execute recommended_actions now: run host_search_commands; when missing, run "
+            "install/start actions; then call auto_bind with observations and finish with inspect."
         )
     elif attach_scope_ready and scope_language:
         payload["agent_directive"] = (
@@ -694,13 +717,14 @@ def handle_lsp_setup(
                     f"{len(missing)} attach endpoint(s) unreachable. "
                     "Start by running the host_search_commands from recommended_actions "
                     "to check if language servers are already running on the host. "
-                    "Then call astrograph_lsp_setup(mode='auto_bind') with any discovered endpoints as observations."
+                    "If missing, run install/start actions from recommended_actions. "
+                    "Then call astrograph_lsp_setup(mode='auto_bind') with discovered endpoints as observations."
                 )
             else:
                 payload["next_step"] = (
                     f"{len(missing)} attach endpoint(s) unreachable. "
-                    "Run the host_search_commands from recommended_actions to discover running servers, "
-                    "then call astrograph_lsp_setup(mode='auto_bind') with results as observations."
+                    "Run host_search_commands, run install/start actions when needed, then call "
+                    "astrograph_lsp_setup(mode='auto_bind') with results as observations."
                 )
 
         if missing:

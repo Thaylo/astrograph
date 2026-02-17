@@ -824,6 +824,17 @@ class TestBindingPersistence:
 class TestEvaluateVersionStatusPython:
     """Cover Python server unsupported and runtime best_effort/unsupported paths."""
 
+    def test_python_server_missing_pylsp_module_unsupported(self):
+        result = _evaluate_version_status(
+            language_id="python",
+            detected="/usr/local/bin/python3: No module named pylsp",
+            probe_kind="server",
+            transport="subprocess",
+            available=True,
+        )
+        assert result["state"] == "unsupported"
+        assert "not installed" in result["reason"]
+
     def test_python_server_unsupported_major_0(self):
         result = _evaluate_version_status(
             language_id="python",
