@@ -558,34 +558,46 @@ class SocketLSPClient(SubprocessLSPClient):
         with self._lock:
             if self._disabled:
                 return False
-
             if self._sock is not None:
                 return True
 
-            try:
-                transport = self._endpoint["transport"]
-                if transport == "tcp":
-                    sock = socket.create_connection(
-                        (self._endpoint["host"], self._endpoint["port"]),
-                        timeout=self._request_timeout,
-                    )
-                else:
-                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    sock.settimeout(self._request_timeout)
-                    sock.connect(str(self._endpoint["path"]))
-
+        # Connect outside the lock — socket.create_connection calls getaddrinfo
+        # internally without a timeout, and holding the lock during a blocking
+        # network operation would stall concurrent callers for its full duration.
+        try:
+            transport = self._endpoint["transport"]
+            if transport == "tcp":
+                sock = socket.create_connection(
+                    (self._endpoint["host"], self._endpoint["port"]),
+                    timeout=self._request_timeout,
+                )
+            else:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 sock.settimeout(self._request_timeout)
-                self._sock = sock
-                self._stdin = sock.makefile("wb")
-                self._stdout = sock.makefile("rb")
-            except OSError as exc:
+                sock.connect(str(self._endpoint["path"]))
+            sock.settimeout(self._request_timeout)
+        except OSError as exc:
+            with self._lock:
                 self._disabled = True
-                logger.warning("Failed to attach to LSP endpoint %s: %s", self._command[0], exc)
-                return False
+            logger.warning("Failed to attach to LSP endpoint %s: %s", self._command[0], exc)
+            return False
 
-            self._initialized = False
-            self._next_id = 1
-            return True
+        # Re-acquire the lock to commit the connection, handling the rare case
+        # where another thread raced to connect or disable us while we were connecting.
+        with self._lock:
+            if self._disabled:
+                self._close_quietly(sock)
+                return False
+            if self._sock is not None:
+                self._close_quietly(sock)
+                return True
+            self._sock = sock
+            self._stdin = sock.makefile("wb")
+            self._stdout = sock.makefile("rb")
+
+        self._initialized = False
+        self._next_id = 1
+        return True
 
     def _send_message(self, payload: dict[str, Any]) -> None:
         if self._stdin is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import json
 import logging
@@ -1028,50 +1029,48 @@ def parse_attach_endpoint(command: Sequence[str] | str | None) -> dict[str, Any]
 def _probe_attach_endpoint(endpoint: dict[str, Any], timeout: float = 0.3) -> dict[str, Any]:
     """Probe attach endpoint reachability using short socket connect attempts."""
     transport = endpoint["transport"]
+    _unavailable: dict[str, Any] = {"available": False, "executable": None}
 
     try:
         if transport == "tcp":
             host = str(endpoint["host"])
             port = int(endpoint["port"])
 
-            # Try all resolved addresses (IPv4/IPv6) so one failing family
-            # does not mask a reachable endpoint.
-            addrinfos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-            connected = False
-            for family, socktype, proto, _canonname, sockaddr in addrinfos:
+            # socket.getaddrinfo has no built-in timeout and can block on slow DNS
+            # (e.g. a cold Docker resolver).  Run it in a thread so the total
+            # DNS + connect time is bounded by *timeout*.
+            def _tcp_probe() -> bool:
+                addrinfos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                for family, socktype, proto, _canonname, sockaddr in addrinfos:
+                    try:
+                        with socket.socket(family, socktype, proto) as sock:
+                            sock.settimeout(timeout)
+                            sock.connect(sockaddr)
+                        return True
+                    except OSError:
+                        continue
+                return False
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_tcp_probe)
                 try:
-                    with socket.socket(family, socktype, proto) as sock:
-                        sock.settimeout(timeout)
-                        sock.connect(sockaddr)
-                    connected = True
-                    break
-                except OSError:
-                    continue
+                    connected = future.result(timeout=timeout)
+                except (concurrent.futures.TimeoutError, OSError):
+                    connected = False
 
             if not connected:
-                return {
-                    "available": False,
-                    "executable": None,
-                }
+                return _unavailable
+
         elif transport == "unix":
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(timeout)
                 sock.connect(str(endpoint["path"]))
         else:
-            return {
-                "available": False,
-                "executable": None,
-            }
+            return _unavailable
     except OSError:
-        return {
-            "available": False,
-            "executable": None,
-        }
+        return _unavailable
 
-    return {
-        "available": True,
-        "executable": endpoint["target"],
-    }
+    return {"available": True, "executable": endpoint["target"]}
 
 
 def load_lsp_bindings(workspace: str | Path | None = None) -> dict[str, list[str]]:

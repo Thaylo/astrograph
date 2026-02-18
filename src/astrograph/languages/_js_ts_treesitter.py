@@ -13,7 +13,6 @@ from functools import lru_cache
 from typing import Any
 
 import networkx as nx
-import tree_sitter
 
 from .base import CodeUnit, next_block_name
 
@@ -21,22 +20,26 @@ from .base import CodeUnit, next_block_name
 
 
 @lru_cache(maxsize=1)
-def _get_js_language() -> tree_sitter.Language:
+def _get_js_language() -> Any:
+    import tree_sitter
     import tree_sitter_javascript
 
     return tree_sitter.Language(tree_sitter_javascript.language())
 
 
 @lru_cache(maxsize=1)
-def _get_ts_language() -> tree_sitter.Language:
+def _get_ts_language() -> Any:
+    import tree_sitter
     import tree_sitter_typescript
 
     return tree_sitter.Language(tree_sitter_typescript.language_typescript())
 
 
 @lru_cache(maxsize=2)
-def _get_parser(language: str) -> tree_sitter.Parser:
+def _get_parser(language: str) -> Any:
     """Return a cached parser for 'javascript' or 'typescript'."""
+    import tree_sitter
+
     lang_obj = _get_ts_language() if language == "typescript" else _get_js_language()
     return tree_sitter.Parser(lang_obj)
 
@@ -335,7 +338,10 @@ def _ts_ast_to_graph(
 
 def _ts_try_parse(source: str, language: str = "javascript") -> Any | None:
     """Parse source and return the tree, or None on total failure."""
-    parser = _get_parser(language)
+    try:
+        parser = _get_parser(language)
+    except ImportError:
+        return None
     tree = parser.parse(source.encode("utf-8"))
     if tree is None:
         return None
