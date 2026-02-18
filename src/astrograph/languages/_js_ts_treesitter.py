@@ -16,32 +16,36 @@ import networkx as nx
 
 from .base import CodeUnit, next_block_name
 
+# tree-sitter is an optional dependency.  The JS/TS regex-fallback path works
+# without it; only AST-backed features degrade gracefully to None.
+try:
+    import tree_sitter as _ts
+    _TREE_SITTER_AVAILABLE = True
+except ImportError:
+    _TREE_SITTER_AVAILABLE = False
+
 # -- Language / parser caching -------------------------------------------------
 
 
 @lru_cache(maxsize=1)
 def _get_js_language() -> Any:
-    import tree_sitter
     import tree_sitter_javascript
 
-    return tree_sitter.Language(tree_sitter_javascript.language())
+    return _ts.Language(tree_sitter_javascript.language())
 
 
 @lru_cache(maxsize=1)
 def _get_ts_language() -> Any:
-    import tree_sitter
     import tree_sitter_typescript
 
-    return tree_sitter.Language(tree_sitter_typescript.language_typescript())
+    return _ts.Language(tree_sitter_typescript.language_typescript())
 
 
 @lru_cache(maxsize=2)
 def _get_parser(language: str) -> Any:
     """Return a cached parser for 'javascript' or 'typescript'."""
-    import tree_sitter
-
     lang_obj = _get_ts_language() if language == "typescript" else _get_js_language()
-    return tree_sitter.Parser(lang_obj)
+    return _ts.Parser(lang_obj)
 
 
 # -- Node label mapping --------------------------------------------------------
@@ -338,10 +342,9 @@ def _ts_ast_to_graph(
 
 def _ts_try_parse(source: str, language: str = "javascript") -> Any | None:
     """Parse source and return the tree, or None on total failure."""
-    try:
-        parser = _get_parser(language)
-    except ImportError:
+    if not _TREE_SITTER_AVAILABLE:
         return None
+    parser = _get_parser(language)
     tree = parser.parse(source.encode("utf-8"))
     if tree is None:
         return None
