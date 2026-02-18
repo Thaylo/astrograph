@@ -15,8 +15,10 @@ import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import unquote, urlparse
+
+from typing_extensions import NotRequired
 
 PERSISTENCE_DIR = ".metadata_astrograph"
 LSP_BINDINGS_FILENAME = "lsp_bindings.json"
@@ -256,7 +258,14 @@ def _is_production_validation_mode(mode_override: str | None = None) -> bool:
     return _normalized_validation_mode_with_override(mode_override) == "production"
 
 
-_PROBE_DOCUMENTS: dict[str, dict[str, str]] = {
+class _ProbeDoc(TypedDict, total=False):
+    lsp_language_id: str
+    suffix: str
+    source: str
+    probe_timeout: NotRequired[float]
+
+
+_PROBE_DOCUMENTS: dict[str, _ProbeDoc] = {
     "cpp_lsp": {
         "lsp_language_id": "cpp",
         "suffix": "_probe.cpp",
@@ -277,6 +286,8 @@ _PROBE_DOCUMENTS: dict[str, dict[str, str]] = {
         "lsp_language_id": "java",
         "suffix": "_probe.java",
         "source": "class Greeter {\n  int greet(int value) { return value + 1; }\n}\n",
+        # jdtls starts a JVM on each socat connection; allow ample warm-up time.
+        "probe_timeout": 20.0,
     },
     "go_lsp": {
         "lsp_language_id": "go",
@@ -293,10 +304,15 @@ _PROBE_DOCUMENTS: dict[str, dict[str, str]] = {
         "suffix": "_probe.ts",
         "source": "function helper(value: number): number { return value + 1; }\n",
     },
+    "python": {
+        "lsp_language_id": "python",
+        "suffix": "_probe.py",
+        "source": "def helper(value):\n    return value + 1\n",
+    },
 }
 
 
-def _probe_document(language_id: str) -> dict[str, str]:
+def _probe_document(language_id: str) -> _ProbeDoc:
     """Return a tiny probe document per language for semantic verification."""
     if language_id in _PROBE_DOCUMENTS:
         return _PROBE_DOCUMENTS[language_id]
@@ -339,12 +355,14 @@ def _probe_attach_lsp_semantics(
     from .languages.lsp_client import SocketLSPClient
 
     probe = _probe_document(language_id)
+    # Allow per-language probe_timeout overrides (e.g. jdtls JVM cold start).
+    effective_timeout = float(probe.get("probe_timeout", timeout))
     workspace_root = _normalize_workspace_root(workspace)
     probe_path = workspace_root / PERSISTENCE_DIR / probe["suffix"]
     probe_path.parent.mkdir(parents=True, exist_ok=True)
 
     client = SocketLSPClient(
-        parsed[0], request_timeout=timeout, path_prefix_map=get_docker_path_map()
+        parsed[0], request_timeout=effective_timeout, path_prefix_map=get_docker_path_map()
     )
     symbols: list[Any] = []
     handshake_ok = False
