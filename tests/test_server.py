@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from astrograph.index import CodeStructureIndex, IndexEntry, SimilarityResult
+from astrograph.languages._js_ts_treesitter import _TREE_SITTER_AVAILABLE
 from astrograph.languages.base import CodeUnit, SemanticProfile, SemanticSignal
 from astrograph.languages.registry import LanguageRegistry
 from astrograph.server import create_server, get_tools, set_tools
-from astrograph.languages._js_ts_treesitter import _TREE_SITTER_AVAILABLE
 from astrograph.tools import (
     PERSISTENCE_DIR,
     CodeStructureTools,
@@ -4968,7 +4968,7 @@ class TestScopedAnalysis:
             _create_duplicate_files(tmpdir, "src", "core")
             _create_duplicate_files(tmpdir, "lib", "helper")
 
-            index_result = tools.index_codebase(tmpdir)
+            tools.index_codebase(tmpdir)
 
             # Scoped analysis to src/ only
             scoped_result = tools.analyze(scope=["src/**"])
