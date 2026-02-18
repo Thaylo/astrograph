@@ -32,7 +32,8 @@ _skip_no_treesitter = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def _clear_lsp_env(monkeypatch, tmp_path):
     """Keep LSP state isolated across tests/modules."""
-    LanguageRegistry.reset()
+    # Wait for the module-level _tools background thread (started at import time).
+    get_tools()._wait_for_background_index()
     monkeypatch.delenv("ASTROGRAPH_COMPILE_COMMANDS_PATH", raising=False)
     monkeypatch.delenv("ASTROGRAPH_PERSISTENCE_DIR", raising=False)
     # Disable startup auto-indexing in tests; fixtures call index_codebase explicitly.
@@ -51,6 +52,14 @@ def _clear_lsp_env(monkeypatch, tmp_path):
         return _orig(workspace)
 
     monkeypatch.setattr(_lsp_mod, "_normalize_workspace_root", _test_normalize)
+
+    # Reset registry AFTER the monkeypatch is applied. The global _tools has an
+    # active file watcher (watching the project dir for .pyc changes etc.) that
+    # calls LanguageRegistry.get() on events. Resetting before the monkeypatch
+    # causes that concurrent get() to create a PythonLSPPlugin with NullLSPClient
+    # (no binding found at the unpatched workspace), which then returns 0 code
+    # units for every file and causes "No code indexed" failures.
+    LanguageRegistry.reset()
 
 
 class TestResolveDockerPath:
@@ -4582,6 +4591,7 @@ def transform_data(data):
         result = tools.analyze()
         # Should work — either finds duplicates or reports none
         assert result.text
+        tools.close()
 
     def test_single_file_watcher_active(self):
         """Single-file indexing goes through EDI and starts the watcher."""
@@ -4958,7 +4968,7 @@ class TestScopedAnalysis:
             _create_duplicate_files(tmpdir, "src", "core")
             _create_duplicate_files(tmpdir, "lib", "helper")
 
-            tools.index_codebase(tmpdir)
+            index_result = tools.index_codebase(tmpdir)
 
             # Scoped analysis to src/ only
             scoped_result = tools.analyze(scope=["src/**"])
@@ -4981,6 +4991,7 @@ class TestScopedAnalysis:
             _create_duplicate_files(tmpdir, "src", "core")
 
             tools.index_codebase(tmpdir)
+
             result = tools.analyze(scope=["nonexistent/**"])
             assert "No significant duplicates" in result.text
             tools.close()
