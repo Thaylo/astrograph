@@ -1227,6 +1227,81 @@ def probe_command(command: Sequence[str] | str | None) -> dict[str, Any]:
     }
 
 
+def _collect_one_status(
+    spec: LSPServerSpec,
+    bindings: dict[str, list[str]],
+    workspace: str | Path | None,
+    validation_mode: str | None,
+    compile_db_path: str | Path | None,
+    project_root: str | Path | None,
+) -> dict[str, Any]:
+    """Probe and build the status dict for a single language adapter."""
+    effective_command, effective_source = resolve_lsp_command(
+        language_id=spec.language_id,
+        default_command=spec.default_command,
+        workspace=workspace,
+    )
+
+    # Fail fast: unconfigured languages (no binding) are immediately unavailable.
+    if effective_source == "default":
+        endpoint = parse_attach_endpoint(effective_command)
+        return {
+            "language": spec.language_id,
+            "required": spec.required,
+            "available": False,
+            "probe_available": False,
+            "executable": None,
+            "transport": endpoint["transport"] if endpoint else "subprocess",
+            "endpoint": endpoint["target"] if endpoint else None,
+            "effective_command": effective_command,
+            "effective_source": effective_source,
+            "binding_command": [],
+            "default_command": list(spec.default_command),
+            "version_status": {"state": "not_configured"},
+            "language_variant_policy": dict(
+                _LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})
+            ),
+            "verification": {"state": "not_configured"},
+            "verification_state": "not_configured",
+            "validation_mode": _normalized_validation_mode_with_override(validation_mode),
+            "compile_commands": None,
+        }
+
+    probe = probe_command(effective_command)
+    validation = _availability_validation(
+        language_id=spec.language_id,
+        command=effective_command,
+        probe=probe,
+        workspace=workspace,
+        validation_mode=validation_mode,
+        compile_db_path=compile_db_path,
+        project_root=project_root,
+    )
+    verification = validation["verification"]
+    # Reuse version_status already computed inside _availability_validation
+    # to avoid spawning redundant subprocess probes.
+    version_status = verification.get("version_status", {})
+    return {
+        "language": spec.language_id,
+        "required": spec.required,
+        "available": bool(validation["available"]),
+        "probe_available": bool(probe["available"]),
+        "executable": probe["executable"],
+        "transport": probe.get("transport", "subprocess"),
+        "endpoint": probe.get("endpoint"),
+        "effective_command": effective_command,
+        "effective_source": effective_source,
+        "binding_command": bindings.get(spec.language_id, []),
+        "default_command": list(spec.default_command),
+        "version_status": version_status,
+        "language_variant_policy": dict(_LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})),
+        "verification": verification,
+        "verification_state": verification.get("state", "unknown"),
+        "validation_mode": verification.get("mode", _DEFAULT_VALIDATION_MODE),
+        "compile_commands": verification.get("compile_commands"),
+    }
+
+
 def collect_lsp_statuses(
     workspace: str | Path | None = None,
     *,
@@ -1234,82 +1309,21 @@ def collect_lsp_statuses(
     compile_db_path: str | Path | None = None,
     project_root: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect effective command status for each language adapter."""
+    """Collect effective command status for each language adapter.
+
+    All language probes run concurrently so total wall-clock time is
+    O(max_probe_timeout) rather than O(Σ probe_timeouts).
+    """
     bindings = load_lsp_bindings(workspace)
-    statuses: list[dict[str, Any]] = []
-    for spec in bundled_lsp_specs():
-        effective_command, effective_source = resolve_lsp_command(
-            language_id=spec.language_id,
-            default_command=spec.default_command,
-            workspace=workspace,
+    specs = list(bundled_lsp_specs())
+
+    def _probe(spec: LSPServerSpec) -> dict[str, Any]:
+        return _collect_one_status(
+            spec, bindings, workspace, validation_mode, compile_db_path, project_root
         )
 
-        # Fail fast: unconfigured languages (no binding)
-        # are immediately marked unavailable — no probe attempted.
-        if effective_source == "default":
-            endpoint = parse_attach_endpoint(effective_command)
-            statuses.append(
-                {
-                    "language": spec.language_id,
-                    "required": spec.required,
-                    "available": False,
-                    "probe_available": False,
-                    "executable": None,
-                    "transport": endpoint["transport"] if endpoint else "subprocess",
-                    "endpoint": endpoint["target"] if endpoint else None,
-                    "effective_command": effective_command,
-                    "effective_source": effective_source,
-                    "binding_command": [],
-                    "default_command": list(spec.default_command),
-                    "version_status": {"state": "not_configured"},
-                    "language_variant_policy": dict(
-                        _LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})
-                    ),
-                    "verification": {"state": "not_configured"},
-                    "verification_state": "not_configured",
-                    "validation_mode": _normalized_validation_mode_with_override(validation_mode),
-                    "compile_commands": None,
-                }
-            )
-            continue
-
-        probe = probe_command(effective_command)
-        validation = _availability_validation(
-            language_id=spec.language_id,
-            command=effective_command,
-            probe=probe,
-            workspace=workspace,
-            validation_mode=validation_mode,
-            compile_db_path=compile_db_path,
-            project_root=project_root,
-        )
-        verification = validation["verification"]
-        # Reuse version_status already computed inside _availability_validation
-        # to avoid spawning redundant subprocess probes.
-        version_status = verification.get("version_status", {})
-        statuses.append(
-            {
-                "language": spec.language_id,
-                "required": spec.required,
-                "available": bool(validation["available"]),
-                "probe_available": bool(probe["available"]),
-                "executable": probe["executable"],
-                "transport": probe.get("transport", "subprocess"),
-                "endpoint": probe.get("endpoint"),
-                "effective_command": effective_command,
-                "effective_source": effective_source,
-                "binding_command": bindings.get(spec.language_id, []),
-                "default_command": list(spec.default_command),
-                "version_status": version_status,
-                "language_variant_policy": dict(_LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})),
-                "verification": verification,
-                "verification_state": verification.get("state", "unknown"),
-                "validation_mode": verification.get("mode", _DEFAULT_VALIDATION_MODE),
-                "compile_commands": verification.get("compile_commands"),
-            }
-        )
-
-    return statuses
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as executor:
+        return list(executor.map(_probe, specs))
 
 
 def _observed_candidates(
