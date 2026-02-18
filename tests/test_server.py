@@ -16,11 +16,16 @@ from astrograph.index import CodeStructureIndex, IndexEntry, SimilarityResult
 from astrograph.languages.base import CodeUnit, SemanticProfile, SemanticSignal
 from astrograph.languages.registry import LanguageRegistry
 from astrograph.server import create_server, get_tools, set_tools
+from astrograph.languages._js_ts_treesitter import _TREE_SITTER_AVAILABLE
 from astrograph.tools import (
     PERSISTENCE_DIR,
     CodeStructureTools,
     ToolResult,
     _get_persistence_path,
+)
+
+_skip_no_treesitter = pytest.mark.skipif(
+    not _TREE_SITTER_AVAILABLE, reason="tree_sitter not installed"
 )
 
 
@@ -789,6 +794,7 @@ def _extract_signal_map(plugin_cls: type, source: str, filename: str) -> dict:
     return {s.key: s.value for s in profile.signals}
 
 
+@_skip_no_treesitter
 class TestTreeSitterGraph:
     """Unit tests for tree-sitter AST graph builder and TS parsing."""
 

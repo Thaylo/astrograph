@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import pytest
 
+from astrograph.languages._js_ts_treesitter import _TREE_SITTER_AVAILABLE
 from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
 from astrograph.languages.python_lsp_plugin import PythonLSPPlugin
 from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
 
+_skip_no_treesitter = pytest.mark.skipif(
+    not _TREE_SITTER_AVAILABLE, reason="tree_sitter not installed"
+)
 
+
+@_skip_no_treesitter
 class TestTreeSitterAnnotationName:
     """Cover _ts_annotation_name with real tree-sitter parsed nodes."""
 
@@ -91,6 +97,7 @@ class TestTreeSitterAnnotationName:
         assert len(ann_map) == 0
 
 
+@_skip_no_treesitter
 class TestTreeSitterGraphLabels:
     """Cover tree-sitter node label mappings and edge cases."""
 
@@ -293,6 +300,7 @@ class TestTreeSitterGraphLabels:
         assert any("AssignmentExpression:" in lbl for lbl in labels)
 
 
+@_skip_no_treesitter
 class TestJavaScriptPlusBinding:
     """Cover _infer_plus_binding (lines 603-641)."""
 
@@ -437,6 +445,7 @@ class TestJavaScriptLanguageSignals:
         assert http.value == "none"
 
 
+@_skip_no_treesitter
 class TestTreeSitterResolveOperandType:
     """Cover _resolve_ts_operand_type with real tree-sitter parsed nodes."""
 
@@ -924,6 +933,7 @@ class TestJavaScriptTypeSystem:
         assert plugin._detect_type_system(source) == "typescript"
 
 
+@_skip_no_treesitter
 class TestJavaScriptPlusBindingExtended:
     """Cover remaining _infer_plus_binding branches."""
 
