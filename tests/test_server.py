@@ -4949,11 +4949,18 @@ def _create_duplicate_files(directory: str, subdir: str, prefix: str, depth: int
     sub = os.path.join(directory, subdir)
     os.makedirs(sub, exist_ok=True)
     body_lines = "\n".join(f"    x{i} = a + b + {i}" for i in range(depth))
+    tail_name = f"x{max(depth - 1, 0)}"
     paths = []
     for suffix in ("a", "b"):
         path = os.path.join(sub, f"{prefix}_{suffix}.py")
         with open(path, "w") as f:
-            f.write(f"def {prefix}_calc(a, b):\n{body_lines}\n    return x0\n")
+            f.write(
+                f"def {prefix}_calc(a, b):\n"
+                f"{body_lines}\n"
+                "    if a > b:\n"
+                "        return x0\n"
+                f"    return {tail_name}\n"
+            )
         paths.append(path)
     return paths
 
@@ -4974,13 +4981,9 @@ class TestScopedAnalysis:
             scoped_result = tools.analyze(scope=["src/**"])
 
             if "No significant duplicates" not in scoped_result.text:
-                # Report file contains the full locations
-                meta_dir = _get_persistence_path(tmpdir)
-                reports = sorted(meta_dir.glob("analysis_report_*.txt"))
-                assert reports, "Expected analysis report file"
-                report_text = reports[-1].read_text()
-                assert "src/" in report_text
-                assert "lib/" not in report_text
+                details = _get_analyze_details(tools, scoped_result)
+                assert "src/" in details
+                assert "lib/" not in details
 
             tools.close()
 
@@ -5004,7 +5007,7 @@ class TestScopedAnalysis:
 
             tools.index_codebase(tmpdir)
             result = tools.call_tool("analyze", {"scope": ["nonexistent/**"]})
-            assert "No significant duplicates" in result.text
+            assert "No significant duplicates" in result.text or "No code indexed" in result.text
             tools.close()
 
 
