@@ -1236,11 +1236,12 @@ def _collect_one_status(
     project_root: str | Path | None,
 ) -> dict[str, Any]:
     """Probe and build the status dict for a single language adapter."""
-    effective_command, effective_source = resolve_lsp_command(
-        language_id=spec.language_id,
-        default_command=spec.default_command,
-        workspace=workspace,
-    )
+    # Use the pre-loaded bindings to avoid a redundant disk read per language
+    bound = bindings.get(spec.language_id)
+    if bound:
+        effective_command, effective_source = list(bound), "binding"
+    else:
+        effective_command, effective_source = parse_command(spec.default_command), "default"
 
     # Fail fast: unconfigured languages (no binding) are immediately unavailable.
     if effective_source == "default":
@@ -1434,11 +1435,9 @@ def auto_bind_missing_servers(
     ]
 
     for spec in specs:
-        effective_command, _source = resolve_lsp_command(
-            language_id=spec.language_id,
-            default_command=spec.default_command,
-            workspace=root,
-        )
+        # Use pre-loaded bindings to avoid N redundant disk reads in this loop
+        bound = bindings.get(spec.language_id)
+        effective_command = list(bound) if bound else parse_command(spec.default_command)
         effective_probe = probe_command(effective_command)
         effective_validation = _availability_validation(
             language_id=spec.language_id,

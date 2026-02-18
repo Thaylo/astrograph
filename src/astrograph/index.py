@@ -327,6 +327,8 @@ class CodeStructureIndex:
         self.block_type_index: dict[str, set[str]] = {}  # block_type -> {entry_ids}
         # Fingerprint index for O(1) similarity lookups: (n_nodes, n_edges) -> {entry_ids}
         self.fingerprint_index: dict[tuple[int, int], set[str]] = {}
+        # Hierarchy index for O(1) partial-match lookups: hierarchy_hashes[0] -> {entry_ids}
+        self.hierarchy_index: dict[str, set[str]] = {}
         # Suppressed entries (reviewed and deemed acceptable)
         self.suppressed_hashes: set[str] = set()  # wl_hashes to ignore in analysis
         # File metadata for staleness detection
@@ -460,6 +462,10 @@ class CodeStructureIndex:
             if "n_nodes" in fp:
                 fp_key = (fp["n_nodes"], fp["n_edges"])
                 self.fingerprint_index.setdefault(fp_key, set()).add(entry_id)
+
+            # Add to hierarchy index for O(1) partial-match candidate lookup
+            if hierarchy:
+                self.hierarchy_index.setdefault(hierarchy[0], set()).add(entry_id)
 
             # Add to file index
             self.file_entries.setdefault(ast_graph.code_unit.file_path, []).append(entry_id)
@@ -700,6 +706,13 @@ class CodeStructureIndex:
                             if not self.fingerprint_index[fp_key]:
                                 del self.fingerprint_index[fp_key]
 
+                    # O(1) removal from hierarchy index
+                    h0 = meta.hierarchy_hashes[0] if meta.hierarchy_hashes else None
+                    if h0 is not None and h0 in self.hierarchy_index:
+                        self.hierarchy_index[h0].discard(entry_id)
+                        if not self.hierarchy_index[h0]:
+                            del self.hierarchy_index[h0]
+
                     # Remove entry
                     del self.entries[entry_id]
 
@@ -764,34 +777,34 @@ class CodeStructureIndex:
                         results.append(SimilarityResult(entry=entry, similarity_type="high"))
                         seen_ids.add(eid)
 
-            # Check for partial matches via hierarchy hashes using hot metadata
-            # to avoid loading evicted entries from SQLite
-            for eid in self.entries:
-                if eid in seen_ids:
-                    continue
+            # Check for partial matches via hierarchy index — O(1) bucket lookup instead of O(n)
+            if hierarchy:
+                for eid in self.hierarchy_index.get(hierarchy[0], set()):
+                    if eid in seen_ids:
+                        continue
 
-                entry_hierarchy = self.entries.get_hierarchy_hashes(eid)
-                if entry_hierarchy is None:
-                    continue
+                    entry_hierarchy = self.entries.get_hierarchy_hashes(eid)
+                    if entry_hierarchy is None:
+                        continue
 
-                matching_depth = 0
-                for i, (h1, h2) in enumerate(zip(hierarchy, entry_hierarchy, strict=False)):
-                    if h1 == h2:
-                        matching_depth = i + 1
-                    else:
-                        break
+                    matching_depth = 0
+                    for i, (h1, h2) in enumerate(zip(hierarchy, entry_hierarchy, strict=False)):
+                        if h1 == h2:
+                            matching_depth = i + 1
+                        else:
+                            break
 
-                if matching_depth >= 2:
-                    # Only load full entry when we have a match
-                    entry = self.entries.get(eid)
-                    if entry:
-                        results.append(
-                            SimilarityResult(
-                                entry=entry,
-                                similarity_type="partial",
-                                matching_depth=matching_depth,
+                    if matching_depth >= 2:
+                        # Only load full entry when we have a match
+                        entry = self.entries.get(eid)
+                        if entry:
+                            results.append(
+                                SimilarityResult(
+                                    entry=entry,
+                                    similarity_type="partial",
+                                    matching_depth=matching_depth,
+                                )
                             )
-                        )
 
             # Sort: exact first, then high, then partial (by depth)
             def sort_key(r: SimilarityResult) -> tuple:
@@ -998,12 +1011,12 @@ class CodeStructureIndex:
                 if not info or not info.file_hashes:
                     continue
 
-                deleted_files, files_changed = self._detect_file_changes(info)
+                deleted_files, files_changed, new_hashes = self._detect_file_changes(info)
                 if not files_changed:
                     continue
 
                 if self._structure_still_exists(wl_hash, info, deleted_files):
-                    self._update_suppression_tracking(info, deleted_files)
+                    self._update_suppression_tracking(info, deleted_files, new_hashes)
                 else:
                     self._remove_suppression(wl_hash)
                     invalidated.append((wl_hash, "suppressed code structure no longer exists"))
@@ -1015,10 +1028,17 @@ class CodeStructureIndex:
         self.suppressed_hashes.discard(wl_hash)
         self.suppression_details.pop(wl_hash, None)
 
-    def _detect_file_changes(self, info: SuppressionInfo) -> tuple[list[str], bool]:
-        """Detect which files have changed or been deleted."""
+    def _detect_file_changes(
+        self, info: SuppressionInfo
+    ) -> tuple[list[str], bool, dict[str, str]]:
+        """Detect which files have changed or been deleted.
+
+        Returns (deleted_files, files_changed, new_hashes) so callers can reuse
+        the computed hashes without re-reading files.
+        """
         deleted_files: list[str] = []
         files_changed = False
+        new_hashes: dict[str, str] = {}
 
         for file_path, stored_hash in info.file_hashes.items():
             if not os.path.exists(file_path):
@@ -1026,10 +1046,12 @@ class CodeStructureIndex:
                 files_changed = True
             else:
                 current_hash = self._compute_file_hash(file_path)
-                if current_hash and current_hash != stored_hash:
-                    files_changed = True
+                if current_hash:
+                    new_hashes[file_path] = current_hash
+                    if current_hash != stored_hash:
+                        files_changed = True
 
-        return deleted_files, files_changed
+        return deleted_files, files_changed, new_hashes
 
     def _structure_still_exists(
         self, wl_hash: str, info: SuppressionInfo, deleted_files: list[str]
@@ -1058,14 +1080,18 @@ class CodeStructureIndex:
 
         return False
 
-    def _update_suppression_tracking(self, info: SuppressionInfo, deleted_files: list[str]) -> None:
-        """Update suppression tracking after files changed but structure remains."""
-        # Update hashes for existing files
-        for file_path in info.source_files:
-            if os.path.exists(file_path):
-                new_hash = self._compute_file_hash(file_path)
-                if new_hash:
-                    info.file_hashes[file_path] = new_hash
+    def _update_suppression_tracking(
+        self,
+        info: SuppressionInfo,
+        deleted_files: list[str],
+        new_hashes: dict[str, str],
+    ) -> None:
+        """Update suppression tracking after files changed but structure remains.
+
+        Accepts pre-computed hashes from _detect_file_changes to avoid re-reading files.
+        """
+        # Apply pre-computed hashes (no second disk read needed)
+        info.file_hashes.update(new_hashes)
 
         # Remove deleted files from tracking
         for deleted in deleted_files:
