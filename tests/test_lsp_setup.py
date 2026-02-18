@@ -1857,35 +1857,30 @@ class TestProbeDocuments:
 
         return fake_socket_client
 
-    def test_probe_attach_uses_language_probe_timeout(self, tmp_path):
-        """_probe_attach_lsp_semantics uses probe_timeout from _PROBE_DOCUMENTS."""
+    def _probe_attach_and_capture_timeout(self, language_id, tmp_path):
+        """Call _probe_attach_lsp_semantics and return the captured timeout."""
         captured = {}
         with patch(
             "astrograph.languages.lsp_client.SocketLSPClient",
             side_effect=self._make_capturing_client(captured),
         ):
             lsp_setup._probe_attach_lsp_semantics(
-                language_id="java_lsp",
+                language_id=language_id,
                 command=["tcp://127.0.0.1:9999"],
                 workspace=tmp_path,
             )
+        return captured.get("timeout")
+
+    def test_probe_attach_uses_language_probe_timeout(self, tmp_path):
+        """_probe_attach_lsp_semantics uses probe_timeout from _PROBE_DOCUMENTS."""
+        timeout = self._probe_attach_and_capture_timeout("java_lsp", tmp_path)
 
         from astrograph.lsp_setup import _PROBE_DOCUMENTS
 
         expected = float(_PROBE_DOCUMENTS["java_lsp"]["probe_timeout"])
-        assert captured.get("timeout") == expected
+        assert timeout == expected
 
     def test_probe_attach_uses_default_timeout_for_other_languages(self, tmp_path):
         """Languages without probe_timeout use the default 1.5s."""
-        captured = {}
-        with patch(
-            "astrograph.languages.lsp_client.SocketLSPClient",
-            side_effect=self._make_capturing_client(captured),
-        ):
-            lsp_setup._probe_attach_lsp_semantics(
-                language_id="go_lsp",
-                command=["tcp://127.0.0.1:9999"],
-                workspace=tmp_path,
-            )
-
-        assert captured.get("timeout") == 1.5
+        timeout = self._probe_attach_and_capture_timeout("go_lsp", tmp_path)
+        assert timeout == 1.5
