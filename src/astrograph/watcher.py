@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -32,21 +32,6 @@ def _should_skip_path(path: Path) -> bool:
     return any(_is_skip_dir(part) for part in path.parts)
 
 
-def _apply_and_clear(items: dict[str, Any], action: Callable[[Any], None]) -> None:
-    """Apply an action to all values and clear the mapping."""
-    for item in items.values():
-        action(item)
-    items.clear()
-
-
-def _apply_and_clear_locked(
-    lock: Any, items: dict[str, Any], action: Callable[[Any], None]
-) -> None:
-    """Apply action to all values and clear mapping while holding lock."""
-    with lock:
-        _apply_and_clear(items, action)
-
-
 class DebouncedCallback:
     """
     Debounces rapid file system events.
@@ -58,35 +43,60 @@ class DebouncedCallback:
     def __init__(self, callback: Callable[[str], None], delay: float = 0.1) -> None:
         self.callback = callback
         self.delay = delay
-        self._pending: dict[str, threading.Timer] = {}
+        self._pending: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+        self._running = True
+        self._worker = threading.Thread(target=self._run, daemon=True)
+        self._worker.start()
 
     def __call__(self, path: str) -> None:
         """Schedule a debounced callback for the given path."""
-        with self._lock:
-            # Cancel any pending callback for this path
-            if path in self._pending:
-                self._pending[path].cancel()
+        with self._cv:
+            if not self._running:
+                return
+            self._pending[path] = time.monotonic() + self.delay
+            self._cv.notify()
 
-            # Schedule new callback
-            timer = threading.Timer(self.delay, self._execute, args=[path])
-            timer.daemon = True
-            self._pending[path] = timer
-            timer.start()
+    def _run(self) -> None:
+        """Worker loop to execute debounced callbacks without spawning threads."""
+        while True:
+            with self._cv:
+                if not self._running and not self._pending:
+                    return
+                if not self._pending:
+                    self._cv.wait()
+                    continue
+                next_due = min(self._pending.values())
+                now = time.monotonic()
+                if next_due > now:
+                    self._cv.wait(timeout=next_due - now)
+                    continue
+                due_paths = [path for path, due in self._pending.items() if due <= now]
+                for path in due_paths:
+                    self._pending.pop(path, None)
 
-    def _execute(self, path: str) -> None:
-        """Execute the callback after debounce delay."""
-        with self._lock:
-            self._pending.pop(path, None)
-
-        try:
-            self.callback(path)
-        except Exception:
-            logger.exception(f"Error in debounced callback for {path}")
+            for path in due_paths:
+                try:
+                    self.callback(path)
+                except Exception:
+                    logger.exception(f"Error in debounced callback for {path}")
 
     def cancel_all(self) -> None:
         """Cancel all pending callbacks."""
-        _apply_and_clear_locked(self._lock, self._pending, lambda timer: timer.cancel())
+        with self._cv:
+            self._pending.clear()
+            self._cv.notify()
+
+    def shutdown(self) -> None:
+        """Stop the worker thread after clearing pending callbacks."""
+        with self._cv:
+            if not self._running:
+                return
+            self._running = False
+            self._pending.clear()
+            self._cv.notify()
+        self._worker.join(timeout=1.0)
 
 
 class SourceFileHandler(FileSystemEventHandler):
@@ -164,8 +174,8 @@ class SourceFileHandler(FileSystemEventHandler):
 
     def cancel_pending(self) -> None:
         """Cancel pending debounced callbacks."""
-        self._on_modified.cancel_all()
-        self._on_created.cancel_all()
+        self._on_modified.shutdown()
+        self._on_created.shutdown()
 
 
 class FileWatcher(StartCloseOnExitMixin):
