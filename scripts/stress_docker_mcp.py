@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import subprocess
 import time
 
@@ -72,12 +73,19 @@ def main() -> int:
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     assert proc.stdin and proc.stdout
+    deadline = time.time() + args.timeout
 
     def send(obj: dict) -> None:
         proc.stdin.write(json.dumps(obj) + "\n")
         proc.stdin.flush()
 
     def recv() -> dict:
+        if proc.poll() is not None:
+            raise RuntimeError("server exited early")
+        remaining = max(deadline - time.time(), 0.0)
+        ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        if not ready:
+            raise TimeoutError("timeout waiting for MCP response")
         line = proc.stdout.readline()
         if not line:
             raise RuntimeError("server closed stdout")
