@@ -15,6 +15,7 @@ DEFAULT_BREACH_COUNT = 3
 DEFAULT_MAX_RAM_PERCENT = 85.0
 DEFAULT_MAX_RSS_MB = 4096.0
 DEFAULT_MAX_IO_MBPS = 200.0
+DEFAULT_MAX_THREADS = 800
 
 
 def _read_io_bytes(proc: psutil.Process) -> int:
@@ -66,6 +67,17 @@ def _try_gpu_util() -> float | None:
         return None
 
 
+def _count_threads(proc: psutil.Process) -> int:
+    count = 0
+    with contextlib.suppress(Exception):
+        count += proc.num_threads()
+    with contextlib.suppress(Exception):
+        for child in proc.children(recursive=True):
+            with contextlib.suppress(Exception):
+                count += child.num_threads()
+    return count
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
@@ -73,6 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-ram-percent", type=float, default=DEFAULT_MAX_RAM_PERCENT)
     parser.add_argument("--max-rss-mb", type=float, default=DEFAULT_MAX_RSS_MB)
     parser.add_argument("--max-io-mbps", type=float, default=DEFAULT_MAX_IO_MBPS)
+    parser.add_argument("--max-threads", type=int, default=DEFAULT_MAX_THREADS)
     parser.add_argument("--max-gpu-util", type=float, default=95.0)
     parser.add_argument("--grace-seconds", type=float, default=2.0)
     parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to run after --")
@@ -115,6 +128,7 @@ def main() -> int:
             io_mbps = (io_bytes - last_io) / (1024 * 1024) / dt
             last_io = io_bytes
             last_ts = now
+            thread_count = _count_threads(ps)
 
             gpu_util = _try_gpu_util()
 
@@ -129,6 +143,9 @@ def main() -> int:
             if io_mbps > args.max_io_mbps:
                 breach = True
                 reasons.append(f"io={io_mbps:.1f}MB/s")
+            if thread_count > args.max_threads:
+                breach = True
+                reasons.append(f"threads={thread_count}")
             if gpu_util is not None and gpu_util > args.max_gpu_util:
                 breach = True
                 reasons.append(f"gpu={gpu_util:.1f}%")
