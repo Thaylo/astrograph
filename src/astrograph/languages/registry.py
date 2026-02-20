@@ -9,7 +9,6 @@ import logging
 import threading
 from pathlib import Path
 
-from .._sync_helpers import pop_attr_with_lock
 from .base import LanguagePlugin
 from .plugin_loader import discover_language_plugins
 
@@ -62,7 +61,9 @@ class LanguageRegistry:
     @classmethod
     def reset(cls) -> None:
         """Reset the singleton (for testing). Closes all plugin resources."""
-        inst = pop_attr_with_lock(cls._lock, cls, "_instance")
+        with cls._lock:
+            inst = cls._instance
+            cls._instance = None
         if inst is not None:
             inst._close_plugins()
 
@@ -105,17 +106,16 @@ class LanguageRegistry:
         """
         # Check for extension conflicts
         for ext in plugin.file_extensions:
-            norm_ext = ext.lower()
-            if norm_ext in self._extension_map:
-                existing_id = self._extension_map[norm_ext]
+            if ext in self._extension_map:
+                existing_id = self._extension_map[ext]
                 raise ValueError(
-                    f"Extension '{norm_ext}' already registered by '{existing_id}', "
+                    f"Extension '{ext}' already registered by '{existing_id}', "
                     f"cannot register '{plugin.language_id}'"
                 )
 
         self._plugins[plugin.language_id] = plugin
         for ext in plugin.file_extensions:
-            self._extension_map[ext.lower()] = plugin.language_id
+            self._extension_map[ext] = plugin.language_id
 
     def get_plugin(self, language_id: str) -> LanguagePlugin | None:
         """Get a plugin by language ID."""
@@ -123,7 +123,7 @@ class LanguageRegistry:
 
     def get_plugin_for_file(self, path: str | Path) -> LanguagePlugin | None:
         """Get the appropriate plugin for a file based on its extension."""
-        ext = Path(path).suffix.lower()
+        ext = Path(path).suffix
         language_id = self._extension_map.get(ext)
         return self._plugins.get(language_id) if language_id else None
 

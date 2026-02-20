@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import contextlib
 import json
 import logging
@@ -15,49 +14,11 @@ import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 from urllib.parse import unquote, urlparse
-
-from typing_extensions import NotRequired
 
 PERSISTENCE_DIR = ".metadata_astrograph"
 LSP_BINDINGS_FILENAME = "lsp_bindings.json"
-
-# Module-level active workspace: set by index_codebase / set_workspace so that
-# plugin initialisation (which calls create_lsp_client without an explicit
-# workspace) resolves bindings from the correct directory.
-_active_workspace: Path | None = None
-
-
-def set_active_workspace(workspace: str | Path | None) -> None:
-    """Update the module-level active workspace used by binding resolution."""
-    global _active_workspace
-    if workspace is not None:
-        p = Path(workspace).expanduser()
-        if p.exists():
-            p = p.resolve()
-        _active_workspace = p
-    else:
-        _active_workspace = None
-
-
-# Docker→host path mapping: set by tools._learn_host_root so that
-# SocketLSPClient translates container paths (/workspace/…) to host
-# paths before sending URIs to host-side LSP servers via socat bridge.
-_docker_path_map: tuple[str, str] | None = None  # (container_prefix, host_prefix)
-
-
-def set_docker_path_map(container_root: str, host_root: str) -> None:
-    """Store the Docker container→host path mapping for LSP URI translation."""
-    global _docker_path_map
-    _docker_path_map = (container_root.rstrip("/"), host_root.rstrip("/"))
-
-
-def get_docker_path_map() -> tuple[str, str] | None:
-    """Return (container_prefix, host_prefix) if a mapping is known."""
-    return _docker_path_map
-
-
 _SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 _VALIDATION_MODES = frozenset({"production", "bootstrap"})
 _VALIDATION_MODE_ALIASES = {"relaxed": "bootstrap"}
@@ -141,9 +102,10 @@ _LANGUAGE_VARIANT_POLICY: dict[str, dict[str, Any]] = {
 
 @dataclass(frozen=True)
 class LSPServerSpec:
-    """Configuration of one LSP-backed language adapter."""
+    """Configuration of one bundled LSP-backed language adapter."""
 
     language_id: str
+    command_env_var: str
     default_command: tuple[str, ...]
     probe_commands: tuple[tuple[str, ...], ...] = ()
     required: bool = True
@@ -154,41 +116,49 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
     return (
         LSPServerSpec(
             language_id="python",
-            default_command=("tcp://127.0.0.1:2090",),
-            required=False,
+            command_env_var="ASTROGRAPH_PY_LSP_COMMAND",
+            default_command=("pylsp",),
+            probe_commands=(
+                ("python", "-m", "pylsp"),
+                ("python3", "-m", "pylsp"),
+            ),
         ),
         LSPServerSpec(
             language_id="javascript_lsp",
-            default_command=("tcp://127.0.0.1:2092",),
-            probe_commands=(("typescript-language-server", "--version"),),
-            required=False,
+            command_env_var="ASTROGRAPH_JS_LSP_COMMAND",
+            default_command=("typescript-language-server", "--stdio"),
+            probe_commands=(),
         ),
         LSPServerSpec(
             language_id="typescript_lsp",
-            default_command=("tcp://127.0.0.1:2093",),
-            probe_commands=(("typescript-language-server", "--version"),),
-            required=False,
+            command_env_var="ASTROGRAPH_TS_LSP_COMMAND",
+            default_command=("typescript-language-server", "--stdio"),
+            probe_commands=(),
         ),
         LSPServerSpec(
             language_id="c_lsp",
+            command_env_var="ASTROGRAPH_C_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2087",),
             probe_commands=(),
             required=False,
         ),
         LSPServerSpec(
             language_id="cpp_lsp",
+            command_env_var="ASTROGRAPH_CPP_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2088",),
             probe_commands=(),
             required=False,
         ),
         LSPServerSpec(
             language_id="java_lsp",
+            command_env_var="ASTROGRAPH_JAVA_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2089",),
             probe_commands=(),
             required=False,
         ),
         LSPServerSpec(
             language_id="go_lsp",
+            command_env_var="ASTROGRAPH_GO_LSP_COMMAND",
             default_command=("tcp://127.0.0.1:2091",),
             probe_commands=(("gopls", "version"),),
             required=False,
@@ -197,7 +167,7 @@ def bundled_lsp_specs() -> tuple[LSPServerSpec, ...]:
 
 
 def get_lsp_spec(language_id: str) -> LSPServerSpec | None:
-    """Return server spec for a language, when known."""
+    """Return bundled server spec for a language, when known."""
     for spec in bundled_lsp_specs():
         if spec.language_id == language_id:
             return spec
@@ -258,14 +228,7 @@ def _is_production_validation_mode(mode_override: str | None = None) -> bool:
     return _normalized_validation_mode_with_override(mode_override) == "production"
 
 
-class _ProbeDoc(TypedDict, total=False):
-    lsp_language_id: str
-    suffix: str
-    source: str
-    probe_timeout: NotRequired[float]
-
-
-_PROBE_DOCUMENTS: dict[str, _ProbeDoc] = {
+_PROBE_DOCUMENTS: dict[str, dict[str, str]] = {
     "cpp_lsp": {
         "lsp_language_id": "cpp",
         "suffix": "_probe.cpp",
@@ -286,33 +249,16 @@ _PROBE_DOCUMENTS: dict[str, _ProbeDoc] = {
         "lsp_language_id": "java",
         "suffix": "_probe.java",
         "source": "class Greeter {\n  int greet(int value) { return value + 1; }\n}\n",
-        # jdtls starts a JVM on each socat connection; allow ample warm-up time.
-        "probe_timeout": 20.0,
     },
     "go_lsp": {
         "lsp_language_id": "go",
         "suffix": "_probe.go",
         "source": "package main\n\nfunc helper(value int) int { return value + 1 }\n",
     },
-    "javascript_lsp": {
-        "lsp_language_id": "javascript",
-        "suffix": "_probe.js",
-        "source": "function helper(value) { return value + 1; }\n",
-    },
-    "typescript_lsp": {
-        "lsp_language_id": "typescript",
-        "suffix": "_probe.ts",
-        "source": "function helper(value: number): number { return value + 1; }\n",
-    },
-    "python": {
-        "lsp_language_id": "python",
-        "suffix": "_probe.py",
-        "source": "def helper(value):\n    return value + 1\n",
-    },
 }
 
 
-def _probe_document(language_id: str) -> _ProbeDoc:
+def _probe_document(language_id: str) -> dict[str, str]:
     """Return a tiny probe document per language for semantic verification."""
     if language_id in _PROBE_DOCUMENTS:
         return _PROBE_DOCUMENTS[language_id]
@@ -355,15 +301,11 @@ def _probe_attach_lsp_semantics(
     from .languages.lsp_client import SocketLSPClient
 
     probe = _probe_document(language_id)
-    # Allow per-language probe_timeout overrides (e.g. jdtls JVM cold start).
-    effective_timeout = float(probe.get("probe_timeout", timeout))
     workspace_root = _normalize_workspace_root(workspace)
     probe_path = workspace_root / PERSISTENCE_DIR / probe["suffix"]
     probe_path.parent.mkdir(parents=True, exist_ok=True)
 
-    client = SocketLSPClient(
-        parsed[0], request_timeout=effective_timeout, path_prefix_map=get_docker_path_map()
-    )
+    client = SocketLSPClient(parsed[0], request_timeout=timeout)
     symbols: list[Any] = []
     handshake_ok = False
     try:
@@ -666,10 +608,7 @@ def _availability_validation(
     # Attach-mode endpoints don't have a subprocess to version-probe.
     verification["version_status"] = {
         "state": "unknown",
-        "reason": (
-            "Attach transport is host-managed; version cannot be inferred from "
-            "inside this MCP container."
-        ),
+        "reason": "Attach transport; no version probe available.",
     }
 
     attach_probe = _probe_attach_lsp_semantics(
@@ -745,6 +684,9 @@ def _version_probe_candidates(
     if language_id in {"c_lsp", "cpp_lsp"}:
         candidates.append(([*parsed, "-version"], "server"))
 
+    if language_id == "python" and len(parsed) >= 3 and parsed[1] == "-m" and parsed[2] == "pylsp":
+        candidates.append(([parsed[0], "--version"], "runtime"))
+
     if language_id in {"javascript_lsp", "typescript_lsp"}:
         candidates.append((["node", "--version"], "runtime"))
 
@@ -814,10 +756,7 @@ def _evaluate_version_status(
             "state": "unknown",
             "detected": None,
             "probe_kind": None,
-            "reason": (
-                "Attach transport is host-managed; server version cannot be inferred "
-                "from inside this MCP container."
-            ),
+            "reason": "Attach endpoint version cannot be inferred from inside the MCP container.",
             "variant_policy": dict(policy),
         }
 
@@ -844,7 +783,25 @@ def _evaluate_version_status(
     state = "unknown"
     reason = "No explicit compatibility rule is defined for this adapter."
 
-    if language_id in {"javascript_lsp", "typescript_lsp"}:
+    if language_id == "python":
+        if probe_kind == "server":
+            if major > 1 or (major == 1 and minor >= 11):
+                state = "supported"
+                reason = "python-lsp-server version is within supported range (>=1.11)."
+            else:
+                state = "unsupported"
+                reason = "python-lsp-server version is below supported baseline (1.11)."
+        elif probe_kind == "runtime":
+            if major == 3 and minor in {11, 12, 13, 14}:
+                state = "supported"
+                reason = "Python runtime matches the primary supported variants."
+            elif major == 3 and minor == 15:
+                state = "best_effort"
+                reason = "Python 3.15 is currently treated as best-effort."
+            else:
+                state = "unsupported"
+                reason = "Python runtime is outside the supported variant window."
+    elif language_id in {"javascript_lsp", "typescript_lsp"}:
         if probe_kind == "runtime":
             # Node.js runtime version probing
             if major in {20, 22, 24}:
@@ -961,11 +918,6 @@ def _normalize_workspace_root(workspace: str | Path | None) -> Path:
             return root.parent if root.is_file() else root
         return Path.cwd().resolve()
 
-    # Active workspace (set by set_workspace / index_codebase) — used when
-    # no explicit env var is set (normal runtime in Docker).
-    if _active_workspace is not None and _active_workspace.is_dir():
-        return _active_workspace
-
     docker_workspace = Path("/workspace")
     if docker_workspace.is_dir():
         return docker_workspace
@@ -1047,48 +999,50 @@ def parse_attach_endpoint(command: Sequence[str] | str | None) -> dict[str, Any]
 def _probe_attach_endpoint(endpoint: dict[str, Any], timeout: float = 0.3) -> dict[str, Any]:
     """Probe attach endpoint reachability using short socket connect attempts."""
     transport = endpoint["transport"]
-    _unavailable: dict[str, Any] = {"available": False, "executable": None}
 
     try:
         if transport == "tcp":
             host = str(endpoint["host"])
             port = int(endpoint["port"])
 
-            # socket.getaddrinfo has no built-in timeout and can block on slow DNS
-            # (e.g. a cold Docker resolver).  Run it in a thread so the total
-            # DNS + connect time is bounded by *timeout*.
-            def _tcp_probe() -> bool:
-                addrinfos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-                for family, socktype, proto, _canonname, sockaddr in addrinfos:
-                    try:
-                        with socket.socket(family, socktype, proto) as sock:
-                            sock.settimeout(timeout)
-                            sock.connect(sockaddr)
-                        return True
-                    except OSError:
-                        continue
-                return False
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_tcp_probe)
+            # Try all resolved addresses (IPv4/IPv6) so one failing family
+            # does not mask a reachable endpoint.
+            addrinfos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            connected = False
+            for family, socktype, proto, _canonname, sockaddr in addrinfos:
                 try:
-                    connected = future.result(timeout=timeout)
-                except (concurrent.futures.TimeoutError, OSError):
-                    connected = False
+                    with socket.socket(family, socktype, proto) as sock:
+                        sock.settimeout(timeout)
+                        sock.connect(sockaddr)
+                    connected = True
+                    break
+                except OSError:
+                    continue
 
             if not connected:
-                return _unavailable
-
+                return {
+                    "available": False,
+                    "executable": None,
+                }
         elif transport == "unix":
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(timeout)
                 sock.connect(str(endpoint["path"]))
         else:
-            return _unavailable
+            return {
+                "available": False,
+                "executable": None,
+            }
     except OSError:
-        return _unavailable
+        return {
+            "available": False,
+            "executable": None,
+        }
 
-    return {"available": True, "executable": endpoint["target"]}
+    return {
+        "available": True,
+        "executable": endpoint["target"],
+    }
 
 
 def load_lsp_bindings(workspace: str | Path | None = None) -> dict[str, list[str]]:
@@ -1186,13 +1140,18 @@ def resolve_lsp_command(
     *,
     language_id: str,
     default_command: Sequence[str],
+    command_env_var: str,
     workspace: str | Path | None = None,
 ) -> tuple[list[str], str]:
-    """Resolve effective command with precedence: binding -> default."""
+    """Resolve effective command with precedence: binding -> env -> default."""
     bindings = load_lsp_bindings(workspace)
     bound = bindings.get(language_id)
     if bound:
         return list(bound), "binding"
+
+    env_command = parse_command(os.getenv(command_env_var, ""))
+    if env_command:
+        return env_command, "env"
 
     return parse_command(default_command), "default"
 
@@ -1227,82 +1186,6 @@ def probe_command(command: Sequence[str] | str | None) -> dict[str, Any]:
     }
 
 
-def _collect_one_status(
-    spec: LSPServerSpec,
-    bindings: dict[str, list[str]],
-    workspace: str | Path | None,
-    validation_mode: str | None,
-    compile_db_path: str | Path | None,
-    project_root: str | Path | None,
-) -> dict[str, Any]:
-    """Probe and build the status dict for a single language adapter."""
-    # Use the pre-loaded bindings to avoid a redundant disk read per language
-    bound = bindings.get(spec.language_id)
-    if bound:
-        effective_command, effective_source = list(bound), "binding"
-    else:
-        effective_command, effective_source = parse_command(spec.default_command), "default"
-
-    # Fail fast: unconfigured languages (no binding) are immediately unavailable.
-    if effective_source == "default":
-        endpoint = parse_attach_endpoint(effective_command)
-        return {
-            "language": spec.language_id,
-            "required": spec.required,
-            "available": False,
-            "probe_available": False,
-            "executable": None,
-            "transport": endpoint["transport"] if endpoint else "subprocess",
-            "endpoint": endpoint["target"] if endpoint else None,
-            "effective_command": effective_command,
-            "effective_source": effective_source,
-            "binding_command": [],
-            "default_command": list(spec.default_command),
-            "version_status": {"state": "not_configured"},
-            "language_variant_policy": dict(
-                _LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})
-            ),
-            "verification": {"state": "not_configured"},
-            "verification_state": "not_configured",
-            "validation_mode": _normalized_validation_mode_with_override(validation_mode),
-            "compile_commands": None,
-        }
-
-    probe = probe_command(effective_command)
-    validation = _availability_validation(
-        language_id=spec.language_id,
-        command=effective_command,
-        probe=probe,
-        workspace=workspace,
-        validation_mode=validation_mode,
-        compile_db_path=compile_db_path,
-        project_root=project_root,
-    )
-    verification = validation["verification"]
-    # Reuse version_status already computed inside _availability_validation
-    # to avoid spawning redundant subprocess probes.
-    version_status = verification.get("version_status", {})
-    return {
-        "language": spec.language_id,
-        "required": spec.required,
-        "available": bool(validation["available"]),
-        "probe_available": bool(probe["available"]),
-        "executable": probe["executable"],
-        "transport": probe.get("transport", "subprocess"),
-        "endpoint": probe.get("endpoint"),
-        "effective_command": effective_command,
-        "effective_source": effective_source,
-        "binding_command": bindings.get(spec.language_id, []),
-        "default_command": list(spec.default_command),
-        "version_status": version_status,
-        "language_variant_policy": dict(_LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})),
-        "verification": verification,
-        "verification_state": verification.get("state", "unknown"),
-        "validation_mode": verification.get("mode", _DEFAULT_VALIDATION_MODE),
-        "compile_commands": verification.get("compile_commands"),
-    }
-
-
 def collect_lsp_statuses(
     workspace: str | Path | None = None,
     *,
@@ -1310,21 +1193,54 @@ def collect_lsp_statuses(
     compile_db_path: str | Path | None = None,
     project_root: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect effective command status for each language adapter.
-
-    All language probes run concurrently so total wall-clock time is
-    O(max_probe_timeout) rather than O(Σ probe_timeouts).
-    """
+    """Collect effective command status for each bundled language adapter."""
     bindings = load_lsp_bindings(workspace)
-    specs = list(bundled_lsp_specs())
-
-    def _probe(spec: LSPServerSpec) -> dict[str, Any]:
-        return _collect_one_status(
-            spec, bindings, workspace, validation_mode, compile_db_path, project_root
+    statuses: list[dict[str, Any]] = []
+    for spec in bundled_lsp_specs():
+        effective_command, effective_source = resolve_lsp_command(
+            language_id=spec.language_id,
+            default_command=spec.default_command,
+            command_env_var=spec.command_env_var,
+            workspace=workspace,
+        )
+        probe = probe_command(effective_command)
+        validation = _availability_validation(
+            language_id=spec.language_id,
+            command=effective_command,
+            probe=probe,
+            workspace=workspace,
+            validation_mode=validation_mode,
+            compile_db_path=compile_db_path,
+            project_root=project_root,
+        )
+        verification = validation["verification"]
+        # Reuse version_status already computed inside _availability_validation
+        # to avoid spawning redundant subprocess probes.
+        version_status = verification.get("version_status", {})
+        statuses.append(
+            {
+                "language": spec.language_id,
+                "required": spec.required,
+                "available": bool(validation["available"]),
+                "probe_available": bool(probe["available"]),
+                "executable": probe["executable"],
+                "transport": probe.get("transport", "subprocess"),
+                "endpoint": probe.get("endpoint"),
+                "effective_command": effective_command,
+                "effective_source": effective_source,
+                "binding_command": bindings.get(spec.language_id, []),
+                "env_command": parse_command(os.getenv(spec.command_env_var, "")),
+                "default_command": list(spec.default_command),
+                "version_status": version_status,
+                "language_variant_policy": dict(_LANGUAGE_VARIANT_POLICY.get(spec.language_id, {})),
+                "verification": verification,
+                "verification_state": verification.get("state", "unknown"),
+                "validation_mode": verification.get("mode", _DEFAULT_VALIDATION_MODE),
+                "compile_commands": verification.get("compile_commands"),
+            }
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as executor:
-        return list(executor.map(_probe, specs))
+    return statuses
 
 
 def _observed_candidates(
@@ -1402,6 +1318,7 @@ def probe_candidates(
         add("observation", observed)
 
     add("binding", bindings.get(spec.language_id, []))
+    add("env", os.getenv(spec.command_env_var, ""))
     add("default", spec.default_command)
     for probe_command_tokens in spec.probe_commands:
         add("heuristic", probe_command_tokens)
@@ -1418,7 +1335,7 @@ def auto_bind_missing_servers(
     compile_db_path: str | Path | None = None,
     project_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Auto-bind commands only for currently missing language adapters."""
+    """Auto-bind commands only for currently missing bundled language adapters."""
     root = _normalize_workspace_root(workspace)
     bindings = load_lsp_bindings(root)
     language_scope = {
@@ -1435,9 +1352,12 @@ def auto_bind_missing_servers(
     ]
 
     for spec in specs:
-        # Use pre-loaded bindings to avoid N redundant disk reads in this loop
-        bound = bindings.get(spec.language_id)
-        effective_command = list(bound) if bound else parse_command(spec.default_command)
+        effective_command, _source = resolve_lsp_command(
+            language_id=spec.language_id,
+            default_command=spec.default_command,
+            command_env_var=spec.command_env_var,
+            workspace=root,
+        )
         effective_probe = probe_command(effective_command)
         effective_validation = _availability_validation(
             language_id=spec.language_id,

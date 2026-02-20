@@ -54,7 +54,6 @@ def _extract_blocks_recursive(
 
     for child in ast.iter_child_nodes(node):
         if isinstance(child, BLOCK_TYPES):
-            assert isinstance(child, ast.stmt)
             block_type = BLOCK_TYPE_NAMES[type(child)]
 
             block_name = next_block_name(block_type, func_name, parent_block_name, block_counters)

@@ -4,21 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
+import textwrap
 from collections.abc import Iterator
 
+import esprima
 import networkx as nx
 
 from ._configured_lsp_plugin import ConfiguredLSPLanguagePluginBase
-from ._js_ts_treesitter import (
-    _JS_NUMERIC_TYPES,
-    _resolve_ts_operand_type,
-    _ts_ast_to_graph,
-    _ts_build_annotation_map,
-    _ts_extract_function_blocks,
-    _ts_try_parse,
-    _ts_walk,
-)
-from .base import CodeUnit, SemanticSignal
+from .base import CodeUnit, SemanticSignal, next_block_name
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +39,8 @@ _PROTOTYPE_RE = re.compile(r"\.prototype\s*[.=]")
 
 # -- Decorators --
 _DECORATOR_RE = re.compile(r"^\s*@([A-Za-z_$][A-Za-z0-9_$]*)", re.MULTILINE)
+
+_JS_NUMERIC_TYPES = frozenset({"number", "bigint", "Number", "BigInt"})
 
 # -- HTTP framework patterns --
 _JS_EXPRESS_RE = re.compile(
@@ -101,6 +96,314 @@ _JS_MESSAGE_QUEUE_RE = re.compile(
     r"\bchannel\.(?:sendToQueue|consume|assertQueue)\s*\(" r"|\bamqp\.connect\s*\("
 )
 
+# -- Esprima AST child fields (order matters for graph structure) --
+_ESPRIMA_CHILD_FIELDS = (
+    "body",
+    "declarations",
+    "init",
+    "test",
+    "update",
+    "consequent",
+    "alternate",
+    "left",
+    "right",
+    "argument",
+    "arguments",
+    "callee",
+    "object",
+    "property",
+    "params",
+    "expression",
+    "elements",
+    "properties",
+    "value",
+    "key",
+    "discriminant",
+    "cases",
+    "handler",
+    "block",
+    "finalizer",
+    "guardedHandlers",
+    "param",
+    "id",
+    "superClass",
+    "tag",
+    "quasi",
+    "quasis",
+    "expressions",
+)
+
+
+_OPERATOR_EXPR_TYPES = frozenset(
+    {
+        "BinaryExpression",
+        "UnaryExpression",
+        "UpdateExpression",
+        "AssignmentExpression",
+        "LogicalExpression",
+    }
+)
+
+
+def _esprima_node_label(node: object, normalize_ops: bool = False) -> str:
+    """Compute a structural label for an esprima AST node."""
+    node_type = getattr(node, "type", None)
+    if node_type is None:
+        return "Unknown"
+
+    if node_type in _OPERATOR_EXPR_TYPES:
+        op = getattr(node, "operator", "")
+        return f"{node_type}:Op" if normalize_ops else f"{node_type}:{op}"
+    _kind_defaults = {"VariableDeclaration": "var", "MethodDefinition": "method"}
+    if node_type in _kind_defaults:
+        kind = getattr(node, "kind", _kind_defaults[node_type])
+        return f"{node_type}:{kind}"
+    if node_type == "Literal":
+        val = getattr(node, "value", None)
+        return f"Literal:{type(val).__name__}"
+    if node_type == "ArrowFunctionExpression":
+        return "ArrowFunction"
+    if node_type == "TemplateLiteral":
+        return "TemplateLiteral"
+
+    return str(node_type)
+
+
+def _esprima_ast_to_graph(source: str, normalize_ops: bool = False) -> nx.DiGraph | None:
+    """Parse JS source with esprima and build a structural directed graph.
+
+    Returns None if esprima cannot parse the source.
+    """
+    tree = _esprima_try_parse(source)
+    if tree is None:
+        return None
+
+    graph = nx.DiGraph()
+    counter = 0
+
+    def walk(node: object, parent_id: int | None = None) -> None:
+        nonlocal counter
+        if node is None:
+            return
+        # Only process objects that look like AST nodes (have a 'type' attribute)
+        if not hasattr(node, "type"):
+            return
+
+        node_id = counter
+        counter += 1
+        label = _esprima_node_label(node, normalize_ops=normalize_ops)
+        graph.add_node(node_id, label=label)
+        if parent_id is not None:
+            graph.add_edge(parent_id, node_id)
+
+        for field in _ESPRIMA_CHILD_FIELDS:
+            child = getattr(node, field, None)
+            if child is None:
+                continue
+            if isinstance(child, list):
+                for item in child:
+                    walk(item, node_id)
+            else:
+                walk(child, node_id)
+
+    walk(tree)
+    return graph
+
+
+# -- Esprima block types for sub-function extraction --
+_ESPRIMA_BLOCK_TYPES = frozenset(
+    {
+        "ForStatement",
+        "ForInStatement",
+        "ForOfStatement",
+        "WhileStatement",
+        "DoWhileStatement",
+        "IfStatement",
+        "TryStatement",
+        "SwitchStatement",
+    }
+)
+_ESPRIMA_BLOCK_TYPE_NAMES: dict[str, str] = {
+    "ForStatement": "for",
+    "ForInStatement": "for_in",
+    "ForOfStatement": "for_of",
+    "WhileStatement": "while",
+    "DoWhileStatement": "do_while",
+    "IfStatement": "if",
+    "TryStatement": "try",
+    "SwitchStatement": "switch",
+}
+_ESPRIMA_FUNCTION_TYPES = frozenset(
+    {
+        "FunctionDeclaration",
+        "FunctionExpression",
+        "ArrowFunctionExpression",
+    }
+)
+
+
+def _esprima_extract_blocks(
+    node: object,
+    source_lines: list[str],
+    file_path: str,
+    func_name: str,
+    parent_block_name: str,
+    current_depth: int,
+    max_depth: int,
+    block_counters: dict[str, int],
+    language: str,
+) -> Iterator[CodeUnit]:
+    """Recursively extract blocks from an esprima AST node."""
+    if current_depth > max_depth:
+        return
+
+    for field in _ESPRIMA_CHILD_FIELDS:
+        child = getattr(node, field, None)
+        if child is None:
+            continue
+        children = child if isinstance(child, list) else [child]
+        for item in children:
+            node_type = getattr(item, "type", None)
+            if node_type is None:
+                continue
+
+            if node_type in _ESPRIMA_BLOCK_TYPES:
+                block_type = _ESPRIMA_BLOCK_TYPE_NAMES[node_type]
+                block_name = next_block_name(
+                    block_type, func_name, parent_block_name, block_counters
+                )
+
+                loc = getattr(item, "loc", None)
+                if loc is None:
+                    continue
+                start_line = getattr(loc.start, "line", 1)
+                end_line = getattr(loc.end, "line", start_line)
+                code = textwrap.dedent("\n".join(source_lines[start_line - 1 : end_line]))
+
+                yield CodeUnit(
+                    name=block_name,
+                    code=code,
+                    file_path=file_path,
+                    line_start=start_line,
+                    line_end=end_line,
+                    unit_type="block",
+                    parent_name=func_name,
+                    block_type=block_type,
+                    nesting_depth=current_depth,
+                    parent_block_name=(
+                        parent_block_name if parent_block_name != func_name else None
+                    ),
+                    language=language,
+                )
+
+                yield from _esprima_extract_blocks(
+                    item,
+                    source_lines,
+                    file_path,
+                    func_name,
+                    block_name,
+                    current_depth + 1,
+                    max_depth,
+                    block_counters,
+                    language,
+                )
+            else:
+                # Recurse into non-block nodes to find nested blocks
+                yield from _esprima_extract_blocks(
+                    item,
+                    source_lines,
+                    file_path,
+                    func_name,
+                    parent_block_name,
+                    current_depth,
+                    max_depth,
+                    block_counters,
+                    language,
+                )
+
+
+def _esprima_try_parse(source: str, *, loc: bool = False) -> object | None:
+    """Try parseScript then parseModule, return AST or None."""
+    for parser in (esprima.parseScript, esprima.parseModule):
+        try:
+            tree: object = parser(source, loc=loc) if loc else parser(source)
+            return tree
+        except esprima.Error:
+            continue
+    return None
+
+
+def _esprima_extract_function_blocks(
+    tree: object,
+    source_lines: list[str],
+    file_path: str,
+    max_depth: int,
+    language: str,
+) -> Iterator[CodeUnit]:
+    """Walk esprima AST to find functions and extract their inner blocks."""
+
+    def walk(node: object) -> Iterator[CodeUnit]:
+        if node is None or not hasattr(node, "type"):
+            return
+        node_type = getattr(node, "type", None)
+
+        if node_type in _ESPRIMA_FUNCTION_TYPES:
+            # Determine function name
+            node_id = getattr(node, "id", None)
+            func_name = getattr(node_id, "name", None) if node_id else None
+            if func_name is None:
+                func_name = "<anonymous>"
+
+            body = getattr(node, "body", None)
+            if body is not None:
+                block_counters: dict[str, int] = {}
+                yield from _esprima_extract_blocks(
+                    body,
+                    source_lines,
+                    file_path,
+                    func_name,
+                    func_name,
+                    1,
+                    max_depth,
+                    block_counters,
+                    language,
+                )
+
+        if node_type == "MethodDefinition":
+            key = getattr(node, "key", None)
+            func_name = getattr(key, "name", None) if key else None
+            if func_name is None:
+                func_name = "<anonymous>"
+            value = getattr(node, "value", None)
+            if value is not None:
+                body = getattr(value, "body", None)
+                if body is not None:
+                    block_counters = {}
+                    yield from _esprima_extract_blocks(
+                        body,
+                        source_lines,
+                        file_path,
+                        func_name,
+                        func_name,
+                        1,
+                        max_depth,
+                        block_counters,
+                        language,
+                    )
+
+        # Continue walking into children (but don't re-enter function bodies)
+        for field_name in _ESPRIMA_CHILD_FIELDS:
+            child = getattr(node, field_name, None)
+            if child is None:
+                continue
+            if isinstance(child, list):
+                for item in child:
+                    yield from walk(item)
+            else:
+                yield from walk(child)
+
+    yield from walk(tree)
+
 
 class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
     """JavaScript support via LSP symbols + structural graphing."""
@@ -109,10 +412,12 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
     LSP_LANGUAGE_ID = "javascript"
     FILE_EXTENSIONS = frozenset({".js", ".jsx", ".mjs", ".cjs"})
     SKIP_DIRS = frozenset({"node_modules", ".next", ".nuxt", "coverage"})
-    DEFAULT_COMMAND = ("tcp://127.0.0.1:2092",)
+    DEFAULT_COMMAND = ("typescript-language-server", "--stdio")
+    COMMAND_ENV_VAR = "ASTROGRAPH_JS_LSP_COMMAND"
+    TIMEOUT_ENV_VAR = "ASTROGRAPH_JS_LSP_TIMEOUT"
 
     # ------------------------------------------------------------------
-    # AST graph builder (tree-sitter)
+    # AST graph builder (esprima)
     # ------------------------------------------------------------------
 
     def source_to_graph(
@@ -120,14 +425,14 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
         source: str,
         normalize_ops: bool = False,
     ) -> nx.DiGraph:
-        """Build a structural graph from JS source using tree-sitter.
+        """Build a structural graph from JS source using esprima.
 
-        Falls back to the base line-level parser if tree-sitter cannot parse.
+        Falls back to the base line-level parser if esprima cannot parse.
         """
-        graph = _ts_ast_to_graph(source, normalize_ops=normalize_ops, language="javascript")
+        graph = _esprima_ast_to_graph(source, normalize_ops=normalize_ops)
         if graph is not None:
             return graph
-        logger.debug("tree-sitter parse failed, falling back to line-level parser")
+        logger.debug("esprima parse failed, falling back to line-level parser")
         return super().source_to_graph(source, normalize_ops=normalize_ops)
 
     def normalize_graph_for_pattern(self, graph: nx.DiGraph) -> nx.DiGraph:
@@ -148,7 +453,7 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
         return normalized
 
     # ------------------------------------------------------------------
-    # Block extraction (tree-sitter)
+    # Block extraction (esprima)
     # ------------------------------------------------------------------
 
     def extract_code_units(
@@ -158,7 +463,7 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
         include_blocks: bool = True,
         max_block_depth: int = 3,
     ) -> Iterator[CodeUnit]:
-        """Extract units via LSP, then optionally extract inner blocks via tree-sitter."""
+        """Extract units via LSP, then optionally extract inner blocks via esprima."""
         yield from super().extract_code_units(
             source,
             file_path,
@@ -169,12 +474,12 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
         if not include_blocks:
             return
 
-        tree = _ts_try_parse(source, "javascript")
+        tree = _esprima_try_parse(source, loc=True)
         if tree is None:
             return
 
         source_lines = source.splitlines()
-        yield from _ts_extract_function_blocks(
+        yield from _esprima_extract_function_blocks(
             tree,
             source_lines,
             file_path,
@@ -206,55 +511,124 @@ class JavaScriptLSPPlugin(ConfiguredLSPLanguagePluginBase):
 
     # -- AST-based plus binding helpers --
 
+    @staticmethod
+    def _esprima_walk(node: object) -> Iterator[object]:
+        """Yield all AST nodes reachable from *node* (depth-first)."""
+        if node is None or not hasattr(node, "type"):
+            return
+        yield node
+        for field in _ESPRIMA_CHILD_FIELDS:
+            child = getattr(node, field, None)
+            if child is None:
+                continue
+            if isinstance(child, list):
+                for item in child:
+                    yield from JavaScriptLSPPlugin._esprima_walk(item)
+            else:
+                yield from JavaScriptLSPPlugin._esprima_walk(child)
+
+    @staticmethod
+    def _esprima_annotation_name(annotation: object | None) -> str | None:
+        """Extract a simple type name from an esprima type annotation."""
+        if annotation is None:
+            return None
+        ann_type = getattr(annotation, "type", None)
+        # TSTypeAnnotation wraps the actual type node
+        if ann_type == "TSTypeAnnotation":
+            return JavaScriptLSPPlugin._esprima_annotation_name(
+                getattr(annotation, "typeAnnotation", None)
+            )
+        if ann_type == "TSTypeReference":
+            type_name_node = getattr(annotation, "typeName", None)
+            return getattr(type_name_node, "name", None)
+        if ann_type in (
+            "TSStringKeyword",
+            "TSNumberKeyword",
+            "TSBooleanKeyword",
+            "TSBigIntKeyword",
+            "TSAnyKeyword",
+        ):
+            # e.g. "TSNumberKeyword" → "number"
+            return str(ann_type[2:-7]).lower()  # strip TS...Keyword
+        return None
+
+    @staticmethod
+    def _esprima_build_annotation_map(tree: object) -> dict[str, str]:
+        """Build variable→type mapping from function parameter annotations."""
+        ann_map: dict[str, str] = {}
+        for node in JavaScriptLSPPlugin._esprima_walk(tree):
+            node_type = getattr(node, "type", None)
+            if node_type not in _ESPRIMA_FUNCTION_TYPES:
+                continue
+            params = getattr(node, "params", None)
+            if not params:
+                continue
+            for param in params:
+                param_type = getattr(param, "type", None)
+                # Plain identifier with optional annotation: `x: number`
+                if param_type == "Identifier":
+                    name = getattr(param, "name", None)
+                    ann = getattr(param, "typeAnnotation", None)
+                    type_name = JavaScriptLSPPlugin._esprima_annotation_name(ann)
+                    if name and type_name:
+                        ann_map[name] = type_name
+                # Assignment pattern (default value): `x: number = 0`
+                elif param_type == "AssignmentPattern":
+                    left = getattr(param, "left", None)
+                    if left and getattr(left, "type", None) == "Identifier":
+                        name = getattr(left, "name", None)
+                        ann = getattr(left, "typeAnnotation", None)
+                        type_name = JavaScriptLSPPlugin._esprima_annotation_name(ann)
+                        if name and type_name:
+                            ann_map[name] = type_name
+        return ann_map
+
+    @staticmethod
+    def _resolve_js_operand_type(
+        node: object,
+        annotation_map: dict[str, str],
+    ) -> str | None:
+        """Resolve an operand to a type string via annotation lookup or literal."""
+        node_type = getattr(node, "type", None)
+        if node_type == "Identifier":
+            return annotation_map.get(getattr(node, "name", ""))
+        if node_type == "Literal":
+            val = getattr(node, "value", None)
+            if isinstance(val, str):
+                return "string"
+            if isinstance(val, int | float):
+                return "number"
+        if node_type == "TemplateLiteral":
+            return "string"
+        return None
+
     def _infer_plus_binding(self, source: str) -> tuple[str, float] | None:
-        """Find BinaryExpression(+) via tree-sitter AST, resolve operand types."""
-        tree = _ts_try_parse(source, "javascript")
+        """Find BinaryExpression(+) via esprima AST, resolve operand types."""
+        tree = _esprima_try_parse(source)
         if tree is None:
             return None
 
-        annotation_map = _ts_build_annotation_map(tree)
+        annotation_map = self._esprima_build_annotation_map(tree)
         found_plus = False
         saw_numeric = False
         saw_str = False
         saw_unknown = False
 
-        for node in _ts_walk(tree.root_node):
-            if node.type != "binary_expression":
+        for node in self._esprima_walk(tree):
+            if getattr(node, "type", None) != "BinaryExpression":
                 continue
-            # Check for + operator
-            op_text = None
-            left = None
-            right = None
-            for child in node.children:
-                if child.is_named:
-                    if left is None:
-                        left = child
-                    else:
-                        right = child
-                elif not child.is_named:
-                    text = child.text
-                    if isinstance(text, bytes):
-                        text = text.decode("utf-8", errors="replace")
-                    if text == "+":
-                        op_text = text
-            if op_text != "+":
+            if getattr(node, "operator", None) != "+":
                 continue
             found_plus = True
-            missing_operands = left is None or right is None
-            if missing_operands:
+            left_type = self._resolve_js_operand_type(getattr(node, "left", None), annotation_map)
+            right_type = self._resolve_js_operand_type(getattr(node, "right", None), annotation_map)
+            if left_type is None or right_type is None:
                 saw_unknown = True
                 continue
-            left_type = _resolve_ts_operand_type(left, annotation_map)
-            right_type = _resolve_ts_operand_type(right, annotation_map)
-            if left_type is not None and right_type is not None:
-                if left_type in _JS_NUMERIC_TYPES and right_type in _JS_NUMERIC_TYPES:
-                    saw_numeric = True
-                elif left_type == "string" and right_type == "string":
-                    saw_str = True
-                continue
-            else:
-                saw_unknown = True
-                continue
+            if left_type in _JS_NUMERIC_TYPES and right_type in _JS_NUMERIC_TYPES:
+                saw_numeric = True
+            elif left_type == "string" and right_type == "string":
+                saw_str = True
 
         if not found_plus:
             return None

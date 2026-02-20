@@ -82,6 +82,8 @@ class GoLSPPlugin(BraceLanguageLSPPlugin):
     FILE_EXTENSIONS = frozenset({".go"})
     SKIP_DIRS = frozenset({"vendor"})
     DEFAULT_COMMAND = ("tcp://127.0.0.1:2091",)
+    COMMAND_ENV_VAR = "ASTROGRAPH_GO_LSP_COMMAND"
+    TIMEOUT_ENV_VAR = "ASTROGRAPH_GO_LSP_TIMEOUT"
 
     def _language_signals(self, source: str) -> list[SemanticSignal]:
         """Go-specific regex signals for semantic profiling."""

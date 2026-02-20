@@ -17,9 +17,8 @@ import networkx as nx
 from .base import BaseLanguagePlugin, CodeUnit
 
 try:
-    import tree_sitter as _tree_sitter
+    import tree_sitter
 
-    tree_sitter: Any = _tree_sitter
     HAS_TREE_SITTER = True
 except ImportError:
     HAS_TREE_SITTER = False

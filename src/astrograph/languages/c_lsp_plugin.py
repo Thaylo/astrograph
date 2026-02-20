@@ -52,6 +52,8 @@ class CLSPPlugin(BraceLanguageLSPPlugin):
     FILE_EXTENSIONS = frozenset({".c", ".h"})
     SKIP_DIRS = frozenset({"build", "cmake-build-debug", "cmake-build-release"})
     DEFAULT_COMMAND = ("tcp://127.0.0.1:2087",)
+    COMMAND_ENV_VAR = "ASTROGRAPH_C_LSP_COMMAND"
+    TIMEOUT_ENV_VAR = "ASTROGRAPH_C_LSP_TIMEOUT"
 
     def _language_signals(self, source: str) -> list[SemanticSignal]:
         """C-specific regex signals for semantic profiling."""

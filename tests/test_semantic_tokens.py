@@ -522,7 +522,7 @@ class TestRegexFallback:
         from astrograph.languages.java_lsp_plugin import JavaLSPPlugin
 
         plugin = JavaLSPPlugin.__new__(JavaLSPPlugin)
-        source = "@Override\npublic class Foo {\n    private int x;\n}"
+        source = "@Override\n" "public class Foo {\n" "    private int x;\n" "}"
         profile = plugin.extract_semantic_profile(source, "Test.java")
         sig = {s.key: s.value for s in profile.signals}
         assert sig["java.annotations"] == "Override"
@@ -533,7 +533,9 @@ class TestRegexFallback:
         from astrograph.languages.cpp_lsp_plugin import CppLSPPlugin
 
         plugin = CppLSPPlugin.__new__(CppLSPPlugin)
-        source = "template<typename T>\nclass Foo {\n    virtual void bar() override;\n};\n"
+        source = (
+            "template<typename T>\n" "class Foo {\n" "    virtual void bar() override;\n" "};\n"
+        )
         profile = plugin.extract_semantic_profile(source, "test.cpp")
         sig = {s.key: s.value for s in profile.signals}
         assert sig["cpp.template.present"] == "yes"
@@ -544,7 +546,9 @@ class TestRegexFallback:
         from astrograph.languages.c_lsp_plugin import CLSPPlugin
 
         plugin = CLSPPlugin.__new__(CLSPPlugin)
-        source = "#include <stdio.h>\nstruct Point { int x; int y; };\nint main() { return 0; }\n"
+        source = (
+            "#include <stdio.h>\n" "struct Point { int x; int y; };\n" "int main() { return 0; }\n"
+        )
         profile = plugin.extract_semantic_profile(source, "test.c")
         sig = {s.key: s.value for s in profile.signals}
         assert "include" in sig["c.preprocessor"]
@@ -555,7 +559,9 @@ class TestRegexFallback:
         from astrograph.languages.javascript_lsp_plugin import JavaScriptLSPPlugin
 
         plugin = JavaScriptLSPPlugin.__new__(JavaScriptLSPPlugin)
-        source = "import { foo } from './bar';\nasync function main() {\n    await foo();\n}\n"
+        source = (
+            "import { foo } from './bar';\n" "async function main() {\n" "    await foo();\n" "}\n"
+        )
         profile = plugin.extract_semantic_profile(source, "test.js")
         sig = {s.key: s.value for s in profile.signals}
         assert sig["javascript.async.present"] == "yes"
@@ -566,7 +572,7 @@ class TestRegexFallback:
         from astrograph.languages.typescript_lsp_plugin import TypeScriptLSPPlugin
 
         plugin = TypeScriptLSPPlugin.__new__(TypeScriptLSPPlugin)
-        source = "function identity<T>(arg: T): T {\n    return arg;\n}\n"
+        source = "function identity<T>(arg: T): T {\n" "    return arg;\n" "}\n"
         profile = plugin.extract_semantic_profile(source, "test.ts")
         sig = {s.key: s.value for s in profile.signals}
         assert sig["typescript.generic.present"] == "yes"

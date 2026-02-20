@@ -390,49 +390,6 @@ def transform(data):
                     assert wl_hash not in edi2.index.suppressed_hashes
                 edi2.close()
 
-    def test_invalidate_stale_suppressions_persists_removal(self):
-        """Invalidated suppressions should also be removed from SQLite persistence."""
-        from astrograph.event_driven import EventDrivenIndex
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            code = """
-def calculate(items):
-    total = 0
-    for item in items:
-        if item > 0:
-            total += item * 2
-    return total
-"""
-            file1 = os.path.join(tmpdir, "file1.py")
-            file2 = os.path.join(tmpdir, "file2.py")
-            Path(file1).write_text(code)
-            Path(file2).write_text(code)
-
-            db_path = os.path.join(tmpdir, "index.db")
-
-            edi1 = EventDrivenIndex(persistence_path=db_path, watch_enabled=False)
-            edi1.index_directory(tmpdir)
-
-            groups = edi1.index.find_all_duplicates(min_node_count=3)
-            assert groups, "Expected duplicates for suppression test"
-
-            wl_hash = groups[0].wl_hash
-            assert edi1.suppress(wl_hash)
-            assert wl_hash in edi1.index.suppressed_hashes
-
-            # Simulate orphaned suppression after index reset/rebuild.
-            edi1.index.clear()
-            invalidated = edi1.invalidate_stale_suppressions()
-            assert any(h == wl_hash for h, _ in invalidated)
-            assert wl_hash not in edi1.index.suppressed_hashes
-            edi1.close()
-
-            # Fresh instance should not reload the invalidated suppression.
-            edi2 = EventDrivenIndex(persistence_path=db_path, watch_enabled=False)
-            edi2.load_from_persistence()
-            assert wl_hash not in edi2.index.suppressed_hashes
-            edi2.close()
-
     def test_get_stats(self):
         """Test comprehensive statistics."""
         from astrograph.event_driven import EventDrivenIndex

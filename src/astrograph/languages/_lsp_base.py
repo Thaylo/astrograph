@@ -149,7 +149,7 @@ class LSPClient(Protocol):
 
 
 class NullLSPClient:
-    """Sentinel LSP client for unconfigured languages. Returns empty results immediately."""
+    """Fallback LSP client when no backend is configured."""
 
     @property
     def server_name(self) -> str | None:
@@ -357,13 +357,12 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
         include base-class signals (type hints, operator plus).
         """
         signals: list[SemanticSignal] = []
-        checks: list[tuple[bool, str, str, float]] = [
-            (self._has_type_hints(source), "typing.channel", "annotated", 0.65),
-            (bool(_PLUS_EXPR_RE.search(source)), "operator.plus.present", "yes", 0.8),
-            (bool(_OPERATOR_PLUS_DECL_RE.search(source)), "operator.plus.declared", "yes", 0.95),
-        ]
-        for matched, key, value, confidence in checks:
-            if matched:
+        for check, key, value, confidence in (
+            (self._has_type_hints, "typing.channel", "annotated", 0.65),
+            (_PLUS_EXPR_RE.search, "operator.plus.present", "yes", 0.8),
+            (_OPERATOR_PLUS_DECL_RE.search, "operator.plus.declared", "yes", 0.95),
+        ):
+            if check(source):
                 signals.append(
                     SemanticSignal(key=key, value=value, confidence=confidence, origin="syntax")
                 )

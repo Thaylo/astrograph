@@ -231,13 +231,10 @@ class SQLitePersistence:
                 # Delete old entries for this file
                 conn.execute("DELETE FROM entries WHERE file_path = ?", (file_path,))
 
-                # Insert new entries (OR REPLACE guards against stale entry_counter
-                # after crash: if a restarted server regenerates an ID that
-                # already exists in the DB, the row is replaced instead of
-                # raising UNIQUE constraint violation).
+                # Insert new entries
                 if entries:
                     conn.executemany(
-                        "INSERT OR REPLACE INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
                         [
                             (e.id, file_path, e.wl_hash, e.pattern_hash, json.dumps(e.to_dict()))
                             for e in entries
@@ -340,10 +337,10 @@ class SQLitePersistence:
                 conn.execute("DELETE FROM suppressed_hashes")
                 conn.execute("DELETE FROM index_metadata")
 
-                # Save entries (OR REPLACE for crash safety — see save_file_entries)
+                # Save entries
                 if index.entries:
                     conn.executemany(
-                        "INSERT OR REPLACE INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO entries (id, file_path, wl_hash, pattern_hash, data) VALUES (?, ?, ?, ?, ?)",
                         [
                             (
                                 eid,
@@ -437,7 +434,7 @@ class SQLitePersistence:
             if cursor.fetchone()[0] == 0:
                 return False
 
-            # Load entries and build all in-memory indexes in a single pass
+            # Load entries
             cursor = self.conn.execute("SELECT id, data FROM entries")
             index.entries.clear()
             index.hash_buckets.clear()
@@ -445,43 +442,37 @@ class SQLitePersistence:
             index.block_buckets.clear()
             index.block_type_index.clear()
             index.fingerprint_index.clear()
-            index.hierarchy_index.clear()
             index.file_entries.clear()
             index._block_entry_count = 0
             index._function_entry_count = 0
 
             with index.entries.bulk_load():
                 for row in cursor.fetchall():
-                    eid = row["id"]
                     entry = IndexEntry.from_dict(json.loads(row["data"]))
-                    index.entries[eid] = entry
+                    index.entries[row["id"]] = entry
 
-                    is_block = entry.code_unit.unit_type == "block"
-                    if is_block:
-                        index.block_buckets.setdefault(entry.wl_hash, set()).add(eid)
-                        if entry.code_unit.block_type:
-                            index.block_type_index.setdefault(
-                                entry.code_unit.block_type, set()
-                            ).add(eid)
-                        index._block_entry_count += 1
-                    else:
-                        index.hash_buckets.setdefault(entry.wl_hash, set()).add(eid)
-                        index.pattern_buckets.setdefault(entry.pattern_hash, set()).add(eid)
-                        index._function_entry_count += 1
+            for eid, entry in index.entries.items():
+                is_block = entry.code_unit.unit_type == "block"
 
-                    # Fingerprint index
-                    if "n_nodes" in entry.fingerprint:
-                        fp_key = (entry.fingerprint["n_nodes"], entry.fingerprint["n_edges"])
-                        index.fingerprint_index.setdefault(fp_key, set()).add(eid)
+                if is_block:
+                    index.block_buckets.setdefault(entry.wl_hash, set()).add(eid)
+                    if entry.code_unit.block_type:
+                        index.block_type_index.setdefault(entry.code_unit.block_type, set()).add(
+                            eid
+                        )
+                    index._block_entry_count += 1
+                else:
+                    index.hash_buckets.setdefault(entry.wl_hash, set()).add(eid)
+                    index.pattern_buckets.setdefault(entry.pattern_hash, set()).add(eid)
+                    index._function_entry_count += 1
 
-                    # Hierarchy index
-                    if entry.hierarchy_hashes:
-                        index.hierarchy_index.setdefault(
-                            entry.hierarchy_hashes[0], set()
-                        ).add(eid)
+                # Fingerprint index
+                if "n_nodes" in entry.fingerprint:
+                    fp_key = (entry.fingerprint["n_nodes"], entry.fingerprint["n_edges"])
+                    index.fingerprint_index.setdefault(fp_key, set()).add(eid)
 
-                    # File entries
-                    index.file_entries.setdefault(entry.code_unit.file_path, []).append(eid)
+                # File entries
+                index.file_entries.setdefault(entry.code_unit.file_path, []).append(eid)
 
             # Load file metadata
             cursor = self.conn.execute(
@@ -623,26 +614,13 @@ class SQLitePersistence:
             yield from self._iter_decoded_entries(rows)
 
     def iter_entries(self) -> Iterator[tuple[str, "IndexEntry"]]:
-        """Stream all entries from the database in chunks to bound peak memory."""
-        from .index import IndexEntry
-
-        chunk_size = 200
-        offset = 0
-        while True:
-            with self._conn_lock:
-                if self._closed:
-                    return
-                cursor = self.conn.execute(
-                    "SELECT id, data FROM entries LIMIT ? OFFSET ?", (chunk_size, offset)
-                )
-                rows = cursor.fetchall()
-            if not rows:
-                break
-            for row in rows:
-                yield row["id"], IndexEntry.from_dict(json.loads(row["data"]))
-            if len(rows) < chunk_size:
-                break
-            offset += chunk_size
+        """Stream all entries from the database."""
+        with self._conn_lock:
+            if self._closed:
+                return
+            cursor = self.conn.execute("SELECT id, data FROM entries")
+            rows = cursor.fetchall()
+        yield from self._iter_decoded_entries(rows)
 
     # =========================================================================
     # Maintenance

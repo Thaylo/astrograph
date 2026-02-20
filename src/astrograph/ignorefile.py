@@ -148,18 +148,17 @@ def _doublestar_match(pattern: str, path: str) -> bool:
 
         segments = path.split("/")
         n = len(segments)
-        # O(n) scan: track whether any prefix match has been seen up to index j,
-        # then check if suffix matches from j onward. No nested loop needed.
-        any_prefix_so_far = False
-        for j in range(n + 1):
-            # Check if segments[:j] satisfies the prefix pattern (i == j case)
-            prefix_path = "/".join(segments[:j]) if j > 0 else ""
-            any_prefix_so_far = any_prefix_so_far or (
-                not prefix or fnmatch.fnmatchcase(prefix_path, prefix)
-            )
-            if any_prefix_so_far:
+        # Try every split point: prefix matches segments[:i], suffix matches segments[j:]
+        for i in range(n + 1):
+            prefix_path = "/".join(segments[:i]) if i > 0 else ""
+            prefix_ok = not prefix or fnmatch.fnmatchcase(prefix_path, prefix)
+            if not prefix_ok:
+                continue
+            # Try matching suffix against segments[j:] for j >= i
+            for j in range(i, n + 1):
                 suffix_path = "/".join(segments[j:]) if j < n else ""
-                if not suffix or fnmatch.fnmatchcase(suffix_path, suffix):
+                suffix_ok = not suffix or fnmatch.fnmatchcase(suffix_path, suffix)
+                if suffix_ok:
                     return True
         return False
 

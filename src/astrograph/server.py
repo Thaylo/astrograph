@@ -3,16 +3,15 @@ MCP server for code structure analysis.
 
 Auto-indexes the codebase at startup and maintains the index via file watching.
 
-Provides 13 tools (all prefixed with astrograph_):
-- astrograph_analyze: Find duplicates and similar patterns (supports scope and domains)
-- astrograph_configure_domains: Configure detection domains for partitioned analysis
+Provides 10 tools (all prefixed with astrograph_):
+- astrograph_analyze: Find duplicates and similar patterns
 - astrograph_write: Write file with duplicate detection (blocks if duplicate exists)
 - astrograph_edit: Edit file with duplicate detection (blocks if duplicate exists)
 - astrograph_suppress: Suppress one or more duplicates by WL hash (string or array)
 - astrograph_unsuppress: Unsuppress one or more hashes (string or array)
 - astrograph_list_suppressions: List all suppressed hashes
 - astrograph_status: Check server readiness (returns instantly even during indexing)
-- astrograph_lsp_setup: Inspect/bind LSP commands or attach endpoints for language plugins
+- astrograph_lsp_setup: Inspect/bind LSP commands or attach endpoints for bundled language plugins
 - astrograph_metadata_erase: Erase all persisted metadata
 - astrograph_metadata_recompute_baseline: Erase metadata and re-index from scratch
 
@@ -21,7 +20,6 @@ Also exposes 3 MCP resources, 2 prompts, and prompt argument completions.
 
 import asyncio
 import atexit
-import json
 import signal
 import sys
 import threading
@@ -89,15 +87,6 @@ def create_server() -> Server:
                             "description": "Auto re-index if stale (default: true)",
                             "default": True,
                         },
-                        "scope": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Glob patterns to restrict analysis scope "
-                                "(e.g. ['src/**']). Only entries matching "
-                                "these patterns are analyzed."
-                            ),
-                        },
                     },
                 },
             ),
@@ -154,9 +143,9 @@ def create_server() -> Server:
             Tool(
                 name="astrograph_lsp_setup",
                 description=(
-                    "Inspect and configure LSP command bindings for language plugins. "
-                    "All languages require explicit setup via bind or auto_bind. "
-                    "Returns a guided recommended_actions plan."
+                    "Inspect and configure deterministic LSP command bindings "
+                    "for bundled language plugins. Returns a guided recommended_actions "
+                    "plan for search/install/config workflows."
                 ),
                 inputSchema={
                     "type": "object",
@@ -254,31 +243,6 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_configure_domains",
-                description=(
-                    "Configure named detection domains for partitioned analysis. "
-                    "Entries are compared only within their domain; cross-domain "
-                    "matches are shown separately. Pass empty domains to clear."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "domains": {
-                            "type": "object",
-                            "description": (
-                                "Domain name to glob-pattern list mapping. "
-                                'Example: {"core": ["src/core/**"], "api": ["src/api/**"]}. '
-                                "Pass {} to clear all domains."
-                            ),
-                            "additionalProperties": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                        },
-                    },
-                },
-            ),
-            Tool(
                 name="astrograph_set_workspace",
                 description="Set or change the workspace directory. Re-indexes the codebase at the new path.",
                 inputSchema={
@@ -347,77 +311,14 @@ def create_server() -> Server:
         "astrograph_metadata_erase": "metadata_erase",
         "astrograph_metadata_recompute_baseline": "metadata_recompute_baseline",
         "astrograph_generate_ignore": "generate_ignore",
-        "astrograph_configure_domains": "configure_domains",
         "astrograph_set_workspace": "set_workspace",
     }
-
-    def _summarize_arg(value: object) -> str:
-        """Render concise argument summaries for tool invocation headers."""
-        if value is None:
-            return "null"
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, int | float):
-            return str(value)
-        if isinstance(value, str):
-            return f"<str len={len(value)}>"
-        if isinstance(value, list):
-            return f"<list len={len(value)}>"
-        if isinstance(value, dict):
-            keys = sorted(str(k) for k in value)
-            preview = ", ".join(keys[:4])
-            if len(keys) > 4:
-                preview += ", ..."
-            return f"<object keys=[{preview}]>"
-        return f"<{type(value).__name__}>"
-
-    def _summarize_arguments(arguments: dict | None) -> str:
-        """Summarize call arguments without dumping large payloads."""
-        if not arguments:
-            return "none"
-        return ", ".join(f"{key}={_summarize_arg(arguments[key])}" for key in sorted(arguments))
-
-    def _classify_outcome(text: str) -> str:
-        """Classify textual tool output for quick operator scanning."""
-        stripped = text.lstrip()
-        if (
-            stripped.startswith("Error:")
-            or stripped.startswith("Unknown tool:")
-            or stripped.startswith("Failed")
-            or stripped.startswith("BLOCKED:")
-        ):
-            return "error"
-        if "WARNING:" in text or stripped.startswith("Status: indexing"):
-            return "warning"
-        return "ok"
-
-    def _format_tool_response(name: str, arguments: dict, text: str) -> str:
-        """Add consistent invocation framing for plain-text tool responses."""
-        # Keep structured JSON payloads backward-compatible for machine parsing.
-        if name == "astrograph_lsp_setup":
-            return text
-        stripped = text.lstrip()
-        if stripped.startswith("{") or stripped.startswith("["):
-            try:
-                json.loads(stripped)
-                return text
-            except json.JSONDecodeError:
-                pass
-
-        header = [
-            f"Tool: {name}",
-            f"Outcome: {_classify_outcome(text)}",
-            f"Arguments: {_summarize_arguments(arguments)}",
-            "Result:",
-        ]
-        return "\n".join(header) + "\n" + text
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         internal_name = TOOL_NAME_MAP.get(name, name)
         result = await asyncio.to_thread(_tools.call_tool, internal_name, arguments)
-        formatted = _format_tool_response(name, arguments, result.text)
-        return [TextContent(type="text", text=formatted)]
+        return [TextContent(type="text", text=result.text)]
 
     # --- MCP Resources ---
 
@@ -436,7 +337,7 @@ def create_server() -> Server:
     @server.list_resources()
     async def list_resources() -> list[Resource]:
         return [
-            Resource(name=name, uri=AnyUrl(uri), description=desc, mimeType="text/plain")
+            Resource(name=name, uri=uri, description=desc, mimeType="text/plain")
             for uri, (name, desc) in _RESOURCE_URIS.items()
         ]
 

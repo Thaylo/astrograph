@@ -12,18 +12,16 @@ Uses SQLite persistence with file watching for automatic index updates.
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import logging
 import os
 import shutil
-import sqlite3
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import networkx as nx
 
@@ -38,18 +36,31 @@ from .ignorefile import ASTROGRAPHIGNORE_FILENAME, IgnoreSpec
 from .index import CodeStructureIndex, DuplicateGroup, IndexEntry, SimilarityResult
 from .languages.base import SemanticProfile, node_match
 from .languages.registry import LanguageRegistry
+from .lsp_setup import (
+    auto_bind_missing_servers,
+    bundled_lsp_specs,
+    collect_lsp_statuses,
+    format_command,
+    get_lsp_spec,
+    language_variant_policy,
+    load_lsp_bindings,
+    lsp_bindings_path,
+    parse_attach_endpoint,
+    parse_command,
+    probe_command,
+    set_lsp_binding,
+    unset_lsp_binding,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # Persistence directory name for cached index
 PERSISTENCE_DIR = ".metadata_astrograph"
-PERSISTENCE_DIR_ENV = "ASTROGRAPH_PERSISTENCE_DIR"
 LEGACY_ANALYSIS_REPORT = "analysis_report.txt"
 _SEMANTIC_MODES = frozenset({"off", "annotate", "differentiate"})
 _MUTATING_TOOL_NAMES = frozenset(
     {
-        "configure_domains",
         "edit",
         "generate_ignore",
         "index_codebase",
@@ -145,23 +156,6 @@ def _requires_index(func: Callable[..., ToolResult]) -> Callable[..., ToolResult
     return wrapper
 
 
-def _requires_workspace_root(
-    missing_message: str,
-) -> Callable[[Callable[..., ToolResult]], Callable[..., ToolResult]]:
-    """Guard a tool method so an indexed workspace root exists."""
-
-    def decorator(func: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
-        @wraps(func)
-        def wrapper(self: CodeStructureTools, *args: Any, **kwargs: Any) -> ToolResult:
-            if error := self._require_workspace_root(missing_message):
-                return error
-            return func(self, *args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
 def _get_persistence_path(indexed_path: str) -> Path:
     """
     Get metadata directory for an indexed codebase.
@@ -236,17 +230,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
         self._last_indexed_path: str | None = None
         self._host_root: str | None = None
-        self._host_root_lock = threading.RLock()
-        self._active_persistence_path: Path | None = None
-        self._persistence_path_initialized = False
         self._ignore_spec: IgnoreSpec | None = None
-
-        # In Docker, detect host root from mount metadata so path
-        # translation works from the very first tool call.
-        if os.path.isdir("/workspace") and os.path.exists("/.dockerenv"):
-            detected = self._detect_host_root_from_mountinfo()
-            if detected:
-                self._set_host_root(detected)
 
         # Background indexing state
         self._bg_index_thread: threading.Thread | None = None
@@ -292,122 +276,6 @@ class CodeStructureTools(CloseOnExitMixin):
 
         return None
 
-    @staticmethod
-    def _detect_host_root_from_mountinfo() -> str | None:
-        """Detect the host-side path for ``/workspace`` from Docker mount metadata.
-
-        Parses ``/proc/self/mountinfo`` to find the bind mount source for
-        ``/workspace``.  Works on both Linux Docker (block device mounts)
-        and macOS Docker Desktop (``/run/host_mark/`` VM mounts).
-
-        Returns the host absolute path, or ``None`` if detection fails.
-        """
-        try:
-            with open("/proc/self/mountinfo") as f:
-                for line in f:
-                    fields = line.split()
-                    if len(fields) < 5 or fields[4] != "/workspace":
-                        continue
-                    root = fields[3]
-
-                    # Locate mount_source after the " - " separator.
-                    try:
-                        sep_idx = fields.index("-")
-                        mount_source = fields[sep_idx + 2] if sep_idx + 2 < len(fields) else ""
-                    except ValueError:
-                        mount_source = ""
-
-                    # Linux: mount_source is a block device → root is the host path.
-                    if mount_source.startswith("/dev/"):
-                        return root
-
-                    # macOS Docker Desktop: mount_source like /run/host_mark/Users.
-                    # Strip the VM-internal prefix to recover the host path.
-                    host_mark = "/run/host_mark"
-                    if mount_source.startswith(host_mark):
-                        host_prefix = mount_source[len(host_mark) :]
-                        return host_prefix + root
-
-                    # Best-effort fallback: use root if it looks absolute.
-                    if root.startswith("/") and len(root) > 1:
-                        return root
-        except OSError:
-            pass
-        return None
-
-    def _get_host_root(self) -> str | None:
-        """Read host root mapping under lock."""
-        with self._host_root_lock:
-            return self._host_root
-
-    def _set_host_root(self, host_root: str) -> None:
-        """Update host root mapping under lock and propagate to LSP layer."""
-        with self._host_root_lock:
-            self._host_root = host_root
-
-        from .lsp_setup import set_docker_path_map
-
-        set_docker_path_map("/workspace", host_root)
-
-    def _current_persistence_path(self) -> Path | None:
-        """Return the active metadata directory for the current workspace."""
-        if self._persistence_path_initialized:
-            return self._active_persistence_path
-        if self._last_indexed_path is None:
-            return None
-        configured = os.environ.get(PERSISTENCE_DIR_ENV)
-        if configured:
-            configured_path = Path(configured).expanduser()
-            if not configured_path.is_absolute():
-                base = Path(self._last_indexed_path).resolve()
-                if base.is_file():
-                    base = base.parent
-                configured_path = (base / configured_path).resolve()
-            return configured_path
-        return _get_persistence_path(self._last_indexed_path)
-
-    @staticmethod
-    def _ensure_writable_directory(path: Path) -> str | None:
-        """Ensure a directory exists and is writable. Returns error text on failure."""
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            probe = path / ".astrograph_write_probe"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return None
-        except OSError as exc:
-            return str(exc)
-
-    def _select_persistence_path(self, indexed_path: str) -> tuple[Path | None, str | None]:
-        """Select metadata dir; return (path, error_text)."""
-        configured = os.environ.get(PERSISTENCE_DIR_ENV)
-        if configured:
-            persistence_path = Path(configured).expanduser()
-            if not persistence_path.is_absolute():
-                base = Path(indexed_path).resolve()
-                if base.is_file():
-                    base = base.parent
-                persistence_path = (base / persistence_path).resolve()
-        else:
-            persistence_path = _get_persistence_path(indexed_path)
-
-        write_error = self._ensure_writable_directory(persistence_path)
-        if write_error is not None:
-            display = self._host_display_path(str(persistence_path))
-            help_hint = (
-                f"Set {PERSISTENCE_DIR_ENV} to a writable directory."
-                if not configured
-                else f"Fix {PERSISTENCE_DIR_ENV} or unset it to use the default metadata path."
-            )
-            return (
-                None,
-                f"Error: Metadata directory {display} is not writable ({write_error}). {help_hint}",
-            )
-
-        self._active_persistence_path = persistence_path
-        self._persistence_path_initialized = True
-        return persistence_path, None
-
     def _background_index(self, path: str) -> None:
         """Index a codebase in the background."""
         try:
@@ -435,32 +303,12 @@ class CodeStructureTools(CloseOnExitMixin):
         tool has its own non-blocking path for quick readiness checks.
         """
         self._wait_for_background_index()
+        if self.index.entries:
+            return None
         if self._bg_index_progress == "error":
             error_detail = getattr(self, "_bg_index_error", "unknown error")
             return ToolResult(f"Background indexing failed: {error_detail}")
-
-        # Primary readiness signal: there are indexed entries available.
-        if self.index.entries:
-            return None
-
-        # Secondary readiness signal: indexing completed for one or more files,
-        # but extraction produced zero units (for example, LSP symbols unavailable
-        # while non-symbol metadata still indexed). In this state, tools should
-        # operate and report "no duplicates" rather than "No code indexed".
-        try:
-            stats = self.index.get_stats()
-        except Exception:
-            stats = {}
-        if isinstance(stats, dict) and int(stats.get("indexed_files", 0)) > 0:
-            return None
-
         return ToolResult("No code indexed. Call index_codebase first.")
-
-    def _require_workspace_root(self, missing_message: str) -> ToolResult | None:
-        """Ensure an indexed workspace root exists for metadata/config operations."""
-        if self._last_indexed_path:
-            return None
-        return ToolResult(missing_message)
 
     def _active_index(self) -> CodeStructureIndex | EventDrivenIndex:
         """Return event-driven index when enabled, otherwise in-memory index."""
@@ -485,7 +333,7 @@ class CodeStructureTools(CloseOnExitMixin):
         if not self.index.entries:
             return ""
 
-        invalidated = self._active_index().invalidate_stale_suppressions()
+        invalidated = self.index.invalidate_stale_suppressions()
         if invalidated:
             max_shown = 5
             hashes = [h for h, _ in invalidated]
@@ -499,36 +347,6 @@ class CodeStructureTools(CloseOnExitMixin):
         if len(hashes) > max_shown:
             return ", ".join(hashes[:max_shown]) + f" ... ({len(hashes)} total)"
         return ", ".join(hashes)
-
-    @staticmethod
-    def _is_index_error_result(text: str) -> bool:
-        """Detect index failures, including those prefixed by advisory warnings."""
-        if text.startswith("Error:"):
-            return True
-        return "\n\nError:" in text
-
-    @staticmethod
-    def _none_error(value: object | None, message: str) -> ToolResult | None:
-        """Return a ToolResult when value is None, otherwise None."""
-        if value is None:
-            return ToolResult(message)
-        return None
-
-    @staticmethod
-    def _code_unit_extraction_note(stats: dict[str, int]) -> str | None:
-        """Explain why code-unit count can be zero while block extraction succeeds."""
-        if stats.get("indexed_files", 0) <= 0:
-            return None
-        if stats.get("function_entries", 0) > 0:
-            return None
-        if stats.get("block_entries", 0) <= 0:
-            return None
-        return (
-            "Note: symbol-level code units are 0 while block extraction succeeded. "
-            "This usually means language-symbol extraction is unavailable in the current "
-            "runtime (e.g., LSP endpoint/binding not ready). "
-            "Next: run astrograph_lsp_setup(mode='inspect') and follow recommended_actions."
-        )
 
     def _has_significant_duplicates(self) -> bool:
         """Check if there are duplicates above the trivial threshold."""
@@ -582,32 +400,17 @@ class CodeStructureTools(CloseOnExitMixin):
         if not os.path.exists(path):
             return ToolResult(f"Error: Path does not exist: {original_path}")
 
-        # Always include blocks - only 22% overhead for much better detection
-        result = self._index_codebase_event_driven(path, recursive)
-        if self._is_index_error_result(result.text):
-            return result
-
         # Store resolved path for auto-reindex and relative path computation
         self._last_indexed_path = str(Path(path).resolve())
 
-        # Update active workspace so plugin initialisation resolves bindings
-        # from the correct directory (not the Docker default /workspace).
-        from .lsp_setup import set_active_workspace
-
-        set_active_workspace(self._last_indexed_path)
-
-        # Reset plugin singletons so they re-initialise their LSP clients
-        # against the new active workspace (binding resolution is workspace-
-        # relative, so stale plugins would use the wrong endpoint).
-        LanguageRegistry.reset()
-
-        return result
+        # Always include blocks - only 22% overhead for much better detection
+        return self._index_codebase_event_driven(path, recursive)
 
     def set_workspace(self, path: str) -> ToolResult:
         """Switch to a new workspace directory and re-index."""
-        old_path = self._host_display_path(self._last_indexed_path or "(none)")
+        old_path = self._last_indexed_path or "(none)"
         result = self.index_codebase(path, recursive=True)
-        new_path = self._host_display_path(self._last_indexed_path or path)
+        new_path = self._last_indexed_path or path
 
         # Prepend workspace transition info
         header = f"Workspace changed: {old_path} -> {new_path}\n"
@@ -620,13 +423,8 @@ class CodeStructureTools(CloseOnExitMixin):
         # Check for cloud-synced folders and prepare warning
         cloud_warning = get_cloud_sync_warning(path)
 
-        persistence_path, persistence_error = self._select_persistence_path(path)
-        if persistence_path is None:
-            assert persistence_error is not None
-            output = persistence_error
-            if cloud_warning:
-                output = cloud_warning + "\n\n" + output
-            return ToolResult(output)
+        persistence_path = _get_persistence_path(path)
+        persistence_path.mkdir(exist_ok=True)
         sqlite_path = persistence_path / "index.db"
 
         # Close old event-driven index (stops watcher, closes SQLite connection)
@@ -637,21 +435,11 @@ class CodeStructureTools(CloseOnExitMixin):
         self._ignore_spec = IgnoreSpec.from_file(str(ignore_dir / ASTROGRAPHIGNORE_FILENAME))
 
         # Create new event-driven index with persistence
-        try:
-            self._event_driven_index = EventDrivenIndex(
-                persistence_path=sqlite_path,
-                watch_enabled=True,
-                ignore_spec=self._ignore_spec,
-            )
-        except (OSError, sqlite3.Error) as exc:
-            output = (
-                "Error: Failed to initialize metadata persistence at "
-                f"{self._host_display_path(str(sqlite_path))} ({exc}). "
-                f"Fix permissions or set {PERSISTENCE_DIR_ENV} to a writable directory."
-            )
-            if cloud_warning:
-                output = cloud_warning + "\n\n" + output
-            return ToolResult(output)
+        self._event_driven_index = EventDrivenIndex(
+            persistence_path=sqlite_path,
+            watch_enabled=True,
+            ignore_spec=self._ignore_spec,
+        )
         self.index = self._event_driven_index.index
 
         # Index the path (loads from cache if available)
@@ -667,9 +455,7 @@ class CodeStructureTools(CloseOnExitMixin):
             f"Indexed {stats['function_entries']} code units from {stats['indexed_files']} files.",
             f"Extracted {stats['block_entries']} code blocks.",
         ]
-        extraction_note = self._code_unit_extraction_note(stats)
-        if extraction_note:
-            result_parts.append(extraction_note)
+
         if self._has_significant_duplicates():
             result_parts.append("\nDuplicates found. Run analyze().")
         else:
@@ -697,79 +483,6 @@ class CodeStructureTools(CloseOnExitMixin):
         except ValueError:
             return file_path
 
-    def _host_display_path(self, container_path: str) -> str:
-        """Translate a container path to the host-side path for display.
-
-        When ``_host_root`` is known, replaces the ``/workspace`` prefix
-        so agents see paths that match their host filesystem.
-        """
-        host_root = self._get_host_root()
-        if host_root and container_path.startswith("/workspace"):
-            suffix = container_path[len("/workspace") :]
-            return host_root + suffix
-        return container_path
-
-    # ------------------------------------------------------------------
-    # Scope & domain helpers
-    # ------------------------------------------------------------------
-
-    def _make_scope_filter(self, scope: list[str]) -> Callable[[IndexEntry], bool]:
-        """Build an entry filter from glob patterns relative to workspace root."""
-
-        def matches(entry: IndexEntry) -> bool:
-            rel = self._relative_path(entry.code_unit.file_path)
-            return any(fnmatch.fnmatch(rel, pat) for pat in scope)
-
-        return matches
-
-    def _load_domains(self) -> dict[str, list[str]] | None:
-        """Load domain configuration from .metadata_astrograph/domains.json."""
-        if not self._last_indexed_path:
-            return None
-        persistence_path = self._current_persistence_path()
-        if persistence_path is None:
-            return None
-        domains_file = persistence_path / "domains.json"
-        if not domains_file.exists():
-            return None
-        try:
-            data = json.loads(domains_file.read_text())
-            domains = data.get("domains", {})
-            if not isinstance(domains, dict) or not domains:
-                return None
-            return domains
-        except (json.JSONDecodeError, OSError):
-            return None
-
-    def _match_domain(self, rel_path: str, domains: dict[str, list[str]]) -> str | None:
-        """Return the domain name a relative path belongs to, or None."""
-        for name, patterns in domains.items():
-            if any(fnmatch.fnmatch(rel_path, pat) for pat in patterns):
-                return name
-        return None
-
-    def _assign_domains(
-        self,
-        findings: list[dict[str, Any]],
-        domains: dict[str, list[str]],
-    ) -> None:
-        """Tag each finding with its domain (mutates in place).
-
-        A finding belongs to a domain if ALL its locations match that domain.
-        If locations span multiple domains, the finding is tagged "cross-domain".
-        If locations match no domain, the finding is tagged None (unscoped).
-        """
-        for f in findings:
-            location_domains: set[str | None] = set()
-            for loc in f["locations"]:
-                # Locations are formatted as "rel_path:name:Lstart-end"
-                rel_path = loc.split(":")[0]
-                location_domains.add(self._match_domain(rel_path, domains))
-            if len(location_domains) == 1:
-                f["domain"] = next(iter(location_domains))
-            else:
-                f["domain"] = "cross-domain"
-
     def _resolve_path(self, path: str) -> str:
         """
         Resolve path, handling Docker volume mounts.
@@ -785,9 +498,8 @@ class CodeStructureTools(CloseOnExitMixin):
             return path
 
         # Fast path: use learned mapping
-        host_root = self._get_host_root()
-        if host_root is not None and path.startswith(host_root):
-            remainder = path[len(host_root) :]
+        if self._host_root is not None and path.startswith(self._host_root):
+            remainder = path[len(self._host_root) :]
             if remainder.startswith("/"):
                 remainder = remainder[1:]
             # Filter traversal components from remainder
@@ -802,11 +514,6 @@ class CodeStructureTools(CloseOnExitMixin):
             return path
 
         p = Path(path)
-        # Paths already anchored in /workspace should stay container-relative.
-        if p.is_absolute() and len(p.parts) >= 2 and p.parts[1] == "workspace":
-            safe_parts = [pt for pt in p.parts[2:] if pt not in ("/", ".", "..")]
-            return str(workspace.joinpath(*safe_parts)) if safe_parts else str(workspace)
-
         # Skip leading '/' and filter traversal components (..)
         parts = tuple(pt for pt in p.parts if pt not in ("/", ".", ".."))
 
@@ -825,38 +532,17 @@ class CodeStructureTools(CloseOnExitMixin):
                 self._learn_host_root(str(p.parent), str(candidate))
                 return resolved
 
-        # The path may be the host-side mount source for /workspace
-        # (e.g., `-v /host/project:/workspace`).  The project dir name
-        # doesn't appear inside the container, so the component scan
-        # above can't match it.  Verify: /workspace was already indexed.
-        name_fallback = workspace / p.name
-        if (
-            not name_fallback.exists()
-            and self._last_indexed_path
-            and Path(self._last_indexed_path).resolve() == workspace.resolve()
-        ):
-            self._learn_host_root(path, str(workspace))
-            return str(workspace)
-
-        # Fallback for new files: assume file is directly under /workspace
-        return str(name_fallback)
+        # Fallback: assume file is directly under /workspace
+        return str(workspace / p.name)
 
     def _learn_host_root(self, host_path: str, container_path: str) -> None:
         """Derive and store the host↔container root mapping."""
-        learned_host_root: str | None = None
         suffix = container_path[len("/workspace") :]
         if suffix and host_path.endswith(suffix):
-            learned_host_root = host_path[: -len(suffix)]
+            self._host_root = host_path[: -len(suffix)]
         elif not suffix:
             # container_path is exactly "/workspace" — host_path IS the root
-            learned_host_root = host_path
-
-        if learned_host_root is None:
-            return
-
-        # Propagate mapping to LSP layer so SocketLSPClient translates
-        # container paths (/workspace/…) to host paths in URIs.
-        self._set_host_root(learned_host_root)
+            self._host_root = host_path
 
     def _format_locations(self, entries: list[IndexEntry]) -> list[str]:
         """Format entry locations for output."""
@@ -873,10 +559,8 @@ class CodeStructureTools(CloseOnExitMixin):
         if self._last_indexed_path is None:
             return None
         try:
-            persistence_path = self._current_persistence_path()
-            if persistence_path is None:
-                return None
-            persistence_path.mkdir(parents=True, exist_ok=True)
+            persistence_path = _get_persistence_path(self._last_indexed_path)
+            persistence_path.mkdir(exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             report_file = persistence_path / f"analysis_report_{timestamp}.txt"
             report_file.write_text(content)
@@ -888,29 +572,21 @@ class CodeStructureTools(CloseOnExitMixin):
         """Remove stale legacy report alias when no findings."""
         if self._last_indexed_path is not None:
             try:
-                persistence_path = self._current_persistence_path()
-                if persistence_path is None:
-                    return
-                legacy_report = persistence_path / LEGACY_ANALYSIS_REPORT
+                legacy_report = (
+                    _get_persistence_path(self._last_indexed_path) / LEGACY_ANALYSIS_REPORT
+                )
                 legacy_report.unlink(missing_ok=True)
             except OSError:
                 pass
 
     @_requires_index
-    def analyze(
-        self,
-        auto_reindex: bool = True,
-        scope: list[str] | None = None,
-    ) -> ToolResult:
+    def analyze(self, auto_reindex: bool = True) -> ToolResult:
         """
         Analyze the indexed codebase for duplicates and similar patterns.
 
         Args:
             auto_reindex: Kept for API compatibility. The event-driven index
                          keeps the index current via file watching automatically.
-            scope: Optional list of glob patterns to restrict analysis
-                   (e.g. ``["src/**"]``).  Only entries whose relative path
-                   matches at least one pattern are included.
 
         Returns findings sorted by relevance:
         - Exact duplicates (verified via graph isomorphism)
@@ -921,28 +597,16 @@ class CodeStructureTools(CloseOnExitMixin):
         # Check for invalidated suppressions (proactive notification)
         invalidation_warning = self._check_invalidated_suppressions()
 
-        # Build optional scope filter
-        entry_filter: Callable[[IndexEntry], bool] | None = None
-        if scope:
-            entry_filter = self._make_scope_filter(scope)
-
         # Event-driven index keeps things current via file watching + cache.
         edi = self._event_driven_index
         if edi is not None:
-            exact_groups, pattern_groups, block_groups = edi.get_cached_analysis(
-                entry_filter=entry_filter
-            )
+            exact_groups, pattern_groups, block_groups = edi.get_cached_analysis()
         else:
             # Testing path: direct compute (no EventDrivenIndex)
-            exact_groups = self.index.find_all_duplicates(
-                min_node_count=5, entry_filter=entry_filter
-            )
-            pattern_groups = self.index.find_pattern_duplicates(
-                min_node_count=5, entry_filter=entry_filter
-            )
+            exact_groups = self.index.find_all_duplicates(min_node_count=5)
+            pattern_groups = self.index.find_pattern_duplicates(min_node_count=5)
             block_groups = self.index.find_block_duplicates(
-                min_node_count=self._MIN_BLOCK_DUPLICATE_NODES,
-                entry_filter=entry_filter,
+                min_node_count=self._MIN_BLOCK_DUPLICATE_NODES
             )
 
         # Filter block groups by analyze threshold (cache uses min_node_count=5,
@@ -1037,11 +701,6 @@ class CodeStructureTools(CloseOnExitMixin):
         for f in findings:
             f["is_test"] = all(_is_test_location(loc) for loc in f["locations"])
 
-        # Domain partitioning (only when domains are configured and scope is not active)
-        domains = self._load_domains() if not scope else None
-        if domains:
-            self._assign_domains(findings, domains)
-
         # Sort: source findings first, then test findings
         source_findings = [f for f in findings if not f["is_test"]]
         test_findings = [f for f in findings if f["is_test"]]
@@ -1076,52 +735,19 @@ class CodeStructureTools(CloseOnExitMixin):
             result.append("")
             return result
 
-        def _append_section(section: list[dict[str, Any]], start_num: int) -> int:
-            for finding in section:
-                lines.extend(_format_finding(start_num, finding))
-                start_num += 1
-            return start_num
-
-        # --- Domain-partitioned output ---
-        if domains:
-            # Group findings by domain
-            domain_sections: dict[str | None, list[dict[str, Any]]] = {}
-            for f in findings:
-                d = f.get("domain")
-                domain_sections.setdefault(d, []).append(f)
-
-            # Ordered: named domains first, then unscoped (None), then cross-domain
-            ordered_keys: list[str | None] = [k for k in domains if k in domain_sections]
-            if None in domain_sections:
-                ordered_keys.append(None)
-            if "cross-domain" in domain_sections:
-                ordered_keys.append("cross-domain")
-
-            num = 1
-            for key in ordered_keys:
-                section = domain_sections[key]
-                if key == "cross-domain":
-                    header = "=== Cross-domain ==="
-                elif key is None:
-                    header = "=== Unscoped ==="
-                else:
-                    globs = ", ".join(domains[key])
-                    header = f"=== Domain: {key} ({globs}) ==="
+        # Emit section headers when both source and test findings exist
+        has_both = bool(source_findings) and bool(test_findings)
+        num = 1
+        for header, section in [
+            ("=== Source code ===", source_findings),
+            ("=== Tests ===", test_findings),
+        ]:
+            if has_both:
                 lines.append(header)
                 lines.append("")
-                num = _append_section(section, num)
-        else:
-            # --- Standard source/test output ---
-            has_both = bool(source_findings) and bool(test_findings)
-            num = 1
-            for header, section in [
-                ("=== Source code ===", source_findings),
-                ("=== Tests ===", test_findings),
-            ]:
-                if has_both:
-                    lines.append(header)
-                    lines.append("")
-                num = _append_section(section, num)
+            for f in section:
+                lines.extend(_format_finding(num, f))
+                num += 1
 
         # Compact footer
         if suppressed_line := _suppressed_line():
@@ -1512,7 +1138,7 @@ class CodeStructureTools(CloseOnExitMixin):
             False,
             [],
             [],
-            f"insufficient overlapping semantic signals{note_suffix}",
+            "insufficient overlapping semantic signals" f"{note_suffix}",
         )
 
     def compare(
@@ -1530,13 +1156,8 @@ class CodeStructureTools(CloseOnExitMixin):
             )
 
         plugin = LanguageRegistry.get().get_plugin(language)
-        missing_plugin = self._none_error(
-            plugin,
-            f"Unsupported language '{language}': no registered language plugin.",
-        )
-        if missing_plugin is not None:
-            return missing_plugin
-        assert plugin is not None
+        if plugin is None:
+            return ToolResult(f"Unsupported language '{language}': no registered language plugin.")
 
         g1 = plugin.source_to_graph(code1)
         g2 = plugin.source_to_graph(code2)
@@ -1581,7 +1202,9 @@ class CodeStructureTools(CloseOnExitMixin):
         mismatch_text = "; ".join(mismatches[:3])
         if structural_kind == "equivalent":
             if mode == "annotate":
-                return ToolResult(f"EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: {mismatch_text}.")
+                return ToolResult(
+                    "EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: " f"{mismatch_text}."
+                )
             return ToolResult(
                 "DIFFERENT: Structurally equivalent snippets diverge semantically "
                 f"({mismatch_text})."
@@ -1692,9 +1315,7 @@ class CodeStructureTools(CloseOnExitMixin):
         """Return the latest analysis report text for the MCP resource."""
         if self._last_indexed_path is None:
             return "No codebase indexed yet."
-        persistence_path = self._current_persistence_path()
-        if persistence_path is None:
-            return "No analysis reports available."
+        persistence_path = _get_persistence_path(self._last_indexed_path)
         if not persistence_path.exists():
             return "No analysis reports available."
         reports = sorted(persistence_path.glob("analysis_report_*.txt"), reverse=True)
@@ -1710,65 +1331,114 @@ class CodeStructureTools(CloseOnExitMixin):
         """Return current server status without blocking."""
         if not self._bg_index_done.is_set():
             entry_count = len(self.index.entries)
-            return ToolResult(
-                f"Status: indexing ({entry_count} entries so far). "
-                "Indexing runs asynchronously; use status again for completion."
-            )
+            return ToolResult(f"Status: indexing ({entry_count} entries so far)")
         if not self.index.entries:
             return ToolResult(
                 "Status: idle (no codebase indexed). "
                 "Next: call index_codebase(path=...) and astrograph_lsp_setup(mode='inspect')."
             )
         stats = self.index.get_stats()
-        lines = [
+        return ToolResult(
             f"Status: ready ({stats['function_entries']} code units, "
             f"{stats['indexed_files']} files). "
-            "Next: call astrograph_lsp_setup(mode='inspect') for guided LSP setup actions.",
-        ]
-        extraction_note = self._code_unit_extraction_note(stats)
-        if extraction_note:
-            lines.append(extraction_note)
-        return ToolResult("\n".join(lines))
-
-    # -- LSP setup: thin wrappers delegating to lsp_tools module -----------
+            "Next: call astrograph_lsp_setup(mode='inspect') for guided LSP setup actions."
+        )
 
     def _lsp_setup_workspace(self) -> Path:
         """Resolve workspace root used for LSP binding persistence."""
-        from . import lsp_tools
+        if self._last_indexed_path:
+            indexed = Path(self._last_indexed_path)
+            return indexed.parent if indexed.is_file() else indexed
 
-        return lsp_tools.resolve_lsp_workspace(
-            self._last_indexed_path, self._detect_startup_workspace
-        )
+        detected = self._detect_startup_workspace()
+        if detected:
+            return Path(detected)
+
+        return Path.cwd()
 
     @staticmethod
     def _is_docker_runtime() -> bool:
         """Return whether the server appears to run inside Docker."""
-        from . import lsp_tools
-
-        return lsp_tools.is_docker_runtime()
+        return Path("/.dockerenv").exists()
 
     @staticmethod
     def _default_install_command(language_id: str) -> list[str] | None:
-        from . import lsp_tools
-
-        return lsp_tools.default_install_command(language_id)
+        """Return a known install command for bundled subprocess servers."""
+        if language_id == "python":
+            return ["python3", "-m", "pip", "install", "python-lsp-server>=1.11"]
+        if language_id in ("javascript_lsp", "typescript_lsp"):
+            return ["npm", "install", "-g", "typescript", "typescript-language-server"]
+        return None
 
     @staticmethod
     def _dedupe_preserve_order(values: list[str]) -> list[str]:
-        from . import lsp_tools
-
-        return lsp_tools.dedupe_preserve_order(values)
+        """Return values with duplicates removed while preserving first occurrence."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+        return result
 
     def _attach_candidate_commands(self, status: dict[str, Any]) -> list[str]:
-        from . import lsp_tools
+        """Build endpoint candidates for attach-based language plugins."""
+        endpoint = parse_attach_endpoint(status.get("default_command"))
+        if endpoint is None:
+            endpoint = parse_attach_endpoint(status.get("effective_command"))
+        if endpoint is None:
+            return []
 
-        return lsp_tools.attach_candidate_commands(status, self._is_docker_runtime())
+        if endpoint["transport"] == "unix":
+            return [f"unix://{endpoint['path']}"]
+
+        port = int(endpoint["port"])
+        candidates = [
+            f"tcp://127.0.0.1:{port}",
+            f"tcp://localhost:{port}",
+        ]
+        if self._is_docker_runtime():
+            candidates = [
+                f"tcp://host.docker.internal:{port}",
+                f"tcp://gateway.docker.internal:{port}",
+                *candidates,
+            ]
+        return self._dedupe_preserve_order(candidates)
 
     @staticmethod
     def _server_bridge_info(language_id: str, candidate: str) -> dict[str, Any] | None:
-        from . import lsp_tools
+        """Return structured bridge info for attach-based adapters."""
+        endpoint = parse_attach_endpoint(candidate)
+        if endpoint is None or endpoint["transport"] != "tcp":
+            return None
 
-        return lsp_tools.server_bridge_info(language_id, candidate)
+        port = int(endpoint["port"])
+        info: dict[str, Any] = {"requires": ["socat"], "port": port}
+        if language_id in {"c_lsp", "cpp_lsp"}:
+            info["server_binary"] = "clangd"
+            info["server_binary_alternatives"] = ["ccls"]
+            info["shared_with"] = "c_lsp" if language_id == "cpp_lsp" else "cpp_lsp"
+            info["socat_command"] = (
+                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" ' '"EXEC:clangd",stderr'
+            )
+            info["install_hints"] = {
+                "macos": "brew install llvm",
+                "linux": "apt-get install -y clangd",
+            }
+        elif language_id == "java_lsp":
+            info["server_binary"] = "jdtls"
+            info["socat_command"] = (
+                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" '
+                '"EXEC:jdtls -data /tmp/jdtls-workspace",stderr'
+            )
+            info["install_hints"] = {
+                "macos": "brew install jdtls",
+                "linux": "See https://github.com/eclipse-jdtls/eclipse.jdt.ls#installation",
+            }
+        else:
+            return None
+        return info
 
     def _build_lsp_recommended_actions(
         self,
@@ -1776,25 +1446,409 @@ class CodeStructureTools(CloseOnExitMixin):
         statuses: list[dict[str, Any]],
         scope_language: str | None = None,
     ) -> list[dict[str, Any]]:
-        from . import lsp_tools
+        """Build actionable setup steps that AI agents can execute directly."""
+        missing = [status for status in statuses if not status.get("available")]
+        missing_required = [status for status in missing if status.get("required", True)]
+        scoped = bool(scope_language)
+        all_missing_optional = bool(missing) and not missing_required
+        has_missing_cpp = any(str(status.get("language")) == "cpp_lsp" for status in missing)
 
-        return lsp_tools.build_lsp_recommended_actions(
-            statuses=statuses,
-            scope_language=scope_language,
-            docker_runtime=self._is_docker_runtime(),
+        def _with_scope(arguments: dict[str, Any]) -> dict[str, Any]:
+            if not scoped:
+                return arguments
+            return {**arguments, "language": scope_language}
+
+        def _follow_up_auto_bind_arguments(language_id: str) -> dict[str, Any]:
+            if scoped:
+                return _with_scope({"mode": "auto_bind"})
+            return {"mode": "auto_bind", "language": language_id}
+
+        if not missing:
+            return [
+                {
+                    "id": "verify_lsp_setup",
+                    "priority": "low",
+                    "title": "Re-check language server health after environment changes",
+                    "tool": "astrograph_lsp_setup",
+                    "arguments": _with_scope({"mode": "inspect"}),
+                }
+            ]
+
+        actions: list[dict[str, Any]] = []
+        if not scoped and all_missing_optional and has_missing_cpp:
+            actions.append(
+                {
+                    "id": "focus_cpp_lsp",
+                    "priority": "high",
+                    "title": "Resolve cpp_lsp first",
+                    "why": (
+                        "Multiple attach languages are unavailable. Resolve them one at a time, "
+                        "starting with C++. Run the host_search_commands, then auto_bind."
+                    ),
+                    "tool": "astrograph_lsp_setup",
+                    "arguments": {"mode": "inspect", "language": "cpp_lsp"},
+                }
+            )
+        actions.append(
+            {
+                "id": "auto_bind_missing",
+                "priority": "high" if missing_required else "medium",
+                "title": "Auto-bind any reachable language servers",
+                "why": (
+                    f"{len(missing)} language server(s) are unreachable. Execute this action to probe "
+                    "all candidate endpoints and bind any that respond."
+                ),
+                "tool": "astrograph_lsp_setup",
+                "arguments": _with_scope({"mode": "auto_bind"}),
+            }
         )
+        host_alias_action_added = False
+
+        spec_by_language = {spec.language_id: spec for spec in bundled_lsp_specs()}
+        for status in missing:
+            language = str(status["language"])
+            required = bool(status.get("required", True))
+            priority = "high" if required else "medium"
+            transport = str(status.get("transport", "subprocess"))
+            verification = status.get("verification", {})
+            if not isinstance(verification, dict):
+                verification = {}
+            verification_state = str(
+                status.get("verification_state") or verification.get("state") or "unknown"
+            )
+            compile_commands = status.get("compile_commands")
+            if not isinstance(compile_commands, dict):
+                compile_commands = verification.get("compile_commands")
+            if not isinstance(compile_commands, dict):
+                compile_commands = None
+
+            if transport == "subprocess":
+                effective_command = parse_command(status.get("effective_command"))
+                binary = effective_command[0] if effective_command else "<binary>"
+                search_commands = [f"which {binary}"]
+                if language == "python":
+                    search_commands.append("python3 -m pylsp --help")
+                if language == "javascript_lsp":
+                    search_commands.extend(
+                        [
+                            "which typescript-language-server",
+                            "npm list -g typescript-language-server",
+                        ]
+                    )
+
+                actions.append(
+                    {
+                        "id": f"search_{language}",
+                        "priority": priority,
+                        "title": f"Search host for a working {language} command",
+                        "language": language,
+                        "host_search_commands": search_commands,
+                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
+                    }
+                )
+
+                if install_command := self._default_install_command(language):
+                    actions.append(
+                        {
+                            "id": f"install_{language}",
+                            "priority": priority,
+                            "title": f"Install missing {language} language server",
+                            "language": language,
+                            "shell_command": format_command(install_command),
+                            "follow_up_tool": "astrograph_lsp_setup",
+                            "follow_up_arguments": _follow_up_auto_bind_arguments(language),
+                        }
+                    )
+
+                if status.get("effective_source") == "env":
+                    spec = spec_by_language.get(language)
+                    if spec is not None:
+                        actions.append(
+                            {
+                                "id": f"fix_env_override_{language}",
+                                "priority": priority,
+                                "title": f"Fix unavailable env override for {language}",
+                                "language": language,
+                                "env_var": spec.command_env_var,
+                                "note": (
+                                    f"{spec.command_env_var} currently resolves to an "
+                                    "unavailable command."
+                                ),
+                            }
+                        )
+                continue
+
+            if verification_state == "reachable_only":
+                actions.append(
+                    {
+                        "id": f"verify_{language}_protocol",
+                        "priority": "high" if language == "cpp_lsp" else priority,
+                        "title": f"Replace non-verified endpoint for {language}",
+                        "language": language,
+                        "note": (
+                            verification.get("reason")
+                            or "Endpoint accepts TCP connections but did not pass LSP verification."
+                        ),
+                        "host_search_commands": [
+                            "which clangd",
+                            "which ccls",
+                            "clangd --version",
+                            "ccls --version",
+                        ]
+                        if language in {"c_lsp", "cpp_lsp"}
+                        else [],
+                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
+                    }
+                )
+
+            if (
+                language in {"c_lsp", "cpp_lsp"}
+                and compile_commands is not None
+                and not bool(compile_commands.get("valid"))
+            ):
+                paths = compile_commands.get("paths")
+                known_paths = [str(path) for path in paths] if isinstance(paths, list) else []
+                actions.append(
+                    {
+                        "id": f"ensure_compile_commands_{language}",
+                        "priority": "high" if language == "cpp_lsp" else priority,
+                        "title": f"Generate a valid compile_commands.json for {language}",
+                        "language": language,
+                        "why": (
+                            compile_commands.get("reason")
+                            or "C/C++ language servers require compile_commands.json for "
+                            "production-grade type and operator resolution."
+                        ),
+                        "host_search_commands": [
+                            "find . -maxdepth 4 -name compile_commands.json",
+                        ],
+                        "shell_commands": [
+                            "cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                            "ln -sf build/compile_commands.json compile_commands.json",
+                        ],
+                        "known_paths": known_paths,
+                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_arguments": _follow_up_auto_bind_arguments(language),
+                    }
+                )
+
+            if self._is_docker_runtime() and not host_alias_action_added:
+                actions.append(
+                    {
+                        "id": "ensure_docker_host_alias",
+                        "priority": "high",
+                        "title": "Ensure Docker can reach host.docker.internal",
+                        "why": (
+                            "Attach endpoints for C/C++/Java usually run on the host. "
+                            "Add a host alias so tcp://host.docker.internal:<port> is routable."
+                        ),
+                        "docker_run_args": [
+                            "--add-host",
+                            "host.docker.internal:host-gateway",
+                        ],
+                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_arguments": _with_scope({"mode": "inspect"}),
+                    }
+                )
+                host_alias_action_added = True
+
+            candidates = self._attach_candidate_commands(status)
+            endpoint = parse_attach_endpoint(candidates[0]) if candidates else None
+            port_hint = (
+                int(endpoint["port"]) if endpoint and endpoint["transport"] == "tcp" else None
+            )
+            bridge_info = self._server_bridge_info(language, candidates[0]) if candidates else None
+            endpoint_search_commands: list[str] = []
+            if port_hint is not None:
+                endpoint_search_commands = [
+                    f"lsof -nP -iTCP:{port_hint} -sTCP:LISTEN",
+                    f"ss -ltnp | rg ':{port_hint}'",
+                ]
+            if bridge_info:
+                endpoint_search_commands.append(f"which {bridge_info['server_binary']}")
+
+            action: dict[str, Any] = {
+                "id": f"discover_{language}_endpoint",
+                "priority": priority,
+                "title": f"Discover a reachable attach endpoint for {language}",
+                "why": (
+                    f"No server is listening on the expected {language} port. "
+                    "Run the host_search_commands on the host machine to check, "
+                    "then provide the working endpoint via auto_bind with observations."
+                ),
+                "language": language,
+                "candidate_endpoints": candidates,
+                "host_search_commands": endpoint_search_commands,
+            }
+            if candidates:
+                follow_up_arguments = {
+                    **_follow_up_auto_bind_arguments(language),
+                    "observations": [{"language": language, "command": candidates[0]}],
+                }
+
+                action["follow_up_tool"] = "astrograph_lsp_setup"
+                action["follow_up_arguments"] = follow_up_arguments
+                if bridge_info:
+                    action["server_bridge_info"] = bridge_info
+            actions.append(action)
+
+        actions.append(
+            {
+                "id": "verify_lsp_setup",
+                "priority": "high" if missing_required else "medium",
+                "title": "Verify missing_required_languages is empty",
+                "tool": "astrograph_lsp_setup",
+                "arguments": _with_scope({"mode": "inspect"}),
+            }
+        )
+        return actions
 
     def _inject_lsp_setup_guidance(self, payload: dict[str, Any], *, workspace: Path) -> None:
-        from . import lsp_tools
-
-        lsp_tools.inject_lsp_setup_guidance(
-            payload, workspace=workspace, docker_runtime=self._is_docker_runtime()
+        """Attach agent-friendly setup guidance to lsp_setup responses."""
+        statuses_value = payload.get("servers")
+        if not isinstance(statuses_value, list):
+            statuses_value = payload.get("statuses")
+        statuses = (
+            [status for status in statuses_value if isinstance(status, dict)]
+            if statuses_value
+            else []
         )
+        if not statuses:
+            statuses = collect_lsp_statuses(workspace)
+
+        missing = [status["language"] for status in statuses if not status.get("available")]
+        missing_required = [
+            status["language"]
+            for status in statuses
+            if status.get("required", True) and not status.get("available")
+        ]
+
+        payload["missing_languages"] = missing
+        payload["missing_required_languages"] = missing_required
+        payload["bindings"] = load_lsp_bindings(workspace)
+        payload["execution_context"] = "docker" if self._is_docker_runtime() else "host"
+        scope_language = payload.get("scope_language")
+        if not isinstance(scope_language, str):
+            scope_language = None
+
+        recommended_actions = self._build_lsp_recommended_actions(
+            statuses=statuses,
+            scope_language=scope_language,
+        )
+        cpp_reachable_only = any(
+            str(status.get("language")) == "cpp_lsp"
+            and str(status.get("verification_state") or "") == "reachable_only"
+            for status in statuses
+        )
+        scope_status = (
+            next((status for status in statuses if status.get("language") == scope_language), None)
+            if scope_language
+            else None
+        )
+        attach_scope_ready = bool(
+            scope_status
+            and not missing
+            and str(scope_status.get("transport", "subprocess")) in {"tcp", "unix"}
+        )
+        if attach_scope_ready and scope_language:
+            recommended_actions.extend(
+                [
+                    {
+                        "id": f"verify_{scope_language}_analysis",
+                        "priority": "medium",
+                        "title": f"Run duplicate analysis after enabling {scope_language}",
+                        "why": (
+                            "Confirms the active index is healthy after LSP setup changes "
+                            "and generates a current duplicate report."
+                        ),
+                        "tool": "astrograph_analyze",
+                        "arguments": {"auto_reindex": True},
+                    },
+                    {
+                        "id": f"rebaseline_after_{scope_language}_binding",
+                        "priority": "medium",
+                        "title": "If this language was bound after startup, rebuild baseline",
+                        "why": (
+                            "Binding changes do not retroactively update already-indexed files. "
+                            "Recompute to apply extraction across the full workspace."
+                        ),
+                        "tool": "astrograph_metadata_recompute_baseline",
+                        "arguments": {},
+                        "note": (
+                            "metadata_recompute_baseline clears lsp_bindings.json. "
+                            "Run follow_up_steps immediately after recompute."
+                        ),
+                        "follow_up_steps": [
+                            {
+                                "tool": "astrograph_lsp_setup",
+                                "arguments": {"mode": "inspect", "language": scope_language},
+                            },
+                            {
+                                "tool": "astrograph_lsp_setup",
+                                "arguments": {"mode": "auto_bind", "language": scope_language},
+                            },
+                            {
+                                "tool": "astrograph_lsp_setup",
+                                "arguments": {"mode": "inspect", "language": scope_language},
+                            },
+                        ],
+                    },
+                ]
+            )
+        payload["recommended_actions"] = recommended_actions
+
+        inspect_arguments: dict[str, Any] = {"mode": "inspect"}
+        auto_bind_arguments: dict[str, Any] = {"mode": "auto_bind"}
+        if scope_language:
+            inspect_arguments["language"] = scope_language
+            auto_bind_arguments["language"] = scope_language
+
+        payload["resolution_loop"] = [
+            {"tool": "astrograph_lsp_setup", "arguments": inspect_arguments},
+            {"tool": "astrograph_lsp_setup", "arguments": auto_bind_arguments},
+            {"tool": "astrograph_lsp_setup", "arguments": inspect_arguments},
+        ]
+        if missing_required:
+            payload["agent_directive"] = (
+                "Do not stop at diagnostics. Execute recommended_actions until "
+                "missing_required_languages is empty."
+            )
+        elif cpp_reachable_only:
+            payload["agent_directive"] = (
+                "cpp_lsp endpoint is reachable but not production-verified. "
+                "Treat it as unavailable and execute recommended_actions "
+                "(real C++ LSP endpoint, such as clangd/ccls, + valid compile_commands.json)."
+            )
+        elif missing:
+            missing_names = ", ".join(missing)
+            payload["agent_directive"] = (
+                f"{len(missing)} attach language(s) ({missing_names}) are unavailable. "
+                "Execute recommended_actions now: run the host_search_commands, "
+                "then call auto_bind with any discovered endpoints."
+            )
+        elif attach_scope_ready and scope_language:
+            payload["agent_directive"] = (
+                f"{scope_language} endpoint is reachable. "
+                "Run recommended_actions to verify analysis coverage. "
+                "If you recompute baseline, re-run auto_bind for this language afterward."
+            )
+        else:
+            payload["agent_directive"] = (
+                "All bundled language servers are reachable. "
+                "Re-run inspect after environment changes."
+            )
+
+        if missing and self._is_docker_runtime():
+            payload["observation_note"] = (
+                "This MCP server runs inside Docker. When providing observations, "
+                "use host.docker.internal (not 127.0.0.1) to reach host-side servers."
+            )
 
     def _lsp_setup_result(self, payload: dict[str, Any]) -> ToolResult:
-        from . import lsp_tools
-
-        return ToolResult(lsp_tools.lsp_setup_result_json(payload))
+        """Serialize structured LSP setup responses as JSON."""
+        return ToolResult(json.dumps(payload, indent=2, sort_keys=True))
 
     def lsp_setup(
         self,
@@ -1806,42 +1860,262 @@ class CodeStructureTools(CloseOnExitMixin):
         compile_db_path: str | None = None,
         project_root: str | None = None,
     ) -> ToolResult:
-        """Inspect and configure LSP command bindings for language plugins."""
-        from . import lsp_tools
-
+        """Inspect and configure deterministic command bindings for bundled LSP plugins."""
         workspace = self._lsp_setup_workspace()
-        result_json = lsp_tools.handle_lsp_setup(
-            workspace=workspace,
-            mode=mode,
-            language=language,
-            command=command,
-            observations=observations,
-            validation_mode=validation_mode,
-            compile_db_path=compile_db_path,
-            project_root=project_root,
-        )
-        # Translate container paths to host paths so agents see
-        # paths that match their host filesystem.
-        host_root = self._get_host_root()
-        if host_root and str(workspace) != host_root:
-            result_json = result_json.replace(str(workspace), host_root)
-        return ToolResult(result_json)
+        normalized_mode = (mode or "inspect").strip().lower()
+        known_languages = [
+            spec.language_id for spec in sorted(bundled_lsp_specs(), key=lambda s: s.language_id)
+        ]
 
-    @_requires_workspace_root(
-        "No indexed codebase. Run index_codebase first to establish a workspace root."
-    )
+        def _validate_language(mode_name: str, *, required: bool = False) -> ToolResult | None:
+            if not language:
+                if required:
+                    return self._lsp_setup_result(
+                        {
+                            "ok": False,
+                            "mode": mode_name,
+                            "error": f"'language' is required when mode='{mode_name}'",
+                            "supported_languages": known_languages,
+                        }
+                    )
+                return None
+
+            if get_lsp_spec(language) is None:
+                return self._lsp_setup_result(
+                    {
+                        "ok": False,
+                        "mode": mode_name,
+                        "error": f"Unsupported language '{language}'",
+                        "supported_languages": known_languages,
+                    }
+                )
+
+            return None
+
+        def _status_for_language(language_id: str) -> dict[str, Any] | None:
+            return next(
+                (
+                    current
+                    for current in collect_lsp_statuses(workspace)
+                    if current["language"] == language_id
+                ),
+                None,
+            )
+
+        if normalized_mode == "inspect":
+            if validation_error := _validate_language(normalized_mode):
+                return validation_error
+
+            statuses = collect_lsp_statuses(
+                workspace,
+                validation_mode=validation_mode,
+                compile_db_path=compile_db_path,
+                project_root=project_root,
+            )
+            if language:
+                statuses = [status for status in statuses if status["language"] == language]
+            missing = [status["language"] for status in statuses if not status["available"]]
+            missing_required = [
+                status["language"]
+                for status in statuses
+                if status.get("required", True) and not status["available"]
+            ]
+            cpp_reachable_only = any(
+                str(status.get("language")) == "cpp_lsp"
+                and str(status.get("verification_state") or "") == "reachable_only"
+                for status in statuses
+            )
+            payload: dict[str, Any] = {
+                "ok": True,
+                "mode": normalized_mode,
+                "workspace": str(workspace),
+                "bindings_path": str(lsp_bindings_path(workspace)),
+                "bindings": load_lsp_bindings(workspace),
+                "servers": statuses,
+                "missing_languages": missing,
+                "missing_required_languages": missing_required,
+                "supported_languages": known_languages,
+                "language_variant_policy": (
+                    language_variant_policy(language) if language else language_variant_policy()
+                ),
+            }
+            if language:
+                payload["scope_language"] = language
+
+            if missing_required:
+                if language:
+                    payload["next_step"] = (
+                        "Call astrograph_lsp_setup with mode='auto_bind' and this language. "
+                        "If still missing, provide observations with language + command."
+                    )
+                else:
+                    payload["next_step"] = (
+                        "Call astrograph_lsp_setup with mode='auto_bind'. "
+                        "If still missing, provide observations with language + command."
+                    )
+            elif cpp_reachable_only:
+                payload["next_step"] = (
+                    "cpp_lsp is reachable but not production-verified. "
+                    "Use a real C++ LSP endpoint (for example clangd/ccls) and a valid "
+                    "compile_commands.json, "
+                    "then re-run auto_bind and inspect."
+                )
+            elif missing:
+                if not language and "cpp_lsp" in missing:
+                    payload["next_step"] = (
+                        f"{len(missing)} attach endpoint(s) unreachable. "
+                        "Start by running the host_search_commands from recommended_actions "
+                        "to check if language servers are already running on the host. "
+                        "Then call astrograph_lsp_setup(mode='auto_bind') with any discovered endpoints as observations."
+                    )
+                else:
+                    payload["next_step"] = (
+                        f"{len(missing)} attach endpoint(s) unreachable. "
+                        "Run the host_search_commands from recommended_actions to discover running servers, "
+                        "then call astrograph_lsp_setup(mode='auto_bind') with results as observations."
+                    )
+
+            if missing:
+                payload["observation_format"] = {
+                    "language": language or "cpp_lsp",
+                    "command": "tcp://127.0.0.1:2088",
+                }
+                payload["observation_examples"] = [
+                    {
+                        "language": "python",
+                        "command": ["/absolute/path/to/pylsp"],
+                    },
+                    {
+                        "language": "java_lsp",
+                        "command": "tcp://127.0.0.1:2089",
+                    },
+                ]
+                if not language and "cpp_lsp" in missing:
+                    payload["focus_hint"] = (
+                        "Start by resolving one language at a time. "
+                        "Run astrograph_lsp_setup(mode='inspect', language='cpp_lsp') "
+                        "and execute its recommended_actions before moving to the next."
+                    )
+            if cpp_reachable_only:
+                payload["production_gate"] = {
+                    "language": "cpp_lsp",
+                    "state": "reachable_only",
+                    "requirement": (
+                        "In production mode, cpp_lsp is treated as unavailable until endpoint "
+                        "handshake, semantic probe, and compile_commands.json checks pass."
+                    ),
+                }
+            self._inject_lsp_setup_guidance(payload, workspace=workspace)
+            return self._lsp_setup_result(payload)
+
+        if normalized_mode == "auto_bind":
+            if validation_error := _validate_language(normalized_mode):
+                return validation_error
+
+            scope_languages = [language] if language else None
+            outcome = auto_bind_missing_servers(
+                workspace=workspace,
+                observations=observations,
+                languages=scope_languages,
+                validation_mode=validation_mode,
+                compile_db_path=compile_db_path,
+                project_root=project_root,
+            )
+            if outcome["changes"]:
+                LanguageRegistry.reset()
+            outcome["bindings"] = load_lsp_bindings(workspace)
+            outcome.update(
+                {
+                    "ok": True,
+                    "mode": normalized_mode,
+                    "supported_languages": known_languages,
+                }
+            )
+            if language:
+                outcome["scope_language"] = language
+            self._inject_lsp_setup_guidance(outcome, workspace=workspace)
+            return self._lsp_setup_result(outcome)
+
+        if normalized_mode == "bind":
+            if validation_error := _validate_language(normalized_mode, required=True):
+                return validation_error
+
+            target_language = cast(str, language)
+            parsed_command = parse_command(command)
+            if not parsed_command:
+                return self._lsp_setup_result(
+                    {
+                        "ok": False,
+                        "mode": normalized_mode,
+                        "error": "'command' must be a non-empty string or array",
+                    }
+                )
+
+            saved_command, path = set_lsp_binding(target_language, parsed_command, workspace)
+            LanguageRegistry.reset()
+
+            status = _status_for_language(target_language)
+            probe = probe_command(saved_command)
+            payload = {
+                "ok": True,
+                "mode": normalized_mode,
+                "language": target_language,
+                "workspace": str(workspace),
+                "bindings_path": str(path),
+                "bindings": load_lsp_bindings(workspace),
+                "saved_command": saved_command,
+                "saved_command_text": format_command(saved_command),
+                "available": probe["available"],
+                "executable": probe["executable"],
+                "status": status,
+            }
+            self._inject_lsp_setup_guidance(payload, workspace=workspace)
+            return self._lsp_setup_result(payload)
+
+        if normalized_mode == "unbind":
+            if validation_error := _validate_language(normalized_mode, required=True):
+                return validation_error
+
+            target_language = cast(str, language)
+            removed, path = unset_lsp_binding(target_language, workspace)
+            LanguageRegistry.reset()
+            status = _status_for_language(target_language)
+            payload = {
+                "ok": True,
+                "mode": normalized_mode,
+                "language": target_language,
+                "workspace": str(workspace),
+                "bindings_path": str(path),
+                "bindings": load_lsp_bindings(workspace),
+                "removed": removed,
+                "status": status,
+            }
+            self._inject_lsp_setup_guidance(payload, workspace=workspace)
+            return self._lsp_setup_result(payload)
+
+        return self._lsp_setup_result(
+            {
+                "ok": False,
+                "mode": normalized_mode,
+                "error": "Invalid mode",
+                "supported_modes": ["inspect", "auto_bind", "bind", "unbind"],
+                "supported_languages": known_languages,
+            }
+        )
+
     def generate_ignore(self) -> ToolResult:
         """Generate a .astrographignore file with sensible defaults."""
+        if not self._last_indexed_path:
+            return ToolResult(
+                "No indexed codebase. Run index_codebase first to establish a workspace root."
+            )
 
-        workspace_root = self._last_indexed_path
-        assert workspace_root is not None
-        root = Path(workspace_root)
+        root = Path(self._last_indexed_path)
         ignore_path = root / ASTROGRAPHIGNORE_FILENAME
 
         if ignore_path.exists():
-            display = self._host_display_path(str(ignore_path))
             return ToolResult(
-                f".astrographignore already exists at {display}. "
+                f".astrographignore already exists at {ignore_path}. "
                 "Edit it manually to change ignore patterns."
             )
 
@@ -1854,74 +2128,6 @@ class CodeStructureTools(CloseOnExitMixin):
             display_path=ASTROGRAPHIGNORE_FILENAME,
         )
         return result
-
-    @_requires_workspace_root(
-        "No indexed codebase. Run index_codebase first to establish a workspace root."
-    )
-    def configure_domains(
-        self,
-        domains: dict[str, list[str]] | None = None,
-    ) -> ToolResult:
-        """Configure named detection domains for partitioned analysis.
-
-        Each domain is a name mapped to a list of glob patterns (relative to
-        the workspace root).  When domains are configured, ``analyze()``
-        partitions its output by domain and reports cross-domain duplicates
-        separately.
-
-        Pass an empty dict to clear all domains.
-        """
-        workspace_root = self._last_indexed_path
-        assert workspace_root is not None
-        persistence_dir = self._current_persistence_path()
-        missing_persistence = self._none_error(
-            persistence_dir,
-            "Metadata persistence is unavailable for the current workspace. "
-            f"Re-run index_codebase after fixing metadata directory permissions or setting {PERSISTENCE_DIR_ENV}.",
-        )
-        if missing_persistence is not None:
-            return missing_persistence
-        assert persistence_dir is not None
-        try:
-            persistence_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            return ToolResult(
-                f"Error: Failed to access metadata directory "
-                f"{self._host_display_path(str(persistence_dir))}: {exc}"
-            )
-        domains_file = persistence_dir / "domains.json"
-
-        if domains is None:
-            domains = {}
-
-        # Validate
-        for name, patterns in domains.items():
-            if not name or not isinstance(name, str):
-                return ToolResult(f"Invalid domain name: {name!r}")
-            if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
-                return ToolResult(f"Domain '{name}' patterns must be a list of strings.")
-            if not patterns:
-                return ToolResult(f"Domain '{name}' has no patterns.")
-
-        if not domains:
-            # Clear
-            try:
-                domains_file.unlink(missing_ok=True)
-            except OSError as exc:
-                return ToolResult(f"Error: Failed to clear detection domains: {exc}")
-            return ToolResult("Detection domains cleared.")
-
-        # Write
-        try:
-            domains_file.write_text(json.dumps({"domains": domains}, indent=2))
-        except OSError as exc:
-            return ToolResult(f"Error: Failed to write detection domains: {exc}")
-
-        lines = [f"Configured {len(domains)} detection domain(s):"]
-        for name, patterns in domains.items():
-            lines.append(f"  {name}: {', '.join(patterns)}")
-        lines.append("Run analyze to see partitioned results.")
-        return ToolResult("\n".join(lines))
 
     def metadata_erase(self) -> ToolResult:
         """
@@ -1943,20 +2149,17 @@ class CodeStructureTools(CloseOnExitMixin):
         erased = False
         bindings_removed = False
         if self._last_indexed_path:
-            persistence_path = self._current_persistence_path()
-            if persistence_path is not None:
-                bindings_removed = (persistence_path / "lsp_bindings.json").exists()
-                if persistence_path.exists():
-                    shutil.rmtree(persistence_path, ignore_errors=True)
-                    erased = True
+            persistence_path = _get_persistence_path(self._last_indexed_path)
+            bindings_removed = (persistence_path / "lsp_bindings.json").exists()
+            if persistence_path.exists():
+                shutil.rmtree(persistence_path, ignore_errors=True)
+                erased = True
 
         # Create fresh event-driven index (no persistence until next index_codebase)
         self._event_driven_index = EventDrivenIndex(
             persistence_path=None,
             watch_enabled=True,
         )
-        self._active_persistence_path = None
-        self._persistence_path_initialized = False
         self.index = self._event_driven_index.index
 
         if erased:
@@ -1969,7 +2172,6 @@ class CodeStructureTools(CloseOnExitMixin):
             return ToolResult(message)
         return ToolResult("No metadata to erase. Server is idle.")
 
-    @_requires_workspace_root("No codebase has been indexed. Nothing to recompute.")
     def metadata_recompute_baseline(self) -> ToolResult:
         """
         Erase metadata and re-index the codebase from scratch.
@@ -1977,12 +2179,11 @@ class CodeStructureTools(CloseOnExitMixin):
         Equivalent to erasing all persisted data and running a fresh
         full index. Suppressions are cleared.
         """
+        if not self._last_indexed_path:
+            return ToolResult("No codebase has been indexed. Nothing to recompute.")
+
         path = self._last_indexed_path
-        assert path is not None
-        persistence_path = self._current_persistence_path()
-        bindings_removed = (
-            (persistence_path / "lsp_bindings.json").exists() if persistence_path else False
-        )
+        bindings_removed = (_get_persistence_path(path) / "lsp_bindings.json").exists()
 
         # Erase everything
         self.metadata_erase()
@@ -2299,11 +2500,6 @@ class CodeStructureTools(CloseOnExitMixin):
         elif name == "analyze":
             return self.analyze(
                 auto_reindex=arguments.get("auto_reindex", True),
-                scope=arguments.get("scope"),
-            )
-        elif name == "configure_domains":
-            return self.configure_domains(
-                domains=arguments.get("domains"),
             )
         elif name == "check":
             return self.check(

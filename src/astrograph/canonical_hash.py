@@ -5,7 +5,6 @@ This provides a fast way to identify potentially isomorphic graphs before
 running the full isomorphism check.
 """
 
-import array
 from collections.abc import Sequence
 
 import networkx as nx
@@ -50,18 +49,15 @@ def weisfeiler_leman_hash(graph: nx.DiGraph, iterations: int = 3) -> str:
             # Using tuples avoids string allocation overhead
             pred_labels = tuple(sorted(labels[p] for p in graph.predecessors(node)))
             succ_labels = tuple(sorted(labels[s] for s in graph.successors(node)))
-            # Encode as raw uint64 bytes: [own, n_preds, pred0..predN, n_succs, succ0..succN]
-            # Avoids repr() string allocation — O(n) bytes instead of O(n*digits)
-            raw = array.array(
-                "Q",
-                [labels[node], len(pred_labels), *pred_labels, len(succ_labels), *succ_labels],
-            ).tobytes()
-            new_labels[node] = xxhash.xxh64(raw).intdigest()
+            combined = (labels[node], pred_labels, succ_labels)
+            # Hash tuple directly - intdigest() returns int, avoiding hex string overhead
+            new_labels[node] = xxhash.xxh64(repr(combined).encode()).intdigest()
 
         labels = new_labels
 
-    # Final hash: sorted multiset of all node labels as raw uint64 bytes
-    return xxhash.xxh64(array.array("Q", sorted(labels.values())).tobytes()).hexdigest()
+    # Final hash: sorted multiset of all node labels
+    sorted_labels = tuple(sorted(labels.values()))
+    return xxhash.xxh64(repr(sorted_labels).encode()).hexdigest()
 
 
 def structural_fingerprint(graph: nx.DiGraph) -> dict:

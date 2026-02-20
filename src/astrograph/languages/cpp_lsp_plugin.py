@@ -82,6 +82,8 @@ class CppLSPPlugin(BraceLanguageLSPPlugin):
     FILE_EXTENSIONS = frozenset({".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".ipp"})
     SKIP_DIRS = frozenset({"build", "cmake-build-debug", "cmake-build-release"})
     DEFAULT_COMMAND = ("tcp://127.0.0.1:2088",)
+    COMMAND_ENV_VAR = "ASTROGRAPH_CPP_LSP_COMMAND"
+    TIMEOUT_ENV_VAR = "ASTROGRAPH_CPP_LSP_TIMEOUT"
 
     def _normalize_cpp_type(self, raw_type: str) -> str:
         cleaned = raw_type.replace("&", " ").replace("*", " ")
@@ -162,10 +164,9 @@ class CppLSPPlugin(BraceLanguageLSPPlugin):
         for left, right in plus_pairs:
             left_type = var_types.get(left)
             right_type = var_types.get(right)
-            if any(candidate is None for candidate in (left_type, right_type)):
+            if left_type is None or right_type is None:
                 saw_unknown = True
                 continue
-            assert left_type is not None and right_type is not None
 
             if left_type == right_type and self._is_builtin_cpp_type(left_type):
                 saw_builtin = True

@@ -23,7 +23,7 @@ def main() -> int:
             "-v",  # Verbose to get "X passed" summary
             "--tb=line",  # One-line tracebacks for failures
             "--no-header",  # Skip pytest version
-            "--cov=src/astrograph",
+            "--cov=src/code_structure_mcp",
             "--cov-report=",  # No coverage table
             "--cov-fail-under=92",
         ],

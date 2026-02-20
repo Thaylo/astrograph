@@ -398,13 +398,16 @@ class GoplsProfile:
 
         # Keyword-based signals
         keyword_texts = token_index.texts_of_type("keyword")
-        keyword_signal_map = (
-            ("defer", "go.defer_recover", "defer"),
-            ("go", "go.concurrency", "goroutine"),
-        )
-        for keyword, key, value in keyword_signal_map:
-            if keyword in keyword_texts:
-                signals.append(SemanticSignal(key=key, value=value, confidence=0.95, origin="lsp"))
+        if "defer" in keyword_texts:
+            signals.append(
+                SemanticSignal(key="go.defer_recover", value="defer", confidence=0.95, origin="lsp")
+            )
+        if "go" in keyword_texts:
+            signals.append(
+                SemanticSignal(
+                    key="go.concurrency", value="goroutine", confidence=0.95, origin="lsp"
+                )
+            )
 
         return signals
 

@@ -6,11 +6,17 @@ import contextlib
 import json
 import socket
 import threading
-from typing import Any
 
-import astrograph.lsp_setup as _lsp_setup
 from astrograph.tools import CodeStructureTools
 from tests.languages.test_lsp_client import _run_fake_socket_lsp
+
+
+def _is_tcp_endpoint_reachable(host: str, port: int, timeout: float = 0.2) -> bool:
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+    except OSError:
+        return False
+    return True
 
 
 class _EphemeralSocketLSP:
@@ -52,9 +58,15 @@ class _EphemeralSocketLSP:
 class TestCppAttachE2E:
     def test_cpp_attach_discovery_and_indexing(self, tmp_path, monkeypatch):
         """Discover/provision a C++ endpoint, bind it, then index C++ code."""
-        fallback_endpoint = _EphemeralSocketLSP()
-        fallback_endpoint.start()
-        endpoint = fallback_endpoint.endpoint
+        endpoint = None
+        if _is_tcp_endpoint_reachable("127.0.0.1", 2088):
+            endpoint = "tcp://127.0.0.1:2088"
+
+        fallback_endpoint: _EphemeralSocketLSP | None = None
+        if endpoint is None:
+            fallback_endpoint = _EphemeralSocketLSP()
+            fallback_endpoint.start()
+            endpoint = fallback_endpoint.endpoint
 
         source_file = tmp_path / "sample.cpp"
         source_file.write_text(
@@ -93,21 +105,6 @@ int helper(int value) {
         tools = CodeStructureTools()
         monkeypatch.setenv("ASTROGRAPH_WORKSPACE", str(tmp_path))
 
-        # Block the default C++ endpoint (tcp://127.0.0.1:2088): if a socat bridge is
-        # running on the host, probe_command would report it as available, causing
-        # auto_bind to skip cpp_lsp entirely (it only processes *missing* languages).
-        # This ensures the test exercises the observation-based binding path regardless
-        # of whether clangd/socat is present in the test environment.
-        _real_probe = _lsp_setup.probe_command
-
-        def _probe_no_default_cpp(command: Any) -> dict[str, Any]:
-            parsed = _lsp_setup.parse_command(command)
-            if parsed and any(":2088" in str(part) for part in parsed):
-                return {"command": parsed, "available": False, "executable": None, "transport": "tcp"}
-            return _real_probe(command)
-
-        monkeypatch.setattr(_lsp_setup, "probe_command", _probe_no_default_cpp)
-
         try:
             inspect_before = json.loads(tools.lsp_setup(mode="inspect").text)
             assert "cpp_lsp" in inspect_before["supported_languages"]
@@ -140,4 +137,5 @@ int helper(int value) {
             )
         finally:
             tools.close()
-            fallback_endpoint.close()
+            if fallback_endpoint is not None:
+                fallback_endpoint.close()

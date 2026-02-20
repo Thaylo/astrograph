@@ -369,7 +369,12 @@ class SubprocessLSPClient(LSPClient):
         if not isinstance(items, list):
             return []
 
-        return [parsed for item in items if (parsed := self._parse_symbol(item)) is not None]
+        symbols: list[LSPSymbol] = []
+        for item in items:
+            parsed = self._parse_symbol(item)
+            if parsed is not None:
+                symbols.append(parsed)
+        return symbols
 
     def _parse_symbol(self, data: Any) -> LSPSymbol | None:
         if not isinstance(data, dict):
@@ -529,7 +534,6 @@ class SocketLSPClient(SubprocessLSPClient):
         *,
         request_timeout: float = 5.0,
         initialization_options: dict[str, Any] | None = None,
-        path_prefix_map: tuple[str, str] | None = None,
     ) -> None:
         parsed_endpoint = parse_attach_endpoint([endpoint])
         if parsed_endpoint is None:
@@ -541,63 +545,42 @@ class SocketLSPClient(SubprocessLSPClient):
             initialization_options=initialization_options,
         )
         self._endpoint = parsed_endpoint
-        self._path_prefix_map = path_prefix_map  # (container_prefix, host_prefix)
         self._sock: socket.socket | None = None
         self._stdin: BinaryIO | None = None
         self._stdout: BinaryIO | None = None
-
-    def _path_to_uri(self, file_path: str) -> str:
-        # Translate container paths to host paths for host-side LSP servers.
-        if self._path_prefix_map is not None:
-            container_pfx, host_pfx = self._path_prefix_map
-            if file_path.startswith(container_pfx):
-                file_path = host_pfx + file_path[len(container_pfx) :]
-        return super()._path_to_uri(file_path)
 
     def _start_process(self) -> bool:
         with self._lock:
             if self._disabled:
                 return False
+
             if self._sock is not None:
                 return True
 
-        # Connect outside the lock — socket.create_connection calls getaddrinfo
-        # internally without a timeout, and holding the lock during a blocking
-        # network operation would stall concurrent callers for its full duration.
-        try:
-            transport = self._endpoint["transport"]
-            if transport == "tcp":
-                sock = socket.create_connection(
-                    (self._endpoint["host"], self._endpoint["port"]),
-                    timeout=self._request_timeout,
-                )
-            else:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                transport = self._endpoint["transport"]
+                if transport == "tcp":
+                    sock = socket.create_connection(
+                        (self._endpoint["host"], self._endpoint["port"]),
+                        timeout=self._request_timeout,
+                    )
+                else:
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    sock.settimeout(self._request_timeout)
+                    sock.connect(str(self._endpoint["path"]))
+
                 sock.settimeout(self._request_timeout)
-                sock.connect(str(self._endpoint["path"]))
-            sock.settimeout(self._request_timeout)
-        except OSError as exc:
-            with self._lock:
+                self._sock = sock
+                self._stdin = sock.makefile("wb")
+                self._stdout = sock.makefile("rb")
+            except OSError as exc:
                 self._disabled = True
-            logger.warning("Failed to attach to LSP endpoint %s: %s", self._command[0], exc)
-            return False
-
-        # Re-acquire the lock to commit the connection, handling the rare case
-        # where another thread raced to connect or disable us while we were connecting.
-        with self._lock:
-            if self._disabled:
-                self._close_quietly(sock)
+                logger.warning("Failed to attach to LSP endpoint %s: %s", self._command[0], exc)
                 return False
-            if self._sock is not None:
-                self._close_quietly(sock)
-                return True
-            self._sock = sock
-            self._stdin = sock.makefile("wb")
-            self._stdout = sock.makefile("rb")
 
-        self._initialized = False
-        self._next_id = 1
-        return True
+            self._initialized = False
+            self._next_id = 1
+            return True
 
     def _send_message(self, payload: dict[str, Any]) -> None:
         if self._stdin is None:
@@ -679,39 +662,32 @@ class SocketLSPClient(SubprocessLSPClient):
             self._close_quietly(sock)
 
 
-def create_lsp_client(
+def create_subprocess_client_from_env(
     *,
     default_command: Sequence[str],
+    command_env_var: str,
+    timeout_env_var: str,
     language_id: str,
     workspace: str | Path | None = None,
-    request_timeout: float = 5.0,
+    default_timeout: float = 5.0,
 ) -> LSPClient:
-    """Create an LSP client from binding resolution.
-
-    Returns a NullLSPClient immediately if no binding exists (fail fast).
-    Only explicitly bound commands produce a real client.
-    """
-    from ._lsp_base import NullLSPClient
-
-    command, source = resolve_lsp_command(
+    """Create an LSP client from binding/env/default command resolution."""
+    command, _source = resolve_lsp_command(
         language_id=language_id,
         default_command=default_command,
+        command_env_var=command_env_var,
         workspace=workspace,
     )
 
-    # Fail fast: no binding → not configured
-    if source != "binding":
-        return NullLSPClient()
+    timeout_text = os.getenv(timeout_env_var, str(default_timeout))
+    try:
+        timeout = float(timeout_text)
+    except ValueError:
+        timeout = default_timeout
 
-    request_timeout = max(request_timeout, 0.1)
+    request_timeout = max(timeout, 0.1)
     endpoint = parse_attach_endpoint(command)
     if endpoint is not None:
-        from ..lsp_setup import get_docker_path_map
-
-        return SocketLSPClient(
-            command[0],
-            request_timeout=request_timeout,
-            path_prefix_map=get_docker_path_map(),
-        )
+        return SocketLSPClient(command[0], request_timeout=request_timeout)
 
     return SubprocessLSPClient(command, request_timeout=request_timeout)

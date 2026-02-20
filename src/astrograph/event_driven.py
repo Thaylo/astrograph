@@ -13,7 +13,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from ._sync_helpers import pop_attr_with_lock
 from .cloud_detect import check_and_warn_cloud_sync, is_cloud_synced_path
 from .context import CloseOnExitMixin
 from .ignorefile import IgnoreSpec
@@ -213,7 +212,9 @@ class EventDrivenIndex(CloseOnExitMixin):
         self._shutdown.set()
         self.stop_watching()
 
-        bg = pop_attr_with_lock(self._bg_lock, self, "_bg_thread")
+        with self._bg_lock:
+            bg = self._bg_thread
+            self._bg_thread = None
         if bg is not None:
             bg.join(timeout=2.0)
 
@@ -250,12 +251,10 @@ class EventDrivenIndex(CloseOnExitMixin):
         # Update in-memory index
         entries = self.index.index_file(path, include_blocks=True)
 
-        # Persist incrementally (save counter so restart doesn't regenerate
-        # colliding IDs — fixes UNIQUE constraint crash on container restart).
+        # Persist incrementally
         if self._persistence is not None and path in self.index.file_metadata:
             metadata = self.index.file_metadata[path]
             self._persistence.save_file_entries(path, entries, metadata)
-            self._persistence.save_index_metadata(self.index)
 
         self._invalidate_cache_and_recompute()
 
@@ -325,38 +324,28 @@ class EventDrivenIndex(CloseOnExitMixin):
     def get_cached_analysis(
         self,
         min_node_count: int = 5,
-        entry_filter: Callable | None = None,
     ) -> tuple[list[DuplicateGroup], list[DuplicateGroup], list[DuplicateGroup]]:
         """
         Get analysis results, using cache if available.
 
-        When ``entry_filter`` is provided the cache is bypassed because
-        scoped results differ from the global cached results.
-
         Returns (exact_duplicates, pattern_duplicates, block_duplicates).
         """
-        # Cache is always computed with min_node_count=5 and no filter;
-        # only use it when the caller requests the same threshold and no filter.
-        if min_node_count == 5 and entry_filter is None:
+        # Cache is always computed with min_node_count=5; only use it
+        # when the caller requests the same threshold.
+        if min_node_count == 5:
             cached = self._cache.get()
             if cached is not None:
                 self._cache_hits += 1
                 return cached
 
-        # Cache miss, different threshold, or scoped query - compute synchronously
+        # Cache miss or different threshold - compute synchronously
         self._cache_misses += 1
-        exact = self.index.find_all_duplicates(
-            min_node_count=min_node_count, entry_filter=entry_filter
-        )
-        pattern = self.index.find_pattern_duplicates(
-            min_node_count=min_node_count, entry_filter=entry_filter
-        )
-        blocks = self.index.find_block_duplicates(
-            min_node_count=min_node_count, entry_filter=entry_filter
-        )
+        exact = self.index.find_all_duplicates(min_node_count=min_node_count)
+        pattern = self.index.find_pattern_duplicates(min_node_count=min_node_count)
+        blocks = self.index.find_block_duplicates(min_node_count=min_node_count)
 
-        # Only populate cache when using the standard threshold without filter
-        if min_node_count == 5 and entry_filter is None:
+        # Only populate cache when using the standard threshold
+        if min_node_count == 5:
             self._cache.set(exact, pattern, blocks)
         return exact, pattern, blocks
 
@@ -477,18 +466,6 @@ class EventDrivenIndex(CloseOnExitMixin):
     def unsuppress(self, wl_hash: str) -> bool:
         """Unsuppress a hash and persist."""
         return self._toggle_suppression(wl_hash, suppress=False)
-
-    def invalidate_stale_suppressions(self) -> list[tuple[str, str]]:
-        """Invalidate stale suppressions and persist removals."""
-        invalidated = self.index.invalidate_stale_suppressions()
-        if not invalidated:
-            return []
-
-        for wl_hash, _ in invalidated:
-            self._persist_unsuppression(wl_hash)
-
-        self._invalidate_cache_and_recompute()
-        return invalidated
 
     def _persist_suppression(self, wl_hash: str) -> None:
         """Persist a single suppression if persistence is enabled."""

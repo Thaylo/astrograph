@@ -34,9 +34,8 @@ async def _run_roundtrip(request: bytes) -> bytes:
     fake_stdin = io.BytesIO(request)
     fake_stdout = io.BytesIO()
 
-    with (
-        patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()),
-        patch.object(sys, "stdout", type("", (), {"buffer": fake_stdout})()),
+    with patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()), patch.object(
+        sys, "stdout", type("", (), {"buffer": fake_stdout})()
     ):
         async with dual_stdio_server() as (read_stream, write_stream):
             msg = await read_stream.receive()
@@ -237,57 +236,13 @@ class TestDualStdioServer:
         assert parsed["id"] == 1
 
     @pytest.mark.asyncio
-    async def test_framed_mode_early_send_stays_framed(self):
-        """First outbound write should wait for framing detection and stay framed."""
-        body = json.dumps(_make_initialize_request()).encode("utf-8")
-        request = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
-        fake_stdin = io.BytesIO(request)
-        fake_stdout = io.BytesIO()
-
-        response = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
-        }
-        response_msg = SessionMessage(message=JSONRPCMessage.model_validate(response))
-
-        original_read_message = _StdioReader.read_message
-
-        async def delayed_read_message(self: _StdioReader) -> bytes:
-            await anyio.sleep(0.05)
-            return await original_read_message(self)
-
-        with (
-            patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()),
-            patch.object(sys, "stdout", type("", (), {"buffer": fake_stdout})()),
-            patch.object(_StdioReader, "read_message", delayed_read_message),
-        ):
-            async with dual_stdio_server() as (read_stream, write_stream):
-                # Send before first request is consumed by read_stream.
-                await write_stream.send(response_msg)
-                inbound = await read_stream.receive()
-                assert isinstance(inbound, SessionMessage)
-                await anyio.sleep(0.05)
-
-        output = fake_stdout.getvalue()
-        assert b"Content-Length:" in output
-        header_end = output.index(b"\r\n\r\n")
-        header = output[:header_end].decode("ascii")
-        body_out = output[header_end + 4 :]
-        content_length = int(header.split(":")[1].strip())
-        assert len(body_out) == content_length
-        parsed = json.loads(body_out)
-        assert parsed["id"] == 1
-
-    @pytest.mark.asyncio
     async def test_eof_closes_read_stream(self):
         """When stdin is empty, read_stream should close after EOFError."""
         fake_stdin = io.BytesIO(b"")
         fake_stdout = io.BytesIO()
 
-        with (
-            patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()),
-            patch.object(sys, "stdout", type("", (), {"buffer": fake_stdout})()),
+        with patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()), patch.object(
+            sys, "stdout", type("", (), {"buffer": fake_stdout})()
         ):
             async with dual_stdio_server() as (read_stream, write_stream):
                 # stdin is empty, so reader hits EOF immediately.
@@ -296,55 +251,3 @@ class TestDualStdioServer:
 
                 with pytest.raises(EndOfStream):
                     await read_stream.receive()
-
-    @pytest.mark.asyncio
-    async def test_stdin_task_ignores_empty_messages(self):
-        """Empty reads are ignored until a valid payload arrives."""
-        fake_stdin = io.BytesIO(b"")
-        fake_stdout = io.BytesIO()
-
-        payload = json.dumps(_make_initialize_request()).encode("utf-8")
-        calls = 0
-
-        async def sequenced_read_message(_reader: _StdioReader) -> bytes:
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return b""
-            if calls == 2:
-                return payload
-            raise EOFError
-
-        with (
-            patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()),
-            patch.object(sys, "stdout", type("", (), {"buffer": fake_stdout})()),
-            patch.object(_StdioReader, "read_message", sequenced_read_message),
-        ):
-            async with dual_stdio_server() as (read_stream, _write_stream):
-                msg = await read_stream.receive()
-                assert isinstance(msg, SessionMessage)
-
-    @pytest.mark.asyncio
-    async def test_stdin_task_forwards_reader_exceptions(self):
-        """Reader exceptions are surfaced to the server read stream."""
-        fake_stdin = io.BytesIO(b"")
-        fake_stdout = io.BytesIO()
-
-        calls = 0
-
-        async def sequenced_read_message(_reader: _StdioReader) -> bytes:
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise ValueError("boom")
-            raise EOFError
-
-        with (
-            patch.object(sys, "stdin", type("", (), {"buffer": fake_stdin})()),
-            patch.object(sys, "stdout", type("", (), {"buffer": fake_stdout})()),
-            patch.object(_StdioReader, "read_message", sequenced_read_message),
-        ):
-            async with dual_stdio_server() as (read_stream, _write_stream):
-                message = await read_stream.receive()
-                assert isinstance(message, ValueError)
-                assert str(message) == "boom"
