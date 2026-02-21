@@ -940,16 +940,22 @@ class TestEventDrivenTools:
         import re
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Functions must be substantial enough to cross the duplicate-detection
+            # threshold (>= 4 statements each) — 3-statement bodies are too short.
             code = """
-def process(items):
+def process_items(items):
+    results = []
     for item in items:
         if item > 0:
-            print(item)
+            results.append(item * 2)
+    return results
 
-def transform(data):
+def transform_data(data):
+    output = []
     for element in data:
         if element > 0:
-            print(element)
+            output.append(element * 2)
+    return output
 """
             file1 = os.path.join(tmpdir, "file1.py")
             Path(file1).write_text(code)
@@ -959,7 +965,17 @@ def transform(data):
             tools1.index_codebase(tmpdir)
 
             analyze_result = tools1.analyze()
-            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
+            # analyze() returns a summary with a path to the full report file;
+            # the suppress(wl_hash="...") command is in the report, not the summary.
+            from astrograph.tools import PERSISTENCE_DIR
+
+            report_match = re.search(r"\.metadata_astrograph/([^\s`]+)", analyze_result.text)
+            if report_match:
+                report_path = Path(tmpdir) / PERSISTENCE_DIR / report_match.group(1)
+                full_text = report_path.read_text() if report_path.exists() else analyze_result.text
+            else:
+                full_text = analyze_result.text
+            match = re.search(r'suppress\(wl_hash="([^"]+)"\)', full_text)
             if not match:
                 pytest.fail("No duplicates found — fixture code must produce duplicates")
             wl_hash = match.group(1)
