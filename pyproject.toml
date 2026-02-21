@@ -60,8 +60,11 @@ include = ["src/astrograph"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 asyncio_mode = "auto"
-# Default: verbose for humans. Use scripts/test.py for AI-friendly output.
-addopts = "-v --tb=short --no-header --cov=src/astrograph --cov-report= --cov-fail-under=92"
+# Coverage is measured on every run so that CI can enforce --cov-fail-under=92.
+# The threshold is NOT in addopts — pass it explicitly when you need it:
+#   uv run pytest --cov-fail-under=92
+# This keeps local runs fast and avoids false failures when e2e tests are skipped.
+addopts = "--tb=short --no-header --cov=src/astrograph --cov-report="
 
 [tool.coverage.run]
 source = ["src/astrograph"]

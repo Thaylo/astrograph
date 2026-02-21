@@ -20,12 +20,10 @@ def main() -> int:
             sys.executable,
             "-m",
             "pytest",
-            "-v",  # Verbose to get "X passed" summary
             "--tb=line",  # One-line tracebacks for failures
             "--no-header",  # Skip pytest version
-            "--cov=src/code_structure_mcp",
+            "--cov=src/astrograph",
             "--cov-report=",  # No coverage table
-            "--cov-fail-under=92",
         ],
         capture_output=True,
         text=True,
@@ -38,11 +36,9 @@ def main() -> int:
     failed = _extract_int(r"(\d+) failed", output)
     errors = _extract_int(r"(\d+) error", output)
 
-    coverage = match.group(1) if (match := re.search(r"Total coverage: ([\d.]+%)", output)) else "?"
-
     # Single-line output
     status = "PASS" if result.returncode == 0 else "FAIL"
-    print(f"tests:{status} passed:{passed} failed:{failed} errors:{errors} coverage:{coverage}")
+    print(f"tests:{status} passed:{passed} failed:{failed} errors:{errors}")
 
     # Show failures only (one per line, must contain :: for test location)
     if result.returncode != 0:

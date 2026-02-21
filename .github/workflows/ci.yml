@@ -45,4 +45,4 @@ jobs:
       - name: Run test suite
         env:
           ASTOGRAPH_TEST_IMAGE: astrograph-local:test
-        run: uv run pytest -q
+        run: uv run pytest -q --cov-fail-under=92

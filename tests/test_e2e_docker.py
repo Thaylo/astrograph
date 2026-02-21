@@ -779,7 +779,14 @@ class TestErrorHandling:
 
 
 def pytest_configure(_config):
-    """Check if Docker is available."""
+    """Skip this module unless an explicit Docker image is provided.
+
+    Requiring ASTOGRAPH_TEST_IMAGE prevents accidental e2e runs on developer
+    machines that would pull and spin up containers, potentially freezing the
+    machine.  CI always sets the variable (to a freshly-built local image).
+    """
+    if not os.environ.get("ASTOGRAPH_TEST_IMAGE"):
+        pytest.skip("Set ASTOGRAPH_TEST_IMAGE to run Docker e2e tests", allow_module_level=True)
     try:
         subprocess.run(["docker", "--version"], capture_output=True, timeout=5)
     except (subprocess.TimeoutExpired, FileNotFoundError):
