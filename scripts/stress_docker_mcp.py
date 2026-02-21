@@ -78,7 +78,8 @@ def main() -> int:
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     assert proc.stdin and proc.stdout
-    deadline = time.time() + args.timeout
+    # Per-call timeout; set_workspace on large repos can take 20-30s inside Docker ARM64.
+    call_timeout = args.timeout
     stderr_tail: deque[str] = deque(maxlen=50)
 
     def send(obj: dict) -> None:
@@ -100,8 +101,7 @@ def main() -> int:
     def recv() -> dict:
         if proc.poll() is not None:
             raise RuntimeError("server exited early")
-        remaining = max(deadline - time.time(), 0.0)
-        ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        ready, _, _ = select.select([proc.stdout], [], [], call_timeout)
         _drain_stderr()
         if not ready:
             tail = "\n".join(stderr_tail)
