@@ -416,12 +416,16 @@ class CodeStructureTools(CloseOnExitMixin):
             return ToolResult(msg)
 
         # Guard against accidentally indexing the entire filesystem.
-        # A path with fewer than 3 parts on any OS (e.g. "/", "/home", "C:\\Users")
-        # is almost certainly not a project directory.
-        resolved_path = Path(path).resolve()
-        if len(resolved_path.parts) < 3:
+        # Use the raw input path's depth (before symlink resolution) so that
+        # shallow system paths are caught on all platforms — e.g. "/home" on
+        # macOS resolves to "/System/Volumes/Data/home" (5 parts) but the
+        # user typed a 2-part path, which is still dangerous.
+        # Exception: "/workspace" is the Docker convention for a mounted project.
+        raw_path = Path(path)
+        resolved_path = raw_path.resolve()
+        if len(raw_path.parts) < 3 and str(raw_path) != "/workspace":
             return ToolResult(
-                f"Error: Refusing to index '{resolved_path}' — path is a system-level "
+                f"Error: Refusing to index '{raw_path}' — path is a system-level "
                 "directory. Please provide a specific project directory."
             )
 

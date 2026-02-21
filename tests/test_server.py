@@ -341,6 +341,20 @@ class TestIndexCodebase:
         result = tools.index_codebase("/nonexistent/path")
         assert "Error" in result.text
 
+    def test_index_refuses_system_root_paths(self, tools):
+        """Indexing / or shallow system dirs must be refused to prevent fs walks."""
+        for dangerous in ["/", "/home", "/var", "/Users"]:
+            result = tools.index_codebase(dangerous)
+            assert (
+                "Refusing to index" in result.text
+            ), f"Expected refusal for '{dangerous}', got: {result.text!r}"
+
+    def test_index_allows_project_depth_path(self, tools, tmp_path):
+        """A path with depth >= 3 (typical project root) must not be refused."""
+        # tmp_path is something like /tmp/pytest-xxx/test_xxx — depth >= 3
+        result = tools.index_codebase(str(tmp_path))
+        assert "Refusing to index" not in result.text
+
     def test_index_clears_previous(self, tools, sample_python_file):
         """Indexing should clear previous index."""
         tools.index_codebase(sample_python_file)
