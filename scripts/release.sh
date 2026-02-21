@@ -61,8 +61,8 @@ if [[ "$CURRENT_VERSION" == "$VERSION" ]]; then
     exit 1
 fi
 
-if [[ -n "$(git status --porcelain)" ]]; then
-    echo "Error: working tree is not clean. Commit or stash changes first."
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    echo "Error: working tree has uncommitted tracked changes. Commit or stash first."
     exit 1
 fi
 
