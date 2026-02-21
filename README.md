@@ -25,7 +25,7 @@ Add `.mcp.json` to your project root:
         "--add-host", "host.docker.internal:host-gateway",
         "-v", ".:/workspace",
         "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
-        "thaylo/astrograph:0.5.72"
+        "thaylo/astrograph:latest"
       ]
     }
   }
@@ -34,10 +34,10 @@ Add `.mcp.json` to your project root:
 
 The image is multi-arch (amd64, arm64). The codebase is indexed at startup and re-indexed on file changes.
 
-To update to a new release, pull the image and change the tag:
+To update to a new release:
 
 ```bash
-docker pull thaylo/astrograph:NEW_VERSION
+docker pull thaylo/astrograph:latest
 ```
 
 The running version is always visible in the MCP `serverInfo.version` field on connect.
@@ -58,7 +58,7 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
         "--add-host", "host.docker.internal:host-gateway",
         "-v", "/absolute/path/to/project:/workspace",
         "-v", "/absolute/path/to/project/.metadata_astrograph:/workspace/.metadata_astrograph",
-        "thaylo/astrograph:0.5.72"
+        "thaylo/astrograph:latest"
       ]
     }
   }
@@ -80,7 +80,7 @@ args = [
   "--add-host", "host.docker.internal:host-gateway",
   "-v", "/absolute/path/to/project:/workspace",
   "-v", "/absolute/path/to/project/.metadata_astrograph:/workspace/.metadata_astrograph",
-  "thaylo/astrograph:0.5.72"
+  "thaylo/astrograph:latest"
 ]
 ```
 
@@ -100,7 +100,7 @@ args = [
         "run", "--rm", "-i", "--pull", "missing",
         "--add-host", "host.docker.internal:host-gateway",
         "-v", "/Users:/Users:rw",
-        "thaylo/astrograph:0.5.72"
+        "thaylo/astrograph:latest"
       ]
     }
   }
