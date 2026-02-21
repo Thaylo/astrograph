@@ -5,6 +5,8 @@
       "args": [
         "run", "--rm", "-i", "--pull", "always",
         "--add-host", "host.docker.internal:host-gateway",
+        "-v", "/Users:/Users",
+        "-v", "/tmp:/tmp",
         "-v", ".:/workspace",
         "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
         "thaylo/astrograph:latest"
