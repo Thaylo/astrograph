@@ -960,7 +960,9 @@ def transform(data):
 
             analyze_result = tools1.analyze()
             match = re.search(r'suppress\(wl_hash="([^"]+)"\)', analyze_result.text)
-            wl_hash = match.group(1) if match else pytest.skip("No duplicates found to suppress")
+            if not match:
+                pytest.fail("No duplicates found — fixture code must produce duplicates")
+            wl_hash = match.group(1)
             tools1.suppress(wl_hash)
             tools1.close()
 

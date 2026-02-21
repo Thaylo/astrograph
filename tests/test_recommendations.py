@@ -113,10 +113,9 @@ class TestRecommendationEngine:
 
     @staticmethod
     def _assert_first_action(recommendations, action: ActionType) -> None:
-        first = (
-            recommendations[0] if recommendations else pytest.skip("No recommendations produced")
-        )
-        assert first.action == action
+        if not recommendations:
+            pytest.fail("No recommendations produced — fixture must yield a non-empty list")
+        assert recommendations[0].action == action
 
     @pytest.fixture
     def sample_index_with_duplicates(self):

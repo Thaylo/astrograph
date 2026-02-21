@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
-# Docker image to test (use local build for CI, published for release validation)
-DOCKER_IMAGE = os.environ.get("ASTOGRAPH_TEST_IMAGE", "thaylo/astrograph")
+# Docker image to test — no default: pytest_configure guards this module so
+# ASTOGRAPH_TEST_IMAGE is always set when tests reach this line.  KeyError is
+# preferable to silently pulling the published production image.
+DOCKER_IMAGE = os.environ["ASTOGRAPH_TEST_IMAGE"]
 
 
 # ---------------------------------------------------------------------------

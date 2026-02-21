@@ -389,7 +389,7 @@ class TestAnalyze:
         tools.index_codebase(sample_python_file)
         result = tools.analyze()
         if ".metadata_astrograph/" not in result.text:
-            pytest.skip("No duplicates found to generate report")
+            pytest.fail("No duplicates found — sample_python_file must produce duplicates")
 
         match = re.search(r"\.metadata_astrograph/([^`\s]+)", result.text)
         assert match
@@ -3861,7 +3861,9 @@ def transform_data(data):
             analyze_result = tools1.analyze()
             details = _get_analyze_details(tools1, analyze_result)
             match = re.search(r'suppress\(wl_hash="([^"]+)"\)', details)
-            wl_hash = match.group(1) if match else pytest.skip("No duplicates found to suppress")
+            if not match:
+                pytest.fail("No duplicates found — fixture code must produce duplicates")
+            wl_hash = match.group(1)
             tools1.suppress(wl_hash)
 
             # Explicitly close (simulates Docker SIGTERM → _tools.close())
