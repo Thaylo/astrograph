@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+.metadata_astrograph/
+.tripwire_scratch/
+tests/
+scripts/
+.github/
