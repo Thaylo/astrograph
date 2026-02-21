@@ -2,8 +2,9 @@
 .venv
 __pycache__
 *.pyc
-.metadata_astrograph/
+**/.metadata_astrograph/
 .tripwire_scratch/
+_lang_tests/
 tests/
 scripts/
 .github/
