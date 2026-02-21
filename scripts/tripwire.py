@@ -178,32 +178,22 @@ def main() -> int:
 
             breach = False
             reasons = []
-            if ram_percent > args.max_ram_percent:
-                breach = True
-                reasons.append(f"ram={ram_percent:.1f}%")
-            if rss_mb > args.max_rss_mb:
-                breach = True
-                reasons.append(f"rss={rss_mb:.1f}MB")
-            if io_mbps > args.max_io_mbps:
-                breach = True
-                reasons.append(f"io={io_mbps:.1f}MB/s")
-            if thread_count > args.max_threads:
-                breach = True
-                reasons.append(f"threads={thread_count}")
-            if (
-                args.max_container_mem_mb > 0.0
-                and container_mem_mb is not None
-                and container_mem_mb > args.max_container_mem_mb
+            for value, threshold, label in (
+                (ram_percent, args.max_ram_percent, f"ram={ram_percent:.1f}%"),
+                (rss_mb, args.max_rss_mb, f"rss={rss_mb:.1f}MB"),
+                (io_mbps, args.max_io_mbps, f"io={io_mbps:.1f}MB/s"),
+                (thread_count, args.max_threads, f"threads={thread_count}"),
             ):
-                breach = True
-                reasons.append(f"container_mem={container_mem_mb:.1f}MB")
-            if (
-                args.max_container_mem_percent > 0.0
-                and container_mem_percent is not None
-                and container_mem_percent > args.max_container_mem_percent
+                if value > threshold:
+                    breach = True
+                    reasons.append(label)
+            for limit, value, unit in (
+                (args.max_container_mem_mb, container_mem_mb, "MB"),
+                (args.max_container_mem_percent, container_mem_percent, "%"),
             ):
-                breach = True
-                reasons.append(f"container_mem={container_mem_percent:.1f}%")
+                if limit > 0.0 and value is not None and value > limit:
+                    breach = True
+                    reasons.append(f"container_mem={value:.1f}{unit}")
             if gpu_util is not None and gpu_util > args.max_gpu_util:
                 breach = True
                 reasons.append(f"gpu={gpu_util:.1f}%")
