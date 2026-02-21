@@ -2,22 +2,14 @@ import tempfile
 import time
 from pathlib import Path
 
-import pytest
-
-
-def _skip_if_watchdog_missing() -> None:
-    from astrograph.watcher import HAS_WATCHDOG
-
-    if HAS_WATCHDOG:
-        return
-    pytest.skip("watchdog not installed")
+from helpers import skip_if_watchdog_missing
 
 
 def test_debounce_worker_handles_event_storm() -> None:
     """Ensure debouncer doesn't create unbounded threads under heavy churn."""
     from astrograph.event_driven import EventDrivenIndex
 
-    _skip_if_watchdog_missing()
+    skip_if_watchdog_missing()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)

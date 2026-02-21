@@ -58,6 +58,7 @@ include = ["src/astrograph"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 asyncio_mode = "auto"
 # Default: verbose for humans. Use scripts/test.py for AI-friendly output.
 addopts = "-v --tb=short --no-header --cov=src/astrograph --cov-report= --cov-fail-under=92"

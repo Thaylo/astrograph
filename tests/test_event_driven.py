@@ -10,6 +10,7 @@ import pytest
 from astrograph.index import CodeStructureIndex
 from astrograph.persistence import SQLitePersistence
 from astrograph.tools import CodeStructureTools
+from helpers import skip_if_watchdog_missing
 
 
 def _event_appender(events, event_type):
@@ -24,14 +25,6 @@ def _event_appender(events, event_type):
 def _path_appender(paths):
     """Build a callback that records raw paths."""
     return paths.append
-
-
-def _skip_if_watchdog_missing() -> None:
-    from astrograph.watcher import HAS_WATCHDOG
-
-    if HAS_WATCHDOG:
-        return
-    pytest.skip("watchdog not installed")
 
 
 class TestSQLitePersistence:
@@ -565,7 +558,7 @@ class TestFileWatcher:
         """Test creating a file watcher."""
         from astrograph.watcher import FileWatcher
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             events = []
@@ -587,7 +580,7 @@ class TestFileWatcher:
         """Test that watcher detects new Python files."""
         from astrograph.watcher import FileWatcher
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             events = []
@@ -641,7 +634,7 @@ class TestFileWatcherPool:
         """Test watching and unwatching directories."""
         from astrograph.watcher import FileWatcherPool
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pool = FileWatcherPool()
@@ -671,7 +664,7 @@ class TestFileWatcherPool:
         """Test using pool as context manager."""
         from astrograph.watcher import FileWatcherPool
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir, FileWatcherPool() as pool:
             pool.watch(
@@ -1013,7 +1006,7 @@ class TestWatcherFileEvents:
         """Test that watcher detects file modifications."""
         from astrograph.watcher import FileWatcher
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create initial file
@@ -1046,7 +1039,7 @@ class TestWatcherFileEvents:
         """Test that watcher ignores non-Python files."""
         from astrograph.watcher import FileWatcher
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             events = []
@@ -1166,7 +1159,7 @@ class TestEventDrivenFileEvents:
         """Test starting watcher when already watching."""
         from astrograph.event_driven import EventDrivenIndex
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             edi = EventDrivenIndex(persistence_path=None, watch_enabled=True)
@@ -1184,7 +1177,7 @@ class TestWatcherEdgeCases:
         """Test using FileWatcher as context manager."""
         from astrograph.watcher import FileWatcher
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with (
             tempfile.TemporaryDirectory() as tmpdir,
@@ -1295,7 +1288,7 @@ class TestEventDrivenWithWatching:
 
         from astrograph.event_driven import EventDrivenIndex
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = str(Path(tmpdir).resolve())
@@ -1460,7 +1453,7 @@ class TestWatcherNonDirectory:
         """Test that FileWatcher rejects file paths."""
         from astrograph.watcher import FileWatcher
 
-        _skip_if_watchdog_missing()
+        skip_if_watchdog_missing()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             file1 = os.path.join(tmpdir, "file1.py")
