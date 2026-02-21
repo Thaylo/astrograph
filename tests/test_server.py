@@ -195,7 +195,7 @@ def _get_analyze_details(tools, result):
     """Read full analyze details from report file if it exists, else inline text."""
     if ".metadata_astrograph/" not in result.text:
         return result.text
-    match = re.search(r"Details: \.metadata_astrograph/([^\s]+)", result.text)
+    match = re.search(r"\.metadata_astrograph/([^`\s]+)", result.text)
     if not match:
         return result.text
     indexed = Path(tools._last_indexed_path).resolve()
@@ -207,7 +207,7 @@ def _get_analyze_details(tools, result):
 def _assert_status_reports_indexing(tools: CodeStructureTools) -> None:
     tools._bg_index_done.clear()
     result = tools.status()
-    assert "indexing" in result.text
+    assert "indexing" in result.text.lower()
     tools._bg_index_done.set()
 
 
@@ -354,8 +354,8 @@ class TestIndexCodebase:
 
         def norm(text: str) -> str:
             return re.sub(
-                r"Details: \.metadata_astrograph/analysis_report_\d{8}_\d{6}_\d+\.txt",
-                "Details: .metadata_astrograph/analysis_report_<timestamp>.txt",
+                r"analysis_report_\d{8}_\d{6}_\d+\.txt",
+                "analysis_report_<timestamp>.txt",
                 text,
             )
 
@@ -388,10 +388,10 @@ class TestAnalyze:
     def test_analyze_uses_timestamped_report_only(self, tools, sample_python_file):
         tools.index_codebase(sample_python_file)
         result = tools.analyze()
-        if "Details: .metadata_astrograph/" not in result.text:
+        if ".metadata_astrograph/" not in result.text:
             pytest.skip("No duplicates found to generate report")
 
-        match = re.search(r"Details: \.metadata_astrograph/([^\s]+)", result.text)
+        match = re.search(r"\.metadata_astrograph/([^`\s]+)", result.text)
         assert match
         report_name = match.group(1)
         assert report_name.startswith("analysis_report_")
@@ -2902,7 +2902,7 @@ def transform_data(data):
         # Clear any suppressions to ensure test isolation
         tools.index.clear_suppressions()
         result = tools.list_suppressions()
-        assert "No hashes are currently suppressed" in result.text
+        assert "no suppressions" in result.text.lower()
 
     def test_list_suppressions_with_suppressed(self, tools, _indexed_with_duplicates):
         """Test list_suppressions shows suppressed hashes."""
@@ -2929,7 +2929,9 @@ def transform_data(data):
     def test_call_tool_list_suppressions(self, tools, _indexed_with_duplicates):
         """Test call_tool dispatch for list_suppressions."""
         result = tools.call_tool("list_suppressions", {})
-        assert "No hashes" in result.text or "Suppressed hashes" in result.text
+        assert (
+            "no suppressions" in result.text.lower() or "suppressed hashes" in result.text.lower()
+        )
 
     def test_analyze_output_includes_hash(self, tools, _indexed_with_duplicates):
         """Test analyze output includes hash for suppression."""
@@ -3990,8 +3992,8 @@ def {name}(data):
             result = tools.analyze()
 
             if "duplicate groups" in result.text:
-                assert "in source" in result.text
-                assert "in tests" in result.text
+                assert "source" in result.text.lower()
+                assert "tests" in result.text.lower()
 
     def test_suppress_list_response_includes_refresh_hint(self, tools):
         """suppress with list response should include 'Run analyze' hint."""
@@ -4014,7 +4016,7 @@ def {name}(data):
             hashes = re.findall(r'suppress\(wl_hash="([^"]+)"\)', details)
             if hashes:
                 batch_result = tools.suppress(wl_hash=hashes)
-                assert "Run analyze" in batch_result.text
+                assert "analyze" in batch_result.text.lower()
 
 
 class TestStatusTool:
@@ -4023,7 +4025,7 @@ class TestStatusTool:
     @pytest.mark.parametrize(
         ("method_name", "expected"),
         [
-            ("status", "idle"),
+            ("status", "Idle"),
             ("check_staleness", "No code indexed"),
             ("metadata_recompute_baseline", "No codebase has been indexed"),
         ],
@@ -4037,7 +4039,7 @@ class TestStatusTool:
         """Status should return ready after indexing."""
         tools.index_codebase(sample_python_file)
         result = tools.status()
-        assert "ready" in result.text
+        assert "ready" in result.text.lower()
         assert "code units" in result.text
 
     def test_status_during_background_indexing(self):
@@ -4049,7 +4051,7 @@ class TestStatusTool:
         """Test call_tool dispatch for status."""
         tools.index_codebase(sample_python_file)
         result = tools.call_tool("status", {})
-        assert "ready" in result.text
+        assert "ready" in result.text.lower()
 
 
 class TestMetadataErase:
@@ -4100,7 +4102,7 @@ def transform_data(data):
 
             # Verify server is idle
             status = tools.status()
-            assert "idle" in status.text
+            assert "idle" in status.text.lower()
 
             # Verify suppressions are gone
             assert len(tools.index.suppressed_hashes) == 0
@@ -4171,7 +4173,7 @@ def transform_data(data):
 
             # But index should be populated
             status = tools.status()
-            assert "ready" in status.text
+            assert "ready" in status.text.lower()
 
             # Persistence should be recreated
             persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
@@ -4235,7 +4237,7 @@ class TestWorkspaceEnvVar:
         with patch.dict(os.environ, {"ASTROGRAPH_WORKSPACE": workspace}):
             tools = CodeStructureTools()
             result = tools.status()
-            assert "idle" in result.text
+            assert "idle" in result.text.lower()
 
 
 class TestStartupWorkspaceDetection:
@@ -4280,7 +4282,7 @@ class TestStartupWorkspaceDetection:
             with patch("os.getcwd", return_value="/"):
                 tools = CodeStructureTools()
                 result = tools.status()
-                assert "idle" in result.text
+                assert "idle" in result.text.lower()
                 tools.close()
 
 
@@ -4489,7 +4491,7 @@ class TestMCPResources:
         """Reading status resource returns status text."""
         tools = CodeStructureTools()
         text = tools.read_resource_status()
-        assert "Status:" in text or "idle" in text
+        assert "idle" in text.lower()
 
     def test_read_resource_analysis_no_index(self):
         """Reading analysis resource before indexing returns appropriate message."""
@@ -4528,7 +4530,7 @@ def transform_data(data):
         """Reading suppressions resource when none suppressed."""
         tools = CodeStructureTools()
         text = tools.read_resource_suppressions()
-        assert "No hashes" in text
+        assert "no suppressions" in text.lower()
 
 
 class TestMCPPrompts:

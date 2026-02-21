@@ -728,7 +728,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
         if not findings:
             self._clear_analysis_report()
-            msg = "No significant duplicates."
+            msg = "**No significant duplicates.**"
             if suppressed_count:
                 msg += f" {suppressed_count} suppressed."
             return ToolResult(invalidation_warning + msg)
@@ -804,30 +804,30 @@ class CodeStructureTools(CloseOnExitMixin):
                 for name in ("exact", "block", "pattern")
                 if (count := sum(1 for f in findings if f["type"] == name))
             ]
-            summary_parts = [f"Found {len(findings)} duplicate groups: {', '.join(type_parts)}."]
+            summary_parts = [
+                f"**Found {len(findings)} duplicate groups** — {' · '.join(type_parts)}"
+            ]
 
             # Source vs test breakdown with duplicated line estimate
             source_count = len(source_findings)
             test_count = len(test_findings)
-            if source_count or test_count:
+            if source_count:
                 source_lines = sum(f["line_count"] * len(f["locations"]) for f in source_findings)
-                breakdown_parts = []
-                if source_count:
-                    breakdown_parts.append(
-                        f"{source_count} in source (~{source_lines} duplicated lines)"
-                    )
-                if test_count:
-                    breakdown_parts.append(f"{test_count} in tests")
-                summary_parts.append(f"  {', '.join(breakdown_parts)}.")
+                summary_parts.append(
+                    f"- Source: {source_count} groups (~{source_lines} duplicated lines)"
+                )
+            if test_count:
+                summary_parts.append(f"- Tests: {test_count} groups")
+            if suppressed_line := _suppressed_line():
+                summary_parts.append(f"- {suppressed_line}")
 
-            if suppressed_line := _suppressed_line(with_period=True):
-                summary_parts.append(suppressed_line)
             line_count_report = full_output.count("\n") + 1
             summary_parts.append(
-                f"Details: {PERSISTENCE_DIR}/{report_path.name} ({line_count_report} lines)"
+                f"\n**Details:** `{PERSISTENCE_DIR}/{report_path.name}` ({line_count_report} lines)"
             )
             summary_parts.append(
-                "Read the file to see locations and refactoring opportunities.\nRefactor duplicates first. Only suppress intentional patterns (API symmetry, test isolation, framework boilerplate)."
+                "Read the file to see locations and refactoring opportunities.\n"
+                "> Refactor first. Only suppress intentional patterns (API symmetry, test isolation, framework boilerplate)."
             )
             return ToolResult(invalidation_warning + "\n".join(summary_parts))
 
@@ -1269,13 +1269,13 @@ class CodeStructureTools(CloseOnExitMixin):
         success = active_index.suppress(wl_hash) if suppress else active_index.unsuppress(wl_hash)
 
         if suppress:
-            success_msg = f"Suppressed {wl_hash}."
+            success_msg = f"Suppressed `{wl_hash}`."
             if duplicate_locations:
-                success_msg += f" {len(duplicate_locations)} locations."
-            failure_msg = f"Hash {wl_hash} not found in index."
+                success_msg += f" ({len(duplicate_locations)} locations)"
+            failure_msg = f"Hash `{wl_hash}` not found in index."
         else:
-            success_msg = f"Unsuppressed {wl_hash}."
-            failure_msg = f"Hash {wl_hash} was not suppressed."
+            success_msg = f"Unsuppressed `{wl_hash}`."
+            failure_msg = f"Hash `{wl_hash}` was not suppressed."
 
         return ToolResult(prefix + (success_msg if success else failure_msg))
 
@@ -1318,16 +1318,16 @@ class CodeStructureTools(CloseOnExitMixin):
         parts = []
         if changed:
             label = "Suppressed" if suppress else "Unsuppressed"
-            parts.append(f"{label} {len(changed)} hashes.")
+            parts.append(f"**{label} {len(changed)} hashes.**")
         if not_found:
             max_shown = 5
             shown = self._format_hash_preview(not_found, max_shown=max_shown)
-            parts.append(f"{len(not_found)} not found: {shown}")
+            parts.append(f"_{len(not_found)} not found: {shown}_")
         parts = parts or ["No hashes provided."]
         if changed and suppress:
-            parts.append("Reminder: suppression hides duplicates — refactoring eliminates them.")
-            parts.append("Run analyze to refresh.")
-        return ToolResult(prefix + " ".join(parts))
+            parts.append("_Suppression hides duplicates — refactoring eliminates them._")
+            parts.append("Run `analyze` to refresh.")
+        return ToolResult(prefix + "\n".join(parts))
 
     def list_suppressions(self) -> ToolResult:
         """List all suppressed hashes."""
@@ -1336,11 +1336,16 @@ class CodeStructureTools(CloseOnExitMixin):
         if suppressed:
             max_shown = 20
             shown = suppressed[:max_shown]
-            text = prefix + f"Suppressed hashes ({len(suppressed)}):\n" + "\n".join(shown)
+            text = (
+                prefix
+                + f"**{len(suppressed)} suppressed hashes:**\n```\n"
+                + "\n".join(shown)
+                + "\n```"
+            )
             if len(suppressed) > max_shown:
-                text += f"\n... +{len(suppressed) - max_shown} more"
+                text += f"\n_+{len(suppressed) - max_shown} more_"
             return ToolResult(text)
-        return ToolResult(prefix + "No hashes are currently suppressed.")
+        return ToolResult(prefix + "**No suppressions** — all duplicates are active.")
 
     # --- MCP Resource readers ---
 
@@ -1368,17 +1373,16 @@ class CodeStructureTools(CloseOnExitMixin):
         """Return current server status without blocking."""
         if not self._bg_index_done.is_set():
             entry_count = len(self.index.entries)
-            return ToolResult(f"Status: indexing ({entry_count} entries so far)")
+            return ToolResult(f"**Indexing** — {entry_count} entries so far")
         if not self.index.entries:
             return ToolResult(
-                "Status: idle (no codebase indexed). "
-                "Next: call index_codebase(path=...) and lsp_setup(mode='inspect')."
+                "**Idle** — no codebase indexed.\n"
+                "Next: call `set_workspace` or `index_codebase` then `lsp_setup(mode='inspect')`."
             )
         stats = self.index.get_stats()
         return ToolResult(
-            f"Status: ready ({stats['function_entries']} code units, "
-            f"{stats['indexed_files']} files). "
-            "Next: call lsp_setup(mode='inspect') for guided LSP setup actions."
+            f"**Ready** — {stats['function_entries']} code units across {stats['indexed_files']} files.\n"
+            "Next: call `lsp_setup(mode='inspect')` for guided LSP setup."
         )
 
     def _lsp_setup_workspace(self) -> Path:

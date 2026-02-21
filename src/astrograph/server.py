@@ -39,6 +39,7 @@ from mcp.types import (
     ResourceTemplateReference,
     TextContent,
     Tool,
+    ToolAnnotations,
 )
 
 from .stdio_transport import dual_stdio_server
@@ -89,6 +90,11 @@ def create_server() -> Server:
                         },
                     },
                 },
+                annotations=ToolAnnotations(
+                    title="Find Duplicate Code",
+                    readOnlyHint=True,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="suppress",
@@ -106,6 +112,12 @@ def create_server() -> Server:
                     },
                     "required": ["wl_hash"],
                 },
+                annotations=ToolAnnotations(
+                    title="Suppress Duplicate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="unsuppress",
@@ -123,6 +135,12 @@ def create_server() -> Server:
                     },
                     "required": ["wl_hash"],
                 },
+                annotations=ToolAnnotations(
+                    title="Unsuppress Duplicate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="list_suppressions",
@@ -131,6 +149,11 @@ def create_server() -> Server:
                     "type": "object",
                     "properties": {},
                 },
+                annotations=ToolAnnotations(
+                    title="List Suppressions",
+                    readOnlyHint=True,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="status",
@@ -139,6 +162,11 @@ def create_server() -> Server:
                     "type": "object",
                     "properties": {},
                 },
+                annotations=ToolAnnotations(
+                    title="Server Status",
+                    readOnlyHint=True,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="lsp_setup",
@@ -217,6 +245,12 @@ def create_server() -> Server:
                         },
                     },
                 },
+                annotations=ToolAnnotations(
+                    title="Configure LSP",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    openWorldHint=True,
+                ),
             ),
             Tool(
                 name="metadata_erase",
@@ -225,6 +259,12 @@ def create_server() -> Server:
                     "type": "object",
                     "properties": {},
                 },
+                annotations=ToolAnnotations(
+                    title="Erase All Metadata",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="metadata_recompute_baseline",
@@ -233,6 +273,12 @@ def create_server() -> Server:
                     "type": "object",
                     "properties": {},
                 },
+                annotations=ToolAnnotations(
+                    title="Recompute Index",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="generate_ignore",
@@ -241,6 +287,12 @@ def create_server() -> Server:
                     "type": "object",
                     "properties": {},
                 },
+                annotations=ToolAnnotations(
+                    title="Generate .astrographignore",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                ),
             ),
             Tool(
                 name="set_workspace",
@@ -255,6 +307,12 @@ def create_server() -> Server:
                     },
                     "required": ["path"],
                 },
+                annotations=ToolAnnotations(
+                    title="Set Workspace",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                ),
             ),
             Tool(
                 name="write",
@@ -273,6 +331,12 @@ def create_server() -> Server:
                     },
                     "required": ["file_path", "content"],
                 },
+                annotations=ToolAnnotations(
+                    title="Write File",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                ),
             ),
             Tool(
                 name="edit",
@@ -295,6 +359,12 @@ def create_server() -> Server:
                     },
                     "required": ["file_path", "old_string", "new_string"],
                 },
+                annotations=ToolAnnotations(
+                    title="Edit File",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                ),
             ),
         ]
 
