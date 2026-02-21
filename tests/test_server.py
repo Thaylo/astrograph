@@ -3616,8 +3616,10 @@ def compute_total(x, y):
     def test_write_handles_io_error(self, indexed_tools):
         """Test that write handles IO errors gracefully."""
         tools, tmpdir = indexed_tools
-        # Try to write to a directory that doesn't exist
-        result = tools.write("/nonexistent/dir/file.py", "def foo(): pass")
+        # Use a path inside the workspace whose parent directory doesn't exist
+        # so the OS raises an IOError rather than the workspace boundary check.
+        missing_subdir = os.path.join(tmpdir, "nonexistent_subdir", "file.py")
+        result = tools.write(missing_subdir, "def foo(): pass")
         assert "Failed to write" in result.text
 
     def test_call_tool_write(self, indexed_tools):
@@ -3663,9 +3665,10 @@ def placeholder():
         assert "No code indexed" in result.text
 
     def test_edit_file_not_found(self, indexed_tools_with_file):
-        """Test edit on non-existent file."""
+        """Test edit on non-existent file inside the workspace."""
         tools, tmpdir, _ = indexed_tools_with_file
-        result = tools.edit("/nonexistent/file.py", "old", "new")
+        missing = os.path.join(tmpdir, "nonexistent_file.py")
+        result = tools.edit(missing, "old", "new")
         assert "File not found" in result.text
 
     def test_edit_old_string_not_found(self, indexed_tools_with_file):

@@ -415,8 +415,18 @@ class CodeStructureTools(CloseOnExitMixin):
                 )
             return ToolResult(msg)
 
+        # Guard against accidentally indexing the entire filesystem.
+        # A path with fewer than 3 parts on any OS (e.g. "/", "/home", "C:\\Users")
+        # is almost certainly not a project directory.
+        resolved_path = Path(path).resolve()
+        if len(resolved_path.parts) < 3:
+            return ToolResult(
+                f"Error: Refusing to index '{resolved_path}' — path is a system-level "
+                "directory. Please provide a specific project directory."
+            )
+
         # Store resolved path for auto-reindex and relative path computation
-        self._last_indexed_path = str(Path(path).resolve())
+        self._last_indexed_path = str(resolved_path)
 
         # Always include blocks - only 22% overhead for much better detection
         if _env_flag("ASTROGRAPH_DISABLE_EVENT_DRIVEN"):
@@ -526,6 +536,32 @@ class CodeStructureTools(CloseOnExitMixin):
             return str(Path(file_path).relative_to(root))
         except ValueError:
             return file_path
+
+    def _check_within_workspace(self, file_path: str) -> ToolResult | None:
+        """Return an error ToolResult if file_path escapes the indexed workspace.
+
+        Returns None when the path is acceptable so callers can do::
+
+            if err := self._check_within_workspace(file_path):
+                return err
+        """
+        if not self._last_indexed_path:
+            return None  # No workspace set yet; let @_requires_index handle it
+
+        workspace = Path(self._last_indexed_path).resolve()
+        # If the indexed path is a single file, the workspace is its parent directory
+        if workspace.is_file():
+            workspace = workspace.parent
+
+        try:
+            Path(file_path).resolve().relative_to(workspace)
+        except ValueError:
+            return ToolResult(
+                f"BLOCKED: '{file_path}' is outside the indexed workspace "
+                f"'{workspace}'. Index a parent directory first if you need to "
+                "write files there."
+            )
+        return None
 
     def _resolve_path(self, path: str) -> str:
         """
@@ -971,7 +1007,7 @@ class CodeStructureTools(CloseOnExitMixin):
             # Backward-compatible fallback for plugins with narrower signatures.
             extracted_units = plugin.extract_code_units(source_code, file_path)
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Failed to extract similarity snippets for %s",
                 file_path,
                 exc_info=True,
@@ -1051,7 +1087,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 candidate_profile,
             )
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Failed semantic assist profile extraction for %s",
                 language,
                 exc_info=True,
@@ -2352,6 +2388,8 @@ class CodeStructureTools(CloseOnExitMixin):
         Blocks if identical code exists elsewhere; warns on high similarity.
         """
         file_path = self._resolve_path(file_path)
+        if err := self._check_within_workspace(file_path):
+            return err
 
         warning = ""
         # Infer language from file extension
@@ -2432,6 +2470,8 @@ class CodeStructureTools(CloseOnExitMixin):
         Blocks if identical code exists elsewhere; warns on high similarity.
         """
         file_path = self._resolve_path(file_path)
+        if err := self._check_within_workspace(file_path):
+            return err
         display_path = self._relative_path(file_path)
 
         warning = ""
@@ -2602,10 +2642,13 @@ class CodeStructureTools(CloseOnExitMixin):
     def call_tool(self, name: str, arguments: dict) -> ToolResult:
         """Dispatch a tool call by name."""
         safe_arguments: dict[str, Any] = arguments if arguments is not None else {}
-        if self._is_mutating_tool_call(name, safe_arguments):
-            with self._mutation_lock:
-                return self._call_tool_unlocked(name, safe_arguments)
-        return self._call_tool_unlocked(name, safe_arguments)
+        try:
+            if self._is_mutating_tool_call(name, safe_arguments):
+                with self._mutation_lock:
+                    return self._call_tool_unlocked(name, safe_arguments)
+            return self._call_tool_unlocked(name, safe_arguments)
+        except KeyError as exc:
+            return ToolResult(f"Error: missing required argument {exc} for tool '{name}'")
 
     def close(self) -> None:
         """Clean up resources (file watchers, database connections)."""
