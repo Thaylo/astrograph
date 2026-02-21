@@ -42,6 +42,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 
+from . import __version__
 from .stdio_transport import dual_stdio_server
 from .tools import CodeStructureTools
 
@@ -64,6 +65,7 @@ def create_server() -> Server:
     """Create and configure the MCP server."""
     server = Server(
         "code-structure-mcp",
+        version=__version__,
         instructions=(
             "ASTrograph indexes the codebase in the background at startup. "
             "If the first tool call is slow, indexing is still in progress. "
