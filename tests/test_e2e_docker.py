@@ -385,18 +385,18 @@ class TestMCPProtocol:
         tool_names = {t["name"] for t in tools}
 
         expected_tools = {
-            "astrograph_analyze",
-            "astrograph_write",
-            "astrograph_edit",
-            "astrograph_suppress",
-            "astrograph_unsuppress",
-            "astrograph_list_suppressions",
-            "astrograph_status",
-            "astrograph_lsp_setup",
-            "astrograph_metadata_erase",
-            "astrograph_metadata_recompute_baseline",
-            "astrograph_generate_ignore",
-            "astrograph_set_workspace",
+            "analyze",
+            "write",
+            "edit",
+            "suppress",
+            "unsuppress",
+            "list_suppressions",
+            "status",
+            "lsp_setup",
+            "metadata_erase",
+            "metadata_recompute_baseline",
+            "generate_ignore",
+            "set_workspace",
         }
         assert expected_tools == tool_names
 
@@ -412,9 +412,9 @@ class TestMCPProtocol:
         tools_response = next((r for r in responses if r.get("id") == 2), None)
         tools = {t["name"]: t for t in tools_response["result"]["tools"]}
 
-        assert "duplicate" in tools["astrograph_analyze"]["description"].lower()
-        assert "write" in tools["astrograph_write"]["description"].lower()
-        assert "edit" in tools["astrograph_edit"]["description"].lower()
+        assert "duplicate" in tools["analyze"]["description"].lower()
+        assert "write" in tools["write"]["description"].lower()
+        assert "edit" in tools["edit"]["description"].lower()
 
     def test_initialize_framed_mode(self):
         """Test MCP initialization using Content-Length framing (real client mode)."""
@@ -439,8 +439,8 @@ class TestMCPProtocol:
         tools_response = next((r for r in responses if r.get("id") == 2), None)
         assert tools_response is not None
         tool_names = {t["name"] for t in tools_response["result"]["tools"]}
-        assert "astrograph_analyze" in tool_names
-        assert "astrograph_status" in tool_names
+        assert "analyze" in tool_names
+        assert "status" in tool_names
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +456,7 @@ class TestE2EWorkflow:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
             ],
             workspace_path=sample_workspace,
         )
@@ -476,7 +476,7 @@ class TestE2EWorkflow:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_status", {}, 3),
+                mcp_call_tool("status", {}, 3),
             ]
         )
 
@@ -493,7 +493,7 @@ class TestE2EWorkflow:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
             ],
             workspace_path=sample_workspace,
         )
@@ -515,8 +515,8 @@ class TestE2EWorkflow:
         responses2 = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_suppress", {"wl_hash": wl_hash}, 3),
-                mcp_call_tool("astrograph_analyze", {}, 4),
+                mcp_call_tool("suppress", {"wl_hash": wl_hash}, 3),
+                mcp_call_tool("analyze", {}, 4),
             ],
             workspace_path=sample_workspace,
         )
@@ -543,7 +543,7 @@ class TestJavaScriptE2EWorkflow:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
             ],
             workspace_path=sample_javascript_workspace,
         )
@@ -577,9 +577,9 @@ class TestJavaScriptE2EWorkflow:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
                 mcp_call_tool(
-                    "astrograph_write",
+                    "write",
                     {"file_path": "/workspace/new_utils.js", "content": duplicate_content},
                     4,
                 ),
@@ -630,7 +630,7 @@ class TestMixedLanguageWorkflow:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
             ],
             workspace_path=mixed_language_workspace,
         )
@@ -646,7 +646,7 @@ class TestMixedLanguageWorkflow:
         responses = send_mcp_framed(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
             ],
             workspace_path=mixed_language_workspace,
         )
@@ -676,7 +676,7 @@ class TestTransportRobustness:
             [
                 mcp_initialize(),
                 mcp_list_tools(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
             ],
             workspace_path=sample_workspace,
         )
@@ -691,10 +691,10 @@ class TestTransportRobustness:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_status", {}, 2),
-                mcp_call_tool("astrograph_analyze", {}, 3),
-                mcp_call_tool("astrograph_list_suppressions", {}, 4),
-                mcp_call_tool("astrograph_status", {}, 5),
+                mcp_call_tool("status", {}, 2),
+                mcp_call_tool("analyze", {}, 3),
+                mcp_call_tool("list_suppressions", {}, 4),
+                mcp_call_tool("status", {}, 5),
             ],
             workspace_path=sample_workspace,
         )
@@ -709,7 +709,7 @@ class TestTransportRobustness:
             [
                 mcp_initialize(),
                 mcp_list_tools(),
-                mcp_call_tool("astrograph_analyze", {}, 3),
+                mcp_call_tool("analyze", {}, 3),
             ],
             workspace_path=sample_workspace,
         )
@@ -747,7 +747,7 @@ class TestErrorHandling:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_nonexistent", {}, 3),
+                mcp_call_tool("nonexistent", {}, 3),
             ]
         )
 
@@ -762,7 +762,7 @@ class TestErrorHandling:
         responses = send_mcp_messages(
             [
                 mcp_initialize(),
-                mcp_call_tool("astrograph_suppress", {}, 3),
+                mcp_call_tool("suppress", {}, 3),
             ]
         )
 

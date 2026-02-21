@@ -3436,7 +3436,7 @@ def _assert_metadata_op_reports_removed_bindings(method_name: str, expected_msg:
 
 
 class TestWriteTool:
-    """Tests for the astrograph_write tool."""
+    """Tests for the write tool."""
 
     @pytest.fixture
     def indexed_tools(self):
@@ -3629,7 +3629,7 @@ def compute_total(x, y):
 
 
 class TestEditTool:
-    """Tests for the astrograph_edit tool."""
+    """Tests for the edit tool."""
 
     @pytest.fixture
     def indexed_tools_with_file(self):
@@ -4018,7 +4018,7 @@ def {name}(data):
 
 
 class TestStatusTool:
-    """Tests for the astrograph_status tool."""
+    """Tests for the status tool."""
 
     @pytest.mark.parametrize(
         ("method_name", "expected"),
@@ -4053,7 +4053,7 @@ class TestStatusTool:
 
 
 class TestMetadataErase:
-    """Tests for the astrograph_metadata_erase tool."""
+    """Tests for the metadata_erase tool."""
 
     def test_erase_no_metadata(self, tools):
         """Erase when nothing has been indexed."""
@@ -4132,7 +4132,7 @@ def transform_data(data):
 
 
 class TestMetadataRecomputeBaseline:
-    """Tests for the astrograph_metadata_recompute_baseline tool."""
+    """Tests for the metadata_recompute_baseline tool."""
 
     def test_recompute_rebuilds_from_scratch(self):
         """Recompute should erase and rebuild the full index."""
@@ -4306,7 +4306,7 @@ class TestBlockingDuringIndexing:
 
 
 class TestGenerateIgnore:
-    """Tests for the astrograph_generate_ignore tool."""
+    """Tests for the generate_ignore tool."""
 
     def test_generate_ignore_creates_file(self):
         """File created at workspace root with default content."""
@@ -4725,7 +4725,7 @@ class TestMCPCompletions:
 
 
 class TestSetWorkspace:
-    """Tests for the astrograph_set_workspace tool."""
+    """Tests for the set_workspace tool."""
 
     def test_set_workspace_switches_and_reindexes(self):
         """set_workspace indexes new directory and reports transition."""
@@ -4770,7 +4770,7 @@ class TestSetWorkspace:
         tools.close()
 
     def test_set_workspace_in_server_tool_list(self):
-        """astrograph_set_workspace is registered in the MCP server."""
+        """set_workspace is registered in the MCP server."""
         from mcp.types import ListToolsRequest
 
         server = create_server()
@@ -4781,7 +4781,7 @@ class TestSetWorkspace:
         finally:
             loop.close()
         tool_names = [t.name for t in result.root.tools]
-        assert "astrograph_set_workspace" in tool_names
+        assert "set_workspace" in tool_names
 
     def test_set_workspace_via_call_tool(self):
         """set_workspace works through the call_tool dispatch."""

@@ -127,14 +127,14 @@ def main() -> int:
     send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
     # Index once at start to enable file watching and establish the index.
-    send(_rpc(10, "tools/call", {"name": "astrograph_set_workspace", "arguments": {"path": "."}}))
+    send(_rpc(10, "tools/call", {"name": "set_workspace", "arguments": {"path": "."}}))
     _ = recv()
 
     # Then loop on cheap status calls while provoke generates file churn.
     # File churn drives watcher callbacks → background recomputes — this is
     # the primary memory-pressure path we want to observe.
     for i in range(args.iterations):
-        send(_rpc(20 + i, "tools/call", {"name": "astrograph_status", "arguments": {}}))
+        send(_rpc(20 + i, "tools/call", {"name": "status", "arguments": {}}))
         _ = recv()
         time.sleep(args.pause)
 

@@ -1214,7 +1214,7 @@ class CodeStructureTools(CloseOnExitMixin):
         if not available:
             guidance = (
                 "For stronger compile-time differentiation, run "
-                "astrograph_lsp_setup(mode='inspect', language='"
+                "lsp_setup(mode='inspect', language='"
                 f"{language}')."
             )
             if mode == "annotate":
@@ -1372,13 +1372,13 @@ class CodeStructureTools(CloseOnExitMixin):
         if not self.index.entries:
             return ToolResult(
                 "Status: idle (no codebase indexed). "
-                "Next: call index_codebase(path=...) and astrograph_lsp_setup(mode='inspect')."
+                "Next: call index_codebase(path=...) and lsp_setup(mode='inspect')."
             )
         stats = self.index.get_stats()
         return ToolResult(
             f"Status: ready ({stats['function_entries']} code units, "
             f"{stats['indexed_files']} files). "
-            "Next: call astrograph_lsp_setup(mode='inspect') for guided LSP setup actions."
+            "Next: call lsp_setup(mode='inspect') for guided LSP setup actions."
         )
 
     def _lsp_setup_workspace(self) -> Path:
@@ -1506,7 +1506,7 @@ class CodeStructureTools(CloseOnExitMixin):
                     "id": "verify_lsp_setup",
                     "priority": "low",
                     "title": "Re-check language server health after environment changes",
-                    "tool": "astrograph_lsp_setup",
+                    "tool": "lsp_setup",
                     "arguments": _with_scope({"mode": "inspect"}),
                 }
             ]
@@ -1522,7 +1522,7 @@ class CodeStructureTools(CloseOnExitMixin):
                         "Multiple attach languages are unavailable. Resolve them one at a time, "
                         "starting with C++. Run the host_search_commands, then auto_bind."
                     ),
-                    "tool": "astrograph_lsp_setup",
+                    "tool": "lsp_setup",
                     "arguments": {"mode": "inspect", "language": "cpp_lsp"},
                 }
             )
@@ -1535,7 +1535,7 @@ class CodeStructureTools(CloseOnExitMixin):
                     f"{len(missing)} language server(s) are unreachable. Execute this action to probe "
                     "all candidate endpoints and bind any that respond."
                 ),
-                "tool": "astrograph_lsp_setup",
+                "tool": "lsp_setup",
                 "arguments": _with_scope({"mode": "auto_bind"}),
             }
         )
@@ -1580,7 +1580,7 @@ class CodeStructureTools(CloseOnExitMixin):
                         "title": f"Search host for a working {language} command",
                         "language": language,
                         "host_search_commands": search_commands,
-                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_tool": "lsp_setup",
                         "follow_up_arguments": _follow_up_auto_bind_arguments(language),
                     }
                 )
@@ -1593,7 +1593,7 @@ class CodeStructureTools(CloseOnExitMixin):
                             "title": f"Install missing {language} language server",
                             "language": language,
                             "shell_command": format_command(install_command),
-                            "follow_up_tool": "astrograph_lsp_setup",
+                            "follow_up_tool": "lsp_setup",
                             "follow_up_arguments": _follow_up_auto_bind_arguments(language),
                         }
                     )
@@ -1635,7 +1635,7 @@ class CodeStructureTools(CloseOnExitMixin):
                         ]
                         if language in {"c_lsp", "cpp_lsp"}
                         else [],
-                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_tool": "lsp_setup",
                         "follow_up_arguments": _follow_up_auto_bind_arguments(language),
                     }
                 )
@@ -1666,7 +1666,7 @@ class CodeStructureTools(CloseOnExitMixin):
                             "ln -sf build/compile_commands.json compile_commands.json",
                         ],
                         "known_paths": known_paths,
-                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_tool": "lsp_setup",
                         "follow_up_arguments": _follow_up_auto_bind_arguments(language),
                     }
                 )
@@ -1685,7 +1685,7 @@ class CodeStructureTools(CloseOnExitMixin):
                             "--add-host",
                             "host.docker.internal:host-gateway",
                         ],
-                        "follow_up_tool": "astrograph_lsp_setup",
+                        "follow_up_tool": "lsp_setup",
                         "follow_up_arguments": _with_scope({"mode": "inspect"}),
                     }
                 )
@@ -1725,7 +1725,7 @@ class CodeStructureTools(CloseOnExitMixin):
                     "observations": [{"language": language, "command": candidates[0]}],
                 }
 
-                action["follow_up_tool"] = "astrograph_lsp_setup"
+                action["follow_up_tool"] = "lsp_setup"
                 action["follow_up_arguments"] = follow_up_arguments
                 if bridge_info:
                     action["server_bridge_info"] = bridge_info
@@ -1736,7 +1736,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 "id": "verify_lsp_setup",
                 "priority": "high" if missing_required else "medium",
                 "title": "Verify missing_required_languages is empty",
-                "tool": "astrograph_lsp_setup",
+                "tool": "lsp_setup",
                 "arguments": _with_scope({"mode": "inspect"}),
             }
         )
@@ -1800,7 +1800,7 @@ class CodeStructureTools(CloseOnExitMixin):
                             "Confirms the active index is healthy after LSP setup changes "
                             "and generates a current duplicate report."
                         ),
-                        "tool": "astrograph_analyze",
+                        "tool": "analyze",
                         "arguments": {"auto_reindex": True},
                     },
                     {
@@ -1811,7 +1811,7 @@ class CodeStructureTools(CloseOnExitMixin):
                             "Binding changes do not retroactively update already-indexed files. "
                             "Recompute to apply extraction across the full workspace."
                         ),
-                        "tool": "astrograph_metadata_recompute_baseline",
+                        "tool": "metadata_recompute_baseline",
                         "arguments": {},
                         "note": (
                             "metadata_recompute_baseline clears lsp_bindings.json. "
@@ -1819,15 +1819,15 @@ class CodeStructureTools(CloseOnExitMixin):
                         ),
                         "follow_up_steps": [
                             {
-                                "tool": "astrograph_lsp_setup",
+                                "tool": "lsp_setup",
                                 "arguments": {"mode": "inspect", "language": scope_language},
                             },
                             {
-                                "tool": "astrograph_lsp_setup",
+                                "tool": "lsp_setup",
                                 "arguments": {"mode": "auto_bind", "language": scope_language},
                             },
                             {
-                                "tool": "astrograph_lsp_setup",
+                                "tool": "lsp_setup",
                                 "arguments": {"mode": "inspect", "language": scope_language},
                             },
                         ],
@@ -1843,9 +1843,9 @@ class CodeStructureTools(CloseOnExitMixin):
             auto_bind_arguments["language"] = scope_language
 
         payload["resolution_loop"] = [
-            {"tool": "astrograph_lsp_setup", "arguments": inspect_arguments},
-            {"tool": "astrograph_lsp_setup", "arguments": auto_bind_arguments},
-            {"tool": "astrograph_lsp_setup", "arguments": inspect_arguments},
+            {"tool": "lsp_setup", "arguments": inspect_arguments},
+            {"tool": "lsp_setup", "arguments": auto_bind_arguments},
+            {"tool": "lsp_setup", "arguments": inspect_arguments},
         ]
         if missing_required:
             payload["agent_directive"] = (
@@ -1982,12 +1982,12 @@ class CodeStructureTools(CloseOnExitMixin):
             if missing_required:
                 if language:
                     payload["next_step"] = (
-                        "Call astrograph_lsp_setup with mode='auto_bind' and this language. "
+                        "Call lsp_setup with mode='auto_bind' and this language. "
                         "If still missing, provide observations with language + command."
                     )
                 else:
                     payload["next_step"] = (
-                        "Call astrograph_lsp_setup with mode='auto_bind'. "
+                        "Call lsp_setup with mode='auto_bind'. "
                         "If still missing, provide observations with language + command."
                     )
             elif cpp_reachable_only:
@@ -2003,13 +2003,13 @@ class CodeStructureTools(CloseOnExitMixin):
                         f"{len(missing)} attach endpoint(s) unreachable. "
                         "Start by running the host_search_commands from recommended_actions "
                         "to check if language servers are already running on the host. "
-                        "Then call astrograph_lsp_setup(mode='auto_bind') with any discovered endpoints as observations."
+                        "Then call lsp_setup(mode='auto_bind') with any discovered endpoints as observations."
                     )
                 else:
                     payload["next_step"] = (
                         f"{len(missing)} attach endpoint(s) unreachable. "
                         "Run the host_search_commands from recommended_actions to discover running servers, "
-                        "then call astrograph_lsp_setup(mode='auto_bind') with results as observations."
+                        "then call lsp_setup(mode='auto_bind') with results as observations."
                     )
 
             if missing:
@@ -2030,7 +2030,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 if not language and "cpp_lsp" in missing:
                     payload["focus_hint"] = (
                         "Start by resolving one language at a time. "
-                        "Run astrograph_lsp_setup(mode='inspect', language='cpp_lsp') "
+                        "Run lsp_setup(mode='inspect', language='cpp_lsp') "
                         "and execute its recommended_actions before moving to the next."
                     )
             if cpp_reachable_only:
@@ -2203,7 +2203,7 @@ class CodeStructureTools(CloseOnExitMixin):
             message = "Erased all metadata. Server reset to idle state."
             if bindings_removed:
                 message += (
-                    " LSP bindings were removed. Next: call astrograph_lsp_setup(mode='inspect') "
+                    " LSP bindings were removed. Next: call lsp_setup(mode='inspect') "
                     "and re-run auto_bind for required languages."
                 )
             return ToolResult(message)
@@ -2231,7 +2231,7 @@ class CodeStructureTools(CloseOnExitMixin):
         if bindings_removed:
             message += (
                 "\nLSP bindings were reset during recompute. Next: call "
-                "astrograph_lsp_setup(mode='inspect') and re-run auto_bind for required languages."
+                "lsp_setup(mode='inspect') and re-run auto_bind for required languages."
             )
         return ToolResult(message)
 

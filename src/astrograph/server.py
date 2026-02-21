@@ -3,17 +3,17 @@ MCP server for code structure analysis.
 
 Auto-indexes the codebase at startup and maintains the index via file watching.
 
-Provides 10 tools (all prefixed with astrograph_):
-- astrograph_analyze: Find duplicates and similar patterns
-- astrograph_write: Write file with duplicate detection (blocks if duplicate exists)
-- astrograph_edit: Edit file with duplicate detection (blocks if duplicate exists)
-- astrograph_suppress: Suppress one or more duplicates by WL hash (string or array)
-- astrograph_unsuppress: Unsuppress one or more hashes (string or array)
-- astrograph_list_suppressions: List all suppressed hashes
-- astrograph_status: Check server readiness (returns instantly even during indexing)
-- astrograph_lsp_setup: Inspect/bind LSP commands or attach endpoints for bundled language plugins
-- astrograph_metadata_erase: Erase all persisted metadata
-- astrograph_metadata_recompute_baseline: Erase metadata and re-index from scratch
+Provides 12 tools:
+- analyze: Find duplicates and similar patterns
+- write: Write file with duplicate detection (blocks if duplicate exists)
+- edit: Edit file with duplicate detection (blocks if duplicate exists)
+- suppress: Suppress one or more duplicates by WL hash (string or array)
+- unsuppress: Unsuppress one or more hashes (string or array)
+- list_suppressions: List all suppressed hashes
+- status: Check server readiness (returns instantly even during indexing)
+- lsp_setup: Inspect/bind LSP commands or attach endpoints for bundled language plugins
+- metadata_erase: Erase all persisted metadata
+- metadata_recompute_baseline: Erase metadata and re-index from scratch
 
 Also exposes 3 MCP resources, 2 prompts, and prompt argument completions.
 """
@@ -66,8 +66,8 @@ def create_server() -> Server:
         instructions=(
             "ASTrograph indexes the codebase in the background at startup. "
             "If the first tool call is slow, indexing is still in progress. "
-            "Use astrograph_status to check readiness. "
-            "Before large refactors, call astrograph_lsp_setup(mode='inspect') and execute "
+            "Use status to check readiness. "
+            "Before large refactors, call lsp_setup(mode='inspect') and execute "
             "recommended_actions (run host_search_commands, search/install/bind/auto_bind) "
             "until missing_languages is empty. Always attempt to resolve all languages, not just required ones."
         ),
@@ -77,7 +77,7 @@ def create_server() -> Server:
     async def list_tools() -> list[Tool]:
         return [
             Tool(
-                name="astrograph_analyze",
+                name="analyze",
                 description="Find duplicate code (verified via graph isomorphism).",
                 inputSchema={
                     "type": "object",
@@ -91,7 +91,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_suppress",
+                name="suppress",
                 description="Suppress a duplicate by WL hash (from analyze output). Only suppress AFTER confirming the duplication is intentional (e.g. API symmetry, test isolation). Refactoring should be the default action for duplicates.",
                 inputSchema={
                     "type": "object",
@@ -108,7 +108,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_unsuppress",
+                name="unsuppress",
                 description="Unsuppress a hash.",
                 inputSchema={
                     "type": "object",
@@ -125,7 +125,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_list_suppressions",
+                name="list_suppressions",
                 description="List suppressed hashes.",
                 inputSchema={
                     "type": "object",
@@ -133,7 +133,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_status",
+                name="status",
                 description="Check server readiness. Returns instantly even during indexing.",
                 inputSchema={
                     "type": "object",
@@ -141,7 +141,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_lsp_setup",
+                name="lsp_setup",
                 description=(
                     "Inspect and configure deterministic LSP command bindings "
                     "for bundled language plugins. Returns a guided recommended_actions "
@@ -219,7 +219,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_metadata_erase",
+                name="metadata_erase",
                 description="Erase all persisted metadata (.metadata_astrograph/). Resets server to idle.",
                 inputSchema={
                     "type": "object",
@@ -227,7 +227,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_metadata_recompute_baseline",
+                name="metadata_recompute_baseline",
                 description="Erase metadata and re-index the codebase from scratch.",
                 inputSchema={
                     "type": "object",
@@ -235,7 +235,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_generate_ignore",
+                name="generate_ignore",
                 description="Auto-generate .astrographignore with reasonable defaults for excluding files from indexing.",
                 inputSchema={
                     "type": "object",
@@ -243,7 +243,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_set_workspace",
+                name="set_workspace",
                 description="Set or change the workspace directory. Re-indexes the codebase at the new path.",
                 inputSchema={
                     "type": "object",
@@ -257,7 +257,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_write",
+                name="write",
                 description="Write file. Blocks if duplicate exists, warns on similarity.",
                 inputSchema={
                     "type": "object",
@@ -275,7 +275,7 @@ def create_server() -> Server:
                 },
             ),
             Tool(
-                name="astrograph_edit",
+                name="edit",
                 description="Edit file. Blocks if new code duplicates existing, warns on similarity.",
                 inputSchema={
                     "type": "object",
@@ -298,26 +298,9 @@ def create_server() -> Server:
             ),
         ]
 
-    # Map external tool names to internal names
-    TOOL_NAME_MAP = {
-        "astrograph_analyze": "analyze",
-        "astrograph_write": "write",
-        "astrograph_edit": "edit",
-        "astrograph_suppress": "suppress",
-        "astrograph_unsuppress": "unsuppress",
-        "astrograph_list_suppressions": "list_suppressions",
-        "astrograph_status": "status",
-        "astrograph_lsp_setup": "lsp_setup",
-        "astrograph_metadata_erase": "metadata_erase",
-        "astrograph_metadata_recompute_baseline": "metadata_recompute_baseline",
-        "astrograph_generate_ignore": "generate_ignore",
-        "astrograph_set_workspace": "set_workspace",
-    }
-
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        internal_name = TOOL_NAME_MAP.get(name, name)
-        result = await asyncio.to_thread(_tools.call_tool, internal_name, arguments)
+        result = await asyncio.to_thread(_tools.call_tool, name, arguments)
         return [TextContent(type="text", text=result.text)]
 
     # --- MCP Resources ---
@@ -442,8 +425,8 @@ def create_server() -> Server:
                             "Follow the recommended_actions to complete LSP setup:\n"
                             "1. Run any host_search_commands to find installed servers\n"
                             "2. Install missing servers using the suggested commands\n"
-                            "3. Bind discovered servers with astrograph_lsp_setup(mode='bind', ...)\n"
-                            "4. Verify with astrograph_lsp_setup(mode='inspect')\n\n"
+                            "3. Bind discovered servers with lsp_setup(mode='bind', ...)\n"
+                            "4. Verify with lsp_setup(mode='inspect')\n\n"
                             "Work through each missing language until all are resolved."
                         ),
                     ),
