@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import textwrap
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -357,11 +357,12 @@ class LSPLanguagePluginBase(BaseLanguagePlugin):
         include base-class signals (type hints, operator plus).
         """
         signals: list[SemanticSignal] = []
-        for check, key, value, confidence in (
+        checks: list[tuple[Callable[[str], object], str, str, float]] = [
             (self._has_type_hints, "typing.channel", "annotated", 0.65),
             (_PLUS_EXPR_RE.search, "operator.plus.present", "yes", 0.8),
             (_OPERATOR_PLUS_DECL_RE.search, "operator.plus.declared", "yes", 0.95),
-        ):
+        ]
+        for check, key, value, confidence in checks:
             if check(source):
                 signals.append(
                     SemanticSignal(key=key, value=value, confidence=confidence, origin="syntax")

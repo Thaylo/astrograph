@@ -52,6 +52,12 @@ from .lsp_setup import (
     unset_lsp_binding,
 )
 
+
+def _env_flag(name: str) -> bool:
+    """Return True if an env flag is set to a truthy value."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -243,7 +249,11 @@ class CodeStructureTools(CloseOnExitMixin):
         # Auto-index workspace at startup (Docker / Codex / local MCP clients).
         # Run in background so the MCP handshake completes immediately.
         workspace = self._detect_startup_workspace()
-        if workspace and os.path.isdir(workspace):
+        if (
+            workspace
+            and os.path.isdir(workspace)
+            and not _env_flag("ASTROGRAPH_DISABLE_AUTO_INDEX")
+        ):
             self._bg_index_done.clear()
             self._bg_index_thread = threading.Thread(
                 target=self._background_index,
@@ -404,6 +414,8 @@ class CodeStructureTools(CloseOnExitMixin):
         self._last_indexed_path = str(Path(path).resolve())
 
         # Always include blocks - only 22% overhead for much better detection
+        if _env_flag("ASTROGRAPH_DISABLE_EVENT_DRIVEN"):
+            return self._index_codebase_simple(path, recursive)
         return self._index_codebase_event_driven(path, recursive)
 
     def set_workspace(self, path: str) -> ToolResult:
@@ -416,6 +428,27 @@ class CodeStructureTools(CloseOnExitMixin):
         header = f"Workspace changed: {old_path} -> {new_path}\n"
         return ToolResult(header + result.text)
 
+    def _index_codebase_simple(self, path: str, recursive: bool) -> ToolResult:
+        """Index codebase using a plain in-memory index (no EDI, no SQLite, no watcher)."""
+        self._close_event_driven_index()
+        self.index = CodeStructureIndex()
+
+        if os.path.isfile(path):
+            self.index.index_file(path)
+        else:
+            self.index.index_directory(path, recursive=recursive, ignore_spec=self._ignore_spec)
+
+        stats = self.index.get_stats()
+        result_parts = [
+            f"Indexed {stats['function_entries']} code units from {stats['indexed_files']} files.",
+            f"Extracted {stats['block_entries']} code blocks.",
+        ]
+        if self._has_significant_duplicates():
+            result_parts.append("\nDuplicates found. Run analyze().")
+        else:
+            result_parts.append("\nNo duplicates.")
+        return ToolResult("\n".join(result_parts))
+
     def _index_codebase_event_driven(self, path: str, recursive: bool) -> ToolResult:
         """Index codebase using event-driven mode with SQLite and file watching."""
         from .cloud_detect import get_cloud_sync_warning
@@ -423,9 +456,14 @@ class CodeStructureTools(CloseOnExitMixin):
         # Check for cloud-synced folders and prepare warning
         cloud_warning = get_cloud_sync_warning(path)
 
-        persistence_path = _get_persistence_path(path)
-        persistence_path.mkdir(exist_ok=True)
-        sqlite_path = persistence_path / "index.db"
+        disable_watch = _env_flag("ASTROGRAPH_DISABLE_WATCH")
+        disable_persistence = _env_flag("ASTROGRAPH_DISABLE_PERSISTENCE")
+
+        sqlite_path = None
+        if not disable_persistence:
+            persistence_path = _get_persistence_path(path)
+            persistence_path.mkdir(exist_ok=True)
+            sqlite_path = persistence_path / "index.db"
 
         # Close old event-driven index (stops watcher, closes SQLite connection)
         self._close_event_driven_index()
@@ -437,7 +475,7 @@ class CodeStructureTools(CloseOnExitMixin):
         # Create new event-driven index with persistence
         self._event_driven_index = EventDrivenIndex(
             persistence_path=sqlite_path,
-            watch_enabled=True,
+            watch_enabled=not disable_watch,
             ignore_spec=self._ignore_spec,
         )
         self.index = self._event_driven_index.index
@@ -599,10 +637,10 @@ class CodeStructureTools(CloseOnExitMixin):
 
         # Event-driven index keeps things current via file watching + cache.
         edi = self._event_driven_index
-        if edi is not None:
+        if edi is not None and not _env_flag("ASTROGRAPH_DISABLE_ANALYSIS_CACHE"):
             exact_groups, pattern_groups, block_groups = edi.get_cached_analysis()
         else:
-            # Testing path: direct compute (no EventDrivenIndex)
+            # No EDI, cache disabled, or testing path: direct compute
             exact_groups = self.index.find_all_duplicates(min_node_count=5)
             pattern_groups = self.index.find_pattern_duplicates(min_node_count=5)
             block_groups = self.index.find_block_duplicates(

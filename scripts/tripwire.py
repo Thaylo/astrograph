@@ -16,6 +16,8 @@ DEFAULT_MAX_RAM_PERCENT = 85.0
 DEFAULT_MAX_RSS_MB = 4096.0
 DEFAULT_MAX_IO_MBPS = 200.0
 DEFAULT_MAX_THREADS = 800
+DEFAULT_MAX_CONTAINER_MEM_MB = 0.0
+DEFAULT_MAX_CONTAINER_MEM_PERCENT = 0.0
 
 
 def _read_io_bytes(proc: psutil.Process) -> int:
@@ -86,8 +88,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-rss-mb", type=float, default=DEFAULT_MAX_RSS_MB)
     parser.add_argument("--max-io-mbps", type=float, default=DEFAULT_MAX_IO_MBPS)
     parser.add_argument("--max-threads", type=int, default=DEFAULT_MAX_THREADS)
+    parser.add_argument("--docker-name", type=str, default="")
+    parser.add_argument("--max-container-mem-mb", type=float, default=DEFAULT_MAX_CONTAINER_MEM_MB)
+    parser.add_argument(
+        "--max-container-mem-percent", type=float, default=DEFAULT_MAX_CONTAINER_MEM_PERCENT
+    )
     parser.add_argument("--max-gpu-util", type=float, default=95.0)
     parser.add_argument("--grace-seconds", type=float, default=2.0)
+    parser.add_argument("--log-path", type=str, default="")
     parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to run after --")
     return parser.parse_args()
 
@@ -131,6 +139,51 @@ def main() -> int:
             thread_count = _count_threads(ps)
 
             gpu_util = _try_gpu_util()
+            container_mem_mb = None
+            container_mem_percent = None
+            if args.docker_name:
+                try:
+                    out = subprocess.check_output(
+                        [
+                            "docker",
+                            "stats",
+                            "--no-stream",
+                            "--format",
+                            "{{.MemUsage}} {{.MemPerc}}",
+                            args.docker_name,
+                        ],
+                        text=True,
+                    ).strip()
+                    if out:
+                        mem_usage, mem_perc = out.split(" ", 1)
+                        mem_val, mem_unit = mem_usage.split("/")
+                        mem_val = mem_val.strip()
+                        mem_unit = mem_unit.strip()
+                        container_mem_percent = float(mem_perc.strip().strip("%"))
+                        if mem_val.endswith("MiB"):
+                            container_mem_mb = float(mem_val[:-3])
+                        elif mem_val.endswith("GiB"):
+                            container_mem_mb = float(mem_val[:-3]) * 1024.0
+                        elif mem_val.endswith("KiB"):
+                            container_mem_mb = float(mem_val[:-3]) / 1024.0
+                except Exception:
+                    pass
+
+            if args.log_path:
+                payload = {
+                    "ts": now,
+                    "ram_percent": ram_percent,
+                    "rss_mb": rss_mb,
+                    "io_mbps": io_mbps,
+                    "threads": thread_count,
+                    "gpu_util": gpu_util,
+                    "container_mem_mb": container_mem_mb,
+                    "container_mem_percent": container_mem_percent,
+                }
+                with contextlib.suppress(Exception), open(
+                    args.log_path, "a", encoding="utf-8"
+                ) as handle:
+                    handle.write(repr(payload) + "\n")
 
             breach = False
             reasons = []
@@ -146,6 +199,20 @@ def main() -> int:
             if thread_count > args.max_threads:
                 breach = True
                 reasons.append(f"threads={thread_count}")
+            if (
+                args.max_container_mem_mb > 0.0
+                and container_mem_mb is not None
+                and container_mem_mb > args.max_container_mem_mb
+            ):
+                breach = True
+                reasons.append(f"container_mem={container_mem_mb:.1f}MB")
+            if (
+                args.max_container_mem_percent > 0.0
+                and container_mem_percent is not None
+                and container_mem_percent > args.max_container_mem_percent
+            ):
+                breach = True
+                reasons.append(f"container_mem={container_mem_percent:.1f}%")
             if gpu_util is not None and gpu_util > args.max_gpu_util:
                 breach = True
                 reasons.append(f"gpu={gpu_util:.1f}%")

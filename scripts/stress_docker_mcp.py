@@ -9,6 +9,7 @@ import os
 import select
 import subprocess
 import time
+from collections import deque
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pause", type=float, default=0.2)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--root", default=os.getcwd())
+    parser.add_argument("--container-name", default="")
     parser.add_argument("--disable-event-driven", action="store_true")
     parser.add_argument("--disable-watch", action="store_true")
     parser.add_argument("--disable-persistence", action="store_true")
@@ -60,8 +62,11 @@ def main() -> int:
             "-i",
             "--platform",
             args.platform,
+        ]
+        + (["--name", args.container_name] if args.container_name else [])
+        + [
             "-v",
-            f"{args.root}:/repo",
+            f"{os.path.abspath(args.root)}:/repo",
             "-w",
             "/repo",
         ]
@@ -74,18 +79,33 @@ def main() -> int:
     )
     assert proc.stdin and proc.stdout
     deadline = time.time() + args.timeout
+    stderr_tail: deque[str] = deque(maxlen=50)
 
     def send(obj: dict) -> None:
         proc.stdin.write(json.dumps(obj) + "\n")
         proc.stdin.flush()
+
+    def _drain_stderr() -> None:
+        if proc.stderr is None:
+            return
+        while True:
+            ready, _, _ = select.select([proc.stderr], [], [], 0)
+            if not ready:
+                return
+            line = proc.stderr.readline()
+            if not line:
+                return
+            stderr_tail.append(line.rstrip())
 
     def recv() -> dict:
         if proc.poll() is not None:
             raise RuntimeError("server exited early")
         remaining = max(deadline - time.time(), 0.0)
         ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        _drain_stderr()
         if not ready:
-            raise TimeoutError("timeout waiting for MCP response")
+            tail = "\n".join(stderr_tail)
+            raise TimeoutError(f"timeout waiting for MCP response. stderr_tail:\n{tail}")
         line = proc.stdout.readline()
         if not line:
             raise RuntimeError("server closed stdout")
@@ -103,23 +123,31 @@ def main() -> int:
         )
     )
     _ = recv()
-    send(_rpc(2, "initialized"))
+    # MCP initialized notification (no id)
+    send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
+    # Index once at start to enable file watching and establish the index.
+    send(_rpc(10, "tools/call", {"name": "astrograph_set_workspace", "arguments": {"path": "."}}))
+    _ = recv()
+
+    # Then loop on cheap status calls while provoke generates file churn.
+    # File churn drives watcher callbacks → background recomputes — this is
+    # the primary memory-pressure path we want to observe.
     for i in range(args.iterations):
-        send(_rpc(10 + i * 3, "tools/call", {"name": "status", "arguments": {}}))
-        _ = recv()
-        send(_rpc(11 + i * 3, "tools/call", {"name": "index_codebase", "arguments": {"path": "."}}))
-        _ = recv()
-        send(_rpc(12 + i * 3, "tools/call", {"name": "analyze", "arguments": {}}))
+        send(_rpc(20 + i, "tools/call", {"name": "astrograph_status", "arguments": {}}))
         _ = recv()
         time.sleep(args.pause)
 
-    proc.terminate()
+    # Close stdin first so the server receives EOF and shuts down gracefully.
+    proc.stdin.close()
     try:
-        proc.wait(timeout=args.timeout)
+        proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        return 1
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
     return 0
 
 
