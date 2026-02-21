@@ -3636,6 +3636,13 @@ def compute_total(x, y):
         result = tools.write(missing_subdir, "def foo(): pass")
         assert "Failed to write" in result.text
 
+    def test_write_blocked_outside_workspace(self, indexed_tools):
+        """write() must refuse paths outside the indexed workspace."""
+        tools, tmpdir = indexed_tools
+        result = tools.write("/tmp/outside_workspace.py", "def foo(): pass")
+        assert "BLOCKED" in result.text
+        assert "outside the indexed workspace" in result.text
+
     def test_call_tool_write(self, indexed_tools):
         """Test call_tool dispatch for write."""
         tools, tmpdir = indexed_tools
@@ -3644,6 +3651,12 @@ def compute_total(x, y):
             "write", {"file_path": new_file, "content": "def unique_func(): return 42"}
         )
         assert ("Created" in result.text or "Wrote" in result.text) or "BLOCKED" in result.text
+
+    def test_call_tool_missing_required_arg(self, indexed_tools):
+        """call_tool must return a clean error for missing required arguments."""
+        tools, _ = indexed_tools
+        result = tools.call_tool("write", {})
+        assert "missing required argument" in result.text
 
 
 class TestEditTool:
@@ -3677,6 +3690,13 @@ def placeholder():
         """Test that edit requires an indexed codebase."""
         result = tools.edit("/tmp/test.py", "old", "new")
         assert "No code indexed" in result.text
+
+    def test_edit_blocked_outside_workspace(self, indexed_tools_with_file):
+        """edit() must refuse paths outside the indexed workspace."""
+        tools, tmpdir, _ = indexed_tools_with_file
+        result = tools.edit("/tmp/outside_workspace.py", "old", "new")
+        assert "BLOCKED" in result.text
+        assert "outside the indexed workspace" in result.text
 
     def test_edit_file_not_found(self, indexed_tools_with_file):
         """Test edit on non-existent file inside the workspace."""
