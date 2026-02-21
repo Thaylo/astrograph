@@ -679,7 +679,11 @@ def _version_probe_candidates(
     if not parsed or parse_attach_endpoint(parsed) is not None:
         return []
 
-    candidates: list[tuple[list[str], str]] = [([*parsed, "--version"], "server")]
+    # jdtls is a language-server binary that ignores --version and hangs waiting
+    # for LSP stdin; skip the default probe and rely solely on java -version below.
+    candidates: list[tuple[list[str], str]] = (
+        [] if language_id == "java_lsp" else [([*parsed, "--version"], "server")]
+    )
 
     if language_id in {"c_lsp", "cpp_lsp"}:
         candidates.append(([*parsed, "-version"], "server"))
