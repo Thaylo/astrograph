@@ -28,24 +28,14 @@ def _read_io_bytes(proc: psutil.Process) -> int:
         return 0
 
 
-def _kill_tree(proc: psutil.Process) -> None:
+def _kill_tree(proc: psutil.Process, *, hard: bool = False) -> None:
+    signal = "kill" if hard else "terminate"
     try:
         for child in proc.children(recursive=True):
             with contextlib.suppress(Exception):
-                child.terminate()
+                getattr(child, signal)()
         with contextlib.suppress(Exception):
-            proc.terminate()
-    except Exception:
-        pass
-
-
-def _kill_tree_hard(proc: psutil.Process) -> None:
-    try:
-        for child in proc.children(recursive=True):
-            with contextlib.suppress(Exception):
-                child.kill()
-        with contextlib.suppress(Exception):
-            proc.kill()
+            getattr(proc, signal)()
     except Exception:
         pass
 
@@ -180,9 +170,10 @@ def main() -> int:
                     "container_mem_mb": container_mem_mb,
                     "container_mem_percent": container_mem_percent,
                 }
-                with contextlib.suppress(Exception), open(
-                    args.log_path, "a", encoding="utf-8"
-                ) as handle:
+                with (
+                    contextlib.suppress(Exception),
+                    open(args.log_path, "a", encoding="utf-8") as handle,
+                ):
                     handle.write(repr(payload) + "\n")
 
             breach = False
@@ -228,7 +219,7 @@ def main() -> int:
                 _kill_tree(ps)
                 time.sleep(1)
                 if proc.poll() is None:
-                    _kill_tree_hard(ps)
+                    _kill_tree(ps, hard=True)
                 return 3
 
             time.sleep(args.interval)

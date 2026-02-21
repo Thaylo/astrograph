@@ -428,6 +428,13 @@ class CodeStructureTools(CloseOnExitMixin):
         header = f"Workspace changed: {old_path} -> {new_path}\n"
         return ToolResult(header + result.text)
 
+    def _duplicate_hint(self) -> str:
+        return (
+            "\nDuplicates found. Run analyze()."
+            if self._has_significant_duplicates()
+            else "\nNo duplicates."
+        )
+
     def _index_codebase_simple(self, path: str, recursive: bool) -> ToolResult:
         """Index codebase using a plain in-memory index (no EDI, no SQLite, no watcher)."""
         self._close_event_driven_index()
@@ -442,11 +449,8 @@ class CodeStructureTools(CloseOnExitMixin):
         result_parts = [
             f"Indexed {stats['function_entries']} code units from {stats['indexed_files']} files.",
             f"Extracted {stats['block_entries']} code blocks.",
+            self._duplicate_hint(),
         ]
-        if self._has_significant_duplicates():
-            result_parts.append("\nDuplicates found. Run analyze().")
-        else:
-            result_parts.append("\nNo duplicates.")
         return ToolResult("\n".join(result_parts))
 
     def _index_codebase_event_driven(self, path: str, recursive: bool) -> ToolResult:
@@ -494,10 +498,7 @@ class CodeStructureTools(CloseOnExitMixin):
             f"Extracted {stats['block_entries']} code blocks.",
         ]
 
-        if self._has_significant_duplicates():
-            result_parts.append("\nDuplicates found. Run analyze().")
-        else:
-            result_parts.append("\nNo duplicates.")
+        result_parts.append(self._duplicate_hint())
 
         # Prepend cloud warning if detected
         output = "\n".join(result_parts)
@@ -1176,7 +1177,7 @@ class CodeStructureTools(CloseOnExitMixin):
             False,
             [],
             [],
-            "insufficient overlapping semantic signals" f"{note_suffix}",
+            f"insufficient overlapping semantic signals{note_suffix}",
         )
 
     def compare(
@@ -1240,9 +1241,7 @@ class CodeStructureTools(CloseOnExitMixin):
         mismatch_text = "; ".join(mismatches[:3])
         if structural_kind == "equivalent":
             if mode == "annotate":
-                return ToolResult(
-                    "EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: " f"{mismatch_text}."
-                )
+                return ToolResult(f"EQUIVALENT (STRUCTURE) but SEMANTIC_MISMATCH: {mismatch_text}.")
             return ToolResult(
                 "DIFFERENT: Structurally equivalent snippets diverge semantically "
                 f"({mismatch_text})."
@@ -1457,9 +1456,9 @@ class CodeStructureTools(CloseOnExitMixin):
             info["server_binary"] = "clangd"
             info["server_binary_alternatives"] = ["ccls"]
             info["shared_with"] = "c_lsp" if language_id == "cpp_lsp" else "cpp_lsp"
-            info["socat_command"] = (
-                f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" ' '"EXEC:clangd",stderr'
-            )
+            info[
+                "socat_command"
+            ] = f'socat "TCP-LISTEN:{port},bind=0.0.0.0,reuseaddr,fork" "EXEC:clangd",stderr'
             info["install_hints"] = {
                 "macos": "brew install llvm",
                 "linux": "apt-get install -y clangd",
