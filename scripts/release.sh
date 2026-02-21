@@ -121,11 +121,10 @@ echo "==> [2/4] Locking dependencies"
 uv lock --quiet
 
 echo ""
-echo "==> [3/4] Running local quality checks"
+echo "==> [3/4] Running local quality checks (linting + types only)"
+echo "    Full test suite + coverage enforced by CI after tag push."
 uv run ruff check .
 uv run mypy
-docker build -t astrograph-local:test .
-ASTOGRAPH_TEST_IMAGE=astrograph-local:test uv run pytest -q
 echo "    Local checks passed"
 
 if [[ "$MODE" == "--dry" ]]; then
