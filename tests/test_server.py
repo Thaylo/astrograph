@@ -3474,6 +3474,7 @@ def calculate_sum(a, b):
             tools._close_event_driven_index()
             assert len(tools.index.entries) > 0, index_result.text
             yield tools, tmpdir
+            tools.close()
 
     def test_write_requires_index(self, tools):
         """Test that write requires an indexed codebase."""
@@ -3685,6 +3686,7 @@ def placeholder():
             tools._close_event_driven_index()
             assert len(tools.index.entries) > 0, index_result.text
             yield tools, tmpdir, existing_file
+            tools.close()
 
     def test_edit_requires_index(self, tools):
         """Test that edit requires an indexed codebase."""
