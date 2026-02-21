@@ -121,10 +121,9 @@ echo "==> [2/4] Locking dependencies"
 uv lock --quiet
 
 echo ""
-echo "==> [3/4] Running local quality checks (linting + types only)"
-echo "    Full test suite + coverage enforced by CI after tag push."
+echo "==> [3/4] Running local quality checks"
+echo "    mypy + full test suite enforced by CI (pre-commit + pytest) after tag push."
 uv run ruff check .
-uv run mypy
 echo "    Local checks passed"
 
 if [[ "$MODE" == "--dry" ]]; then
