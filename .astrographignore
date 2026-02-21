@@ -1,0 +1,66 @@
+# .astrographignore — files/directories excluded from ASTrograph indexing
+# Syntax: gitignore-like (globs, directory/, /anchored, **, !negation)
+
+# Vendored / third-party
+vendor/
+third_party/
+third-party/
+external/
+
+# Minified / generated code
+*.min.js
+*.min.css
+*.bundle.js
+*.chunk.js
+*.generated.*
+
+# Build output
+dist/
+build/
+out/
+target/
+_build/
+
+# Package managers
+node_modules/
+bower_components/
+jspm_packages/
+
+# Language caches
+__pycache__/
+*.pyc
+.tox/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.eggs/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Version control
+.git/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Test snapshots
+__snapshots__/
+*.snap
+
+# Large data files
+*.csv
+*.json
+*.xml
+*.yaml
+*.yml
+*.lock
+
+# Canary/tripwire files (single-line stubs, all WL-hash identical)
+.tripwire_scratch/
