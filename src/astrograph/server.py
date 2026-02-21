@@ -20,8 +20,8 @@ Also exposes 3 MCP resources, 2 prompts, and prompt argument completions.
 
 import asyncio
 import atexit
+import os
 import signal
-import sys
 import threading
 
 from mcp.server import Server
@@ -578,8 +578,14 @@ def _close_if_first() -> None:
 
 def _shutdown_handler(_signum: int, _frame: object) -> None:
     """Handle SIGTERM from Docker by flushing and closing resources."""
+    # Unblock any thread waiting in _wait_for_background_index so that the
+    # atexit handler can complete without being interrupted by os._exit().
+    _tools._bg_index_done.set()
     _close_if_first()
-    sys.exit(0)
+    # os._exit avoids raising SystemExit, which would otherwise be caught by
+    # Python's atexit machinery and printed as "Exception ignored in atexit
+    # callback" if the signal fires while the atexit handler is still running.
+    os._exit(0)
 
 
 def _atexit_close() -> None:
