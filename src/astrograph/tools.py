@@ -408,7 +408,10 @@ class CodeStructureTools(CloseOnExitMixin):
         path = self._resolve_path(path)
 
         if not os.path.exists(path):
-            return ToolResult(f"Error: Path does not exist: {original_path}")
+            msg = f"Error: Path does not exist: {original_path}"
+            if os.path.exists("/.dockerenv") and not original_path.startswith("/workspace"):
+                msg += "\nRunning inside Docker — use /workspace (the host workspace is mounted there)."
+            return ToolResult(msg)
 
         # Store resolved path for auto-reindex and relative path computation
         self._last_indexed_path = str(Path(path).resolve())
