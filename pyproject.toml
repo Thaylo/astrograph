@@ -1,6 +1,6 @@
 [project]
 name = "astrograph"
-version = "0.5.94"
+version = "0.5.95"
 description = "MCP server for structural code duplication detection and language-aware semantic analysis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -65,7 +65,7 @@ asyncio_mode = "auto"
 # The threshold is NOT in addopts — pass it explicitly when you need it:
 #   uv run pytest --cov-fail-under=92
 # This keeps local runs fast and avoids false failures when e2e tests are skipped.
-addopts = "--tb=short --no-header --cov=src/astrograph --cov-report="
+addopts = "--tb=short --no-header --cov=src/astrograph --cov-report= --timeout=30"
 
 [tool.coverage.run]
 source = ["src/astrograph"]

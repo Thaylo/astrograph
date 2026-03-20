@@ -55,7 +55,7 @@ def _project_key(project_path: Path) -> str:
     return f"{safe_name}-{path_hash}"
 
 
-def _is_docker() -> bool:
+def _is_docker() -> bool:  # pragma: no cover — runtime-only check
     return Path("/.dockerenv").exists()
 
 
