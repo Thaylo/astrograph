@@ -762,6 +762,20 @@ class CodeStructureTools(CloseOnExitMixin):
                 }
             )
 
+        # Near-duplicates (Type-3 clones: similar structure, small differences)
+        near_groups = self.index.find_near_duplicates(min_node_count=self._MIN_STATEMENTS)
+        for group in near_groups:
+            first = group.entries[0]
+            line_count = first.code_unit.line_end - first.code_unit.line_start + 1
+            findings.append(
+                {
+                    "type": "near",
+                    "hash": group.wl_hash,
+                    "locations": self._format_locations(group.entries),
+                    "line_count": line_count,
+                }
+            )
+
         suppressed_count = self.index.get_stats()["suppressed_hashes"]
 
         def _suppressed_line(with_period: bool = False) -> str | None:
@@ -806,6 +820,8 @@ class CodeStructureTools(CloseOnExitMixin):
             elif f["type"] == "block":
                 block_type = f.get("block_type", "block")
                 result.append(f"{num}. [{block_type}]{verified} {locs} ({line_count} lines)")
+            elif f["type"] == "near":
+                result.append(f"{num}. [near-duplicate] {locs} ({line_count} lines)")
             else:
                 result.append(f"{num}. [pattern] {locs} ({line_count} lines)")
 
@@ -844,7 +860,7 @@ class CodeStructureTools(CloseOnExitMixin):
             # Count type breakdown
             type_parts = [
                 f"{count} {name}"
-                for name in ("exact", "block", "pattern")
+                for name in ("exact", "block", "pattern", "near")
                 if (count := sum(1 for f in findings if f["type"] == name))
             ]
             summary_parts = [

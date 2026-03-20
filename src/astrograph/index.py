@@ -1137,6 +1137,89 @@ class CodeStructureIndex:
                 self.block_buckets, min_node_count, entry_filter
             )
 
+    def find_near_duplicates(
+        self,
+        min_node_count: int = 5,
+        min_matching_depth: int = 4,
+    ) -> list[DuplicateGroup]:
+        """
+        Find near-duplicate code units (Type-3 clones).
+
+        Groups functions/methods whose hierarchy hashes match at the first
+        ``min_matching_depth`` levels but diverge deeper — structurally
+        similar code that isn't an exact or pattern duplicate.
+
+        At depth 3/5, entries share ~60% structural identity.
+        At depth 4/5 (default), they share ~80%.
+
+        Returns:
+            List of DuplicateGroup objects for near-duplicate clusters,
+            sorted by group size (largest first).
+        """
+        import hashlib as _hl
+
+        with self._lock:
+            # Collect hashes already covered by exact/pattern detection
+            covered_eids: set[str] = set()
+            for bucket in (self.hash_buckets, self.pattern_buckets):
+                for wl_hash, eids in bucket.items():
+                    if len(eids) >= 2 and wl_hash not in self.suppressed_hashes:
+                        covered_eids.update(eids)
+
+            # Build prefix index: hierarchy_prefix -> [entry_ids]
+            prefix_groups: dict[str, list[str]] = {}
+
+            for eid in self.entries:
+                meta = self.entries.get_meta(eid)
+                if meta is None or meta.node_count < min_node_count:
+                    continue
+                if meta.unit_type == "block":
+                    continue  # Focus on functions/methods/classes
+
+                hh = self.entries.get_hierarchy_hashes(eid)
+                if hh is None or len(hh) < min_matching_depth:
+                    continue
+
+                prefix = "|".join(hh[:min_matching_depth])
+                prefix_groups.setdefault(prefix, []).append(eid)
+
+            # Filter: keep groups with 2+ entries not already in exact/pattern groups
+            near_groups: list[DuplicateGroup] = []
+
+            for prefix, group_eids in prefix_groups.items():
+                if len(group_eids) < 2:
+                    continue
+
+                # Exclude entries already covered by exact/pattern detection
+                uncovered = [eid for eid in group_eids if eid not in covered_eids]
+                if len(uncovered) < 2:
+                    continue
+
+                # Verify they're not all the same WL hash (would be exact dups)
+                wl_set: set[str] = set()
+                for eid in uncovered:
+                    meta = self.entries.get_meta(eid)
+                    if meta:
+                        wl_set.add(meta.wl_hash)
+                if len(wl_set) < 2:
+                    continue  # All identical — already covered
+
+                # Stable group hash from the prefix
+                group_hash = _hl.sha256(prefix.encode()).hexdigest()[:16]
+
+                if group_hash in self.suppressed_hashes:
+                    continue
+
+                # Load full entries
+                entries = [e for eid in uncovered if (e := self.entries.get(eid)) is not None]
+                if len(entries) >= 2:
+                    near_groups.append(
+                        DuplicateGroup(wl_hash=group_hash, entries=entries, is_verified=False)
+                    )
+
+            near_groups.sort(key=lambda g: len(g.entries), reverse=True)
+            return near_groups
+
     def has_duplicates(self, min_node_count: int = 5) -> bool:
         """Check if any duplicates exist above the trivial threshold.
 
