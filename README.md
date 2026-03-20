@@ -4,6 +4,8 @@
   <img src="astrograph_poster.jpg" alt="ASTrograph" width="400">
 </p>
 
+[![CI](https://github.com/Thaylo/astrograph/actions/workflows/ci.yml/badge.svg)](https://github.com/Thaylo/astrograph/actions/workflows/ci.yml)
+[![Release](https://github.com/Thaylo/astrograph/actions/workflows/release.yml/badge.svg)](https://github.com/Thaylo/astrograph/actions/workflows/release.yml)
 [![Docker](https://img.shields.io/badge/Docker-Hub-blue?logo=docker)](https://hub.docker.com/r/thaylo/astrograph)
 [![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blue?logo=linux)](https://hub.docker.com/r/thaylo/astrograph)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
