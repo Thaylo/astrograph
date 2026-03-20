@@ -5,6 +5,7 @@ Stores AST graphs with their hashes for efficient duplicate detection.
 """
 
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -23,6 +24,8 @@ from .canonical_hash import (
 from .ignorefile import IgnoreSpec
 from .languages.base import ASTGraph, CodeUnit, LanguagePlugin, node_match
 from .languages.registry import LanguageRegistry
+
+logger = logging.getLogger(__name__)
 
 # Prefixes that indicate virtual environment directories.
 # Matches: venv, .venv, venv311, .venv3.11, env, .env, virtualenv, etc.
@@ -495,7 +498,13 @@ class CodeStructureIndex:
                 include_blocks,
                 max_block_depth,
             ):
-                ast_graph = plugin.code_unit_to_ast_graph(unit)
+                try:
+                    ast_graph = plugin.code_unit_to_ast_graph(unit)
+                except Exception:
+                    logger.debug(
+                        "Skipping code unit %s:%s (AST conversion failed)", file_path, unit.name
+                    )
+                    continue
                 entry = self.add_ast_graph(ast_graph)
                 entries.append(entry)
 
@@ -853,14 +862,17 @@ class CodeStructureIndex:
             groups.sort(key=lambda g: len(g.entries), reverse=True)
             return groups
 
+    def _lookup_bucket(self, wl_hash: str) -> set[str]:
+        """Find entries for a hash across all bucket types."""
+        for buckets in (self.hash_buckets, self.pattern_buckets, self.block_buckets):
+            if wl_hash in buckets:
+                return buckets[wl_hash]
+        return set()
+
     def _get_entries_for_hash(self, wl_hash: str) -> list[IndexEntry]:
         """Get all entries matching a hash from any bucket."""
         with self._lock:
-            entry_ids: set[str] = (
-                self.hash_buckets.get(wl_hash, set())
-                or self.pattern_buckets.get(wl_hash, set())
-                or self.block_buckets.get(wl_hash, set())
-            )
+            entry_ids = self._lookup_bucket(wl_hash)
             return [e for eid in entry_ids if (e := self.entries.get(eid)) is not None]
 
     def suppress(self, wl_hash: str, reason: str | None = None) -> bool:
@@ -882,11 +894,7 @@ class CodeStructureIndex:
             True if the hash was found and suppressed, False if not found.
         """
         with self._lock:
-            entry_ids: set[str] = (
-                self.hash_buckets.get(wl_hash, set())
-                or self.pattern_buckets.get(wl_hash, set())
-                or self.block_buckets.get(wl_hash, set())
-            )
+            entry_ids = self._lookup_bucket(wl_hash)
 
             if not entry_ids:
                 return False
