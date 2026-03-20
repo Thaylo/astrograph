@@ -26,7 +26,6 @@ Add `.mcp.json` to your project root:
         "run", "--rm", "-i", "--pull", "missing",
         "--add-host", "host.docker.internal:host-gateway",
         "-v", ".:/workspace",
-        "-v", "./.metadata_astrograph:/workspace/.metadata_astrograph",
         "thaylo/astrograph:latest"
       ]
     }
@@ -34,7 +33,7 @@ Add `.mcp.json` to your project root:
 }
 ```
 
-The image is multi-arch (amd64, arm64). The codebase is indexed at startup and re-indexed on file changes.
+The image is multi-arch (amd64, arm64). The codebase is indexed at startup and re-indexed on file changes. Metadata is stored outside the project directory (in the user data dir) so it never interferes with your codebase.
 
 To update to a new release:
 
@@ -59,7 +58,6 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
         "run", "--rm", "-i", "--pull", "missing",
         "--add-host", "host.docker.internal:host-gateway",
         "-v", "/absolute/path/to/project:/workspace",
-        "-v", "/absolute/path/to/project/.metadata_astrograph:/workspace/.metadata_astrograph",
         "thaylo/astrograph:latest"
       ]
     }
@@ -81,7 +79,6 @@ args = [
   "run", "--rm", "-i", "--pull", "missing",
   "--add-host", "host.docker.internal:host-gateway",
   "-v", "/absolute/path/to/project:/workspace",
-  "-v", "/absolute/path/to/project/.metadata_astrograph:/workspace/.metadata_astrograph",
   "thaylo/astrograph:latest"
 ]
 ```
@@ -163,6 +160,19 @@ Reuse the existing implementation instead.
 
 Different variable names, identical structure. Source code is converted into labeled directed graphs and compared using Weisfeiler-Leman hashing with VF2 isomorphism verification. Text similarity is not involved.
 
+## Detection types
+
+ASTrograph detects four types of structural duplication:
+
+| Type | What it catches | How it works |
+|------|----------------|--------------|
+| **Exact** | Identical AST structure with renamed variables or different formatting | WL hash identity + VF2 graph isomorphism verification |
+| **Pattern** | Same control flow with different operators or constants | Operator-normalized graph hashing |
+| **Block** | Duplicate inner blocks (for/if/while/try) within functions | Block-level AST extraction + hash matching |
+| **Near-duplicate** | ~80% structural similarity — copy-paste-modify patterns | Hierarchy hash prefix matching at 4/5 depth levels |
+
+Near-duplicate detection catches Type-3 clones that exact and pattern detection miss. For example, Flask's `TagBytes`, `TagDateTime`, `TagTuple`, and `TagUUID` classes share 80%+ identical structure but differ in leaf-level details.
+
 ## Language support
 
 Python, JavaScript, TypeScript, and Go work out of the box. C, C++, and Java attach to an already-running language server over TCP.
@@ -172,12 +182,57 @@ Python, JavaScript, TypeScript, and Go work out of the box. C, C++, and Java att
 | Python | 3.11 -- 3.14 | bundled | `pylsp` |
 | JavaScript | ES2021+, Node 20/22/24 LTS | bundled | `typescript-language-server --stdio` |
 | TypeScript | TypeScript 5.x, Node 20/22/24 LTS | bundled | `typescript-language-server --stdio` |
-| Go | 1.21 -- 1.25 | bundled | `gopls serve` |
+| Go | 1.21 -- 1.25 | attach | `gopls serve` |
 | C | C11, C17, C23 | attach | `tcp://127.0.0.1:2087` |
 | C++ | C++17, C++20, C++23 | attach | `tcp://127.0.0.1:2088` |
 | Java | 11, 17, 21, 25 | attach | `tcp://127.0.0.1:2089` |
 
-The Docker image bundles Python and JS/TS LSP runtimes. For attach-based languages, expose the language server on a TCP port and use `lsp_setup` to bind.
+The Docker image bundles Python and JS/TS LSP runtimes. For attach-based languages, expose the language server on a TCP port using [socat](https://linux.die.net/man/1/socat) and configure via your MCP JSON:
+
+```json
+{
+  "mcpServers": {
+    "astrograph": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "--add-host", "host.docker.internal:host-gateway", "-v", ".:/workspace", "thaylo/astrograph:latest"],
+      "env": {
+        "ASTROGRAPH_CPP_LSP_COMMAND": "tcp://host.docker.internal:2088",
+        "ASTROGRAPH_GO_LSP_COMMAND": "tcp://host.docker.internal:2091",
+        "ASTROGRAPH_JAVA_LSP_COMMAND": "tcp://host.docker.internal:2089",
+        "ASTROGRAPH_C_LSP_COMMAND": "tcp://host.docker.internal:2087"
+      }
+    }
+  }
+}
+```
+
+| Language | Env var | Socat bridge example |
+|----------|---------|---------------------|
+| C | `ASTROGRAPH_C_LSP_COMMAND` | `socat TCP-LISTEN:2087,reuseaddr,fork EXEC:clangd` |
+| C++ | `ASTROGRAPH_CPP_LSP_COMMAND` | `socat TCP-LISTEN:2088,reuseaddr,fork EXEC:clangd` |
+| Java | `ASTROGRAPH_JAVA_LSP_COMMAND` | `socat TCP-LISTEN:2089,reuseaddr,fork EXEC:jdtls` |
+| Go | `ASTROGRAPH_GO_LSP_COMMAND` | `socat TCP-LISTEN:2091,reuseaddr,fork EXEC:"gopls serve"` |
+| Python | `ASTROGRAPH_PY_LSP_COMMAND` | (bundled, override if needed) |
+| JS | `ASTROGRAPH_JS_LSP_COMMAND` | (bundled, override if needed) |
+| TS | `ASTROGRAPH_TS_LSP_COMMAND` | (bundled, override if needed) |
+
+Run `lsp_setup(mode='inspect')` to see which languages are available and what's missing.
+
+## Real-world results
+
+Tested on popular open-source projects:
+
+| Project | Language | Files | Code Units | Duplicates Found |
+|---------|----------|-------|------------|-----------------|
+| [Redis](https://github.com/redis/redis) | C | 208 | 18,272 | 556 groups |
+| [TypeORM](https://github.com/typeorm/typeorm) | TypeScript | 492 | 7,107 | 511 groups |
+| [Express.js](https://github.com/expressjs/express) | JavaScript | 141 | 3,866 | 468 groups |
+| [nlohmann/json](https://github.com/nlohmann/json) | C++ | 488 | 9,103 | 959 groups |
+| [Gin](https://github.com/gin-gonic/gin) | Go | 99 | 1,557 | 141 groups |
+| [Flask](https://github.com/pallets/flask) | Python | 24 | 910 | 48 groups |
+| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) | Java | 47 | 270 | 17 groups |
+
+Every finding is verified via VF2 graph isomorphism — zero false positives.
 
 ## Star History
 
