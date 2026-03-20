@@ -30,6 +30,7 @@ ENV/
 .vscode/
 *.swp
 *.swo
+*~
 
 # Testing
 .pytest_cache/
@@ -38,10 +39,24 @@ htmlcov/
 .tox/
 .nox/
 
+# Type checking
+.mypy_cache/
+
 # MCP
 .mcp/
 
-# Index files
-*.index.json
+# ASTrograph metadata (now in user data dir, but ignore legacy in-project copies)
 .metadata_astograph/
 .metadata_astrograph/
+*.index.json
+
+# Scratch / temporary files
+.tripwire_scratch/
+*.db
+report_temp.md
+temporary_handover.md
+demonstration_report_*.md
+
+# OS
+.DS_Store
+Thumbs.db
