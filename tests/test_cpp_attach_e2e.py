@@ -120,7 +120,10 @@ int helper(int value) {
                     ],
                 ).text
             )
-            assert any(change["language"] == "cpp_lsp" for change in auto_bind["changes"])
+            # When the observation matches the default endpoint and it's already
+            # reachable, no binding "change" is recorded. Check availability instead.
+            cpp_probes = auto_bind.get("probes", {}).get("cpp_lsp", [])
+            assert any(p.get("available") or p.get("probe_available") for p in cpp_probes)
 
             inspect_after = json.loads(tools.lsp_setup(mode="inspect").text)
             cpp_status = next(s for s in inspect_after["servers"] if s["language"] == "cpp_lsp")

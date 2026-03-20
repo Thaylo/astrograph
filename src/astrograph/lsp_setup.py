@@ -308,8 +308,9 @@ def _probe_attach_lsp_semantics(
 
     probe = _probe_document(language_id)
     workspace_root = _normalize_workspace_root(workspace)
-    probe_path = _get_persistence_path(workspace_root) / probe["suffix"]
-    probe_path.parent.mkdir(parents=True, exist_ok=True)
+    # Probe file must be inside the workspace so language servers (clangd, gopls)
+    # can discover project context (compile_commands.json, go.mod) by walking up.
+    probe_path = workspace_root / probe["suffix"]
 
     client = SocketLSPClient(parsed[0], request_timeout=timeout)
     symbols: list[Any] = []
