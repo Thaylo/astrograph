@@ -1241,6 +1241,7 @@ def collect_lsp_statuses(
                 "effective_command": effective_command,
                 "effective_source": effective_source,
                 "binding_command": bindings.get(spec.language_id, []),
+                "env_var": spec.command_env_var,
                 "env_command": parse_command(os.getenv(spec.command_env_var, "")),
                 "default_command": list(spec.default_command),
                 "version_status": version_status,

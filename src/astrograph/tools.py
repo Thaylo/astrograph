@@ -1995,6 +1995,7 @@ class CodeStructureTools(CloseOnExitMixin):
                     "available": s.get("available"),
                     "transport": s.get("transport"),
                     "state": s.get("verification_state"),
+                    "env_var": s.get("env_var"),
                 }
                 for s in servers
                 if isinstance(s, dict)
@@ -2020,8 +2021,15 @@ class CodeStructureTools(CloseOnExitMixin):
                 compact_actions.append(a)
             compact["actions"] = compact_actions
 
-        # Keep bindings, changes, and scope metadata (small)
-        for key in ("bindings", "changes", "scope_language", "scope_languages", "observation_note"):
+        # Keep bindings, changes, scope metadata, and config hints (small)
+        for key in (
+            "bindings",
+            "changes",
+            "scope_language",
+            "scope_languages",
+            "observation_note",
+            "mcp_env_config",
+        ):
             if key in payload:
                 compact[key] = payload[key]
 
@@ -2197,6 +2205,18 @@ class CodeStructureTools(CloseOnExitMixin):
                         "command": "tcp://127.0.0.1:2089",
                     },
                 ]
+                # Show env vars for MCP JSON configuration
+                mcp_env = {
+                    s["env_var"]: s.get("effective_command", s.get("default_command", []))
+                    for s in statuses
+                    if s["language"] in missing and s.get("env_var")
+                }
+                if mcp_env:
+                    payload["mcp_env_config"] = {
+                        "hint": "Set these in your .mcp.json env section to configure LSP endpoints at startup",
+                        "env": {k: "tcp://host.docker.internal:<port>" for k in mcp_env},
+                    }
+
                 if not language and "cpp_lsp" in missing:
                     payload["focus_hint"] = (
                         "Start by resolving one language at a time. "
