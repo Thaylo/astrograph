@@ -2222,14 +2222,13 @@ class CodeStructureTools(CloseOnExitMixin):
         if self._last_indexed_path:
             persistence_path = _get_persistence_path(self._last_indexed_path)
             bindings_removed = (persistence_path / "lsp_bindings.json").exists()
-            if persistence_path.exists():
-                shutil.rmtree(persistence_path, ignore_errors=True)
-                erased = True
-            # Also remove legacy in-project .metadata_astrograph/ if present
-            legacy_path = Path(self._last_indexed_path).resolve() / PERSISTENCE_DIR
-            if legacy_path.is_dir():
-                shutil.rmtree(legacy_path, ignore_errors=True)
-                erased = True
+            for target in (
+                persistence_path,
+                Path(self._last_indexed_path).resolve() / PERSISTENCE_DIR,
+            ):
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                    erased = True
 
         # Create fresh event-driven index (no persistence until next index_codebase)
         self._event_driven_index = EventDrivenIndex(

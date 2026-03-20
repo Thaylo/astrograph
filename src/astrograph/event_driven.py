@@ -9,7 +9,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, cast
 
@@ -297,6 +297,22 @@ class EventDrivenIndex(CloseOnExitMixin):
             )
             self._bg_thread.start()
 
+    def _persist_delta(self, changed_files: Iterable[str], removed_files: Iterable[str]) -> None:
+        """Persist only changed/removed files (delta) to SQLite."""
+        if self._persistence is None or not (changed_files or removed_files):
+            return
+        for fp in changed_files:
+            if fp in self.index.file_metadata:
+                file_entries = [
+                    self.index.entries[eid]
+                    for eid in self.index.file_entries.get(fp, [])
+                    if eid in self.index.entries
+                ]
+                self._persistence.save_file_entries(fp, file_entries, self.index.file_metadata[fp])
+        for fp in removed_files:
+            self._persistence.delete_file_entries(fp)
+        self._persistence.save_index_metadata(self.index)
+
     def _invalidate_cache_and_recompute(self) -> None:
         """Invalidate analysis cache and schedule recomputation."""
         self._cache.invalidate()
@@ -426,20 +442,7 @@ class EventDrivenIndex(CloseOnExitMixin):
             )
 
             # Persist only changed/removed files (delta), not the full index
-            if changed_files or removed_files:
-                for fp in changed_files:
-                    if fp in self.index.file_metadata:
-                        file_entries = [
-                            self.index.entries[eid]
-                            for eid in self.index.file_entries.get(fp, [])
-                            if eid in self.index.entries
-                        ]
-                        self._persistence.save_file_entries(
-                            fp, file_entries, self.index.file_metadata[fp]
-                        )
-                for fp in removed_files:
-                    self._persistence.delete_file_entries(fp)
-                self._persistence.save_index_metadata(self.index)
+            self._persist_delta(changed_files, removed_files)
 
             logger.info(
                 f"Incremental update: {added} added, {updated} updated, {unchanged} unchanged"
@@ -589,20 +592,7 @@ class EventDrivenIndex(CloseOnExitMixin):
                     ignore_spec=self._ignore_spec,
                 )
 
-                if self._persistence is not None and (changed_files or removed_files):
-                    for fp in changed_files:
-                        if fp in self.index.file_metadata:
-                            file_entries = [
-                                self.index.entries[eid]
-                                for eid in self.index.file_entries.get(fp, [])
-                                if eid in self.index.entries
-                            ]
-                            self._persistence.save_file_entries(
-                                fp, file_entries, self.index.file_metadata[fp]
-                            )
-                    for fp in removed_files:
-                        self._persistence.delete_file_entries(fp)
-                    self._persistence.save_index_metadata(self.index)
+                self._persist_delta(changed_files, removed_files)
 
                 if added or updated or removed_files:
                     logger.info(
