@@ -182,7 +182,7 @@ def mcp_call_tool(name: str, arguments: dict, request_id: int = 3) -> dict:
 @pytest.fixture
 def sample_workspace():
     """Create a temporary workspace with Python files containing duplicates."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         code = '''\
 def calculate_sum(a, b):
     """Add two numbers."""
@@ -226,7 +226,7 @@ def transform_values(data):
 @pytest.fixture
 def sample_javascript_workspace():
     """Create a temporary workspace with JavaScript files containing duplicates."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         js_code = """\
 function processItems(items) {
   const results = [];
@@ -255,7 +255,7 @@ function transformItems(data) {
 @pytest.fixture
 def mixed_language_workspace():
     """Workspace with both Python and JavaScript duplicates."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         py_code = """\
 def process_items(items):
     results = []
