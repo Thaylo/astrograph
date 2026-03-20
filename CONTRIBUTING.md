@@ -241,18 +241,23 @@ The `language_plugin` parametrized fixture in `tests/languages/conftest.py` runs
 
 ### Running tests
 
+Run in slices to avoid resource exhaustion (the full suite with coverage can be heavy):
+
 ```bash
-# All tests
-pytest tests/ -q
+# Core + paths
+uv run pytest tests/test_event_driven.py tests/test_paths.py -q
 
-# Language plugin tests only
-pytest tests/languages/ -q
+# Integration
+uv run pytest tests/test_server.py -q
 
-# Docker E2E protocol + integration checks
-pytest tests/test_e2e_docker.py -q
+# Language plugins
+uv run pytest tests/languages/ tests/test_semantic_tokens.py -q
+
+# Docker E2E (requires ASTOGRAPH_TEST_IMAGE)
+ASTOGRAPH_TEST_IMAGE=thaylo/astrograph:test uv run pytest tests/test_e2e_docker.py -q
 
 # A specific language
-pytest tests/languages/test_<language>_plugin.py -q
+uv run pytest tests/languages/test_<language>_plugin.py -q
 ```
 
 ## Code Quality
@@ -269,10 +274,10 @@ The project uses these tools (enforced in CI):
 Run before submitting:
 
 ```bash
-ruff check src/ tests/
-ruff format src/ tests/
-mypy src/astrograph
-pytest tests/ -q
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+uv run mypy src/astrograph
+uv run pytest tests/test_event_driven.py tests/test_server.py tests/languages/ -q
 ```
 
 Coverage threshold is 85%. The `_treesitter_base.py` module is excluded from coverage since it requires tree-sitter grammars.
