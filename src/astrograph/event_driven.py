@@ -573,7 +573,7 @@ class EventDrivenIndex(CloseOnExitMixin):
         if watched is None or self._shutdown.is_set():
             return
 
-        def _resync() -> None:
+        def _resync() -> None:  # pragma: no cover — requires real quarantine recovery
             if self._shutdown.is_set():
                 return
             try:

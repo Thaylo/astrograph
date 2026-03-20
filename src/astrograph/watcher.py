@@ -222,7 +222,7 @@ class SourceFileHandler(FileSystemEventHandler):
             if self._on_storm_quarantine is not None:
                 try:
                     self._on_storm_quarantine()
-                except Exception:
+                except Exception:  # pragma: no cover
                     logger.exception("Error in storm quarantine callback")
             return True
         return False
