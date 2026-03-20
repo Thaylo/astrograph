@@ -25,6 +25,27 @@ if not os.environ.get("ASTOGRAPH_TEST_IMAGE"):
 DOCKER_IMAGE = os.environ["ASTOGRAPH_TEST_IMAGE"]
 
 
+def _docker_cleanup(workspace: str) -> None:
+    """Remove root-owned .metadata_astrograph/ created by Docker inside the workspace."""
+    metadata = Path(workspace) / ".metadata_astrograph"
+    if metadata.exists():
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{workspace}:/w",
+                "alpine",
+                "rm",
+                "-rf",
+                "/w/.metadata_astrograph",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -221,6 +242,7 @@ def transform_values(data):
 """
         (Path(tmpdir) / "data_utils.py").write_text(code2)
         yield tmpdir
+        _docker_cleanup(tmpdir)
 
 
 @pytest.fixture
@@ -250,6 +272,7 @@ function transformItems(data) {
 """
         (Path(tmpdir) / "math_utils.js").write_text(js_code)
         yield tmpdir
+        _docker_cleanup(tmpdir)
 
 
 @pytest.fixture
@@ -296,6 +319,7 @@ function selectPositive(arr) {
 """
         (Path(tmpdir) / "helpers.js").write_text(js_code)
         yield tmpdir
+        _docker_cleanup(tmpdir)
 
 
 # ---------------------------------------------------------------------------
