@@ -375,7 +375,8 @@ def create_server() -> Server:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        result = await asyncio.to_thread(_tools.call_tool, name, arguments)
+        tools = get_tools()  # Capture — set_tools() can replace global mid-execution
+        result = await asyncio.to_thread(tools.call_tool, name, arguments)
         return [TextContent(type="text", text=result.text)]
 
     # --- MCP Resources ---
@@ -406,14 +407,15 @@ def create_server() -> Server:
     @server.read_resource()
     async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
         uri_str = str(uri)
+        tools = get_tools()  # Capture — set_tools() can replace global mid-execution
         if uri_str == "astrograph://status":
-            content = await asyncio.to_thread(_tools.read_resource_status)
+            content = await asyncio.to_thread(tools.read_resource_status)
             return [ReadResourceContents(content=content)]
         elif uri_str == "astrograph://analysis/latest":
-            content = await asyncio.to_thread(_tools.read_resource_analysis)
+            content = await asyncio.to_thread(tools.read_resource_analysis)
             return [ReadResourceContents(content=content)]
         elif uri_str == "astrograph://suppressions":
-            content = await asyncio.to_thread(_tools.read_resource_suppressions)
+            content = await asyncio.to_thread(tools.read_resource_suppressions)
             return [ReadResourceContents(content=content)]
         else:
             raise ValueError(f"Unknown resource URI: {uri_str}")
@@ -456,7 +458,7 @@ def create_server() -> Server:
         return _AVAILABLE_PROMPTS
 
     def _build_review_duplicates_prompt(focus: str | None) -> GetPromptResult:
-        analysis_text = _tools.read_resource_analysis()
+        analysis_text = get_tools().read_resource_analysis()
         focus_label = focus or "all"
         return GetPromptResult(
             description=f"Review duplicates (focus: {focus_label})",
@@ -485,7 +487,7 @@ def create_server() -> Server:
         lsp_args: dict = {"mode": "inspect"}
         if language:
             lsp_args["language"] = language
-        inspect_result = _tools.call_tool("lsp_setup", lsp_args)
+        inspect_result = get_tools().call_tool("lsp_setup", lsp_args)
         lang_label = language or "all languages"
         return GetPromptResult(
             description=f"LSP setup guide ({lang_label})",

@@ -69,12 +69,15 @@ def _expand_pattern(pattern: str) -> list[Path]:
     expanded = os.path.expanduser(pattern)
 
     if "*" in expanded:
-        # Use glob for wildcard patterns
+        # Use glob for wildcard patterns (capped to prevent runaway expansion)
         parent = Path(expanded).parent
         name_pattern = Path(expanded).name
+        _MAX_GLOB_RESULTS = 100
         try:
             if parent.exists():
-                return list(parent.glob(name_pattern))
+                from itertools import islice
+
+                return list(islice(parent.glob(name_pattern), _MAX_GLOB_RESULTS))
         except OSError:
             pass
         return []

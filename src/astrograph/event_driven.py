@@ -299,7 +299,8 @@ class EventDrivenIndex(CloseOnExitMixin):
 
     def _persist_delta(self, changed_files: Iterable[str], removed_files: Iterable[str]) -> None:
         """Persist only changed/removed files (delta) to SQLite."""
-        if self._persistence is None or not (changed_files or removed_files):
+        persistence = self._persistence  # Capture — close() can set to None on another thread
+        if persistence is None or not (changed_files or removed_files):
             return
         for fp in changed_files:
             if fp in self.index.file_metadata:
@@ -308,10 +309,10 @@ class EventDrivenIndex(CloseOnExitMixin):
                     for eid in self.index.file_entries.get(fp, [])
                     if eid in self.index.entries
                 ]
-                self._persistence.save_file_entries(fp, file_entries, self.index.file_metadata[fp])
+                persistence.save_file_entries(fp, file_entries, self.index.file_metadata[fp])
         for fp in removed_files:
-            self._persistence.delete_file_entries(fp)
-        self._persistence.save_index_metadata(self.index)
+            persistence.delete_file_entries(fp)
+        persistence.save_index_metadata(self.index)
 
     def _invalidate_cache_and_recompute(self) -> None:
         """Invalidate analysis cache and schedule recomputation."""
