@@ -2555,6 +2555,10 @@ class CodeStructureTools(CloseOnExitMixin):
         except OSError as e:
             return ToolResult(f"Failed to read {display_path}: {e}")
 
+        # Validate inputs
+        if not old_string:
+            return ToolResult("Edit failed: old_string must not be empty.")
+
         # Check that old_string exists
         if old_string not in content:
             return ToolResult(
