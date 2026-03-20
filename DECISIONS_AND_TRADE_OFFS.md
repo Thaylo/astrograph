@@ -26,10 +26,15 @@ language onboarding costly.
 
 ### Decision
 
-Language support is plugin-based. Python and JavaScript are both delivered through plugins:
+Language support is plugin-based. All seven languages are delivered through plugins:
 
-- `python` -> `PythonLSPPlugin` (LSP symbols + AST graphing)
-- `javascript_lsp` -> `JavaScriptLSPPlugin` (LSP symbols + structural graphing)
+- `python` -> `PythonLSPPlugin` (bundled)
+- `javascript_lsp` -> `JavaScriptLSPPlugin` (bundled)
+- `typescript_lsp` -> `TypeScriptLSPPlugin` (bundled)
+- `c_lsp` -> `CLSPPlugin` (TCP attach)
+- `cpp_lsp` -> `CppLSPPlugin` (TCP attach)
+- `java_lsp` -> `JavaLSPPlugin` (TCP attach)
+- `go_lsp` -> `GoLSPPlugin` (TCP attach)
 
 ### Trade-offs
 
@@ -131,7 +136,10 @@ A stable alias (`analysis_report.txt`) creates ambiguity in multi-run/multi-agen
 
 Analyze output is persisted only as timestamped files:
 
-- `.metadata_astrograph/analysis_report_<YYYYMMDD>_<HHMMSS>_<microseconds>.txt`
+- `<data_dir>/projects/<project-key>/analysis_report_<YYYYMMDD>_<HHMMSS>_<microseconds>.txt`
+
+The data directory is platform-specific (`~/.local/share/astrograph` on Linux,
+`~/Library/Application Support/astrograph` on macOS) and resides outside the project.
 
 Legacy alias `analysis_report.txt` is no longer produced.
 
@@ -189,7 +197,7 @@ Expose one setup MCP tool (`astrograph_lsp_setup`) with deterministic modes:
 
 Command resolution precedence is:
 
-1. persisted binding (`.metadata_astrograph/lsp_bindings.json`)
+1. persisted binding (`<data_dir>/projects/<project-key>/lsp_bindings.json`)
 2. environment override (`ASTROGRAPH_*_LSP_COMMAND`)
 3. built-in default command
 
@@ -221,14 +229,17 @@ ASTrograph ships with a hybrid runtime model:
 - Bundled subprocess defaults:
   - `python` -> `pylsp`
   - `javascript_lsp` -> `typescript-language-server --stdio`
+  - `typescript_lsp` -> `typescript-language-server --stdio`
 - Attach defaults (already-running server endpoints):
   - `c_lsp` -> `tcp://127.0.0.1:2087`
   - `cpp_lsp` -> `tcp://127.0.0.1:2088`
   - `java_lsp` -> `tcp://127.0.0.1:2089`
+  - `go_lsp` -> `tcp://127.0.0.1:2091`
 
-Attach languages remain fully configurable through `astrograph_lsp_setup` bindings,
-environment overrides, and observation-assisted auto-bind. They are treated as
-optional for readiness checks (`doctor.ready`), while bundled Python/JavaScript remain required.
+Attach languages are fully configurable through `lsp_setup` bindings,
+environment overrides (`ASTROGRAPH_*_LSP_COMMAND`), MCP JSON `env` section,
+and observation-assisted auto-bind. They are treated as optional for readiness
+checks, while bundled Python/JS/TS remain required.
 
 ### Trade-offs
 

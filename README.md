@@ -33,7 +33,7 @@ Add `.mcp.json` to your project root:
 }
 ```
 
-The image is multi-arch (amd64, arm64). The codebase is indexed at startup and re-indexed on file changes. Metadata is stored outside the project directory (in the user data dir) so it never interferes with your codebase.
+The image is multi-arch (amd64, arm64). The codebase is indexed at startup. Metadata is stored outside the project directory (in the user data dir) so it never interferes with your codebase.
 
 To update to a new release:
 
@@ -175,14 +175,14 @@ Near-duplicate detection catches Type-3 clones that exact and pattern detection 
 
 ## Language support
 
-Python, JavaScript, TypeScript, and Go work out of the box. C, C++, and Java attach to an already-running language server over TCP.
+Python, JavaScript, and TypeScript work out of the box. C, C++, Java, and Go attach to an already-running language server over TCP.
 
 | Language | Versions | Mode | Default endpoint |
 |----------|----------|------|-----------------|
 | Python | 3.11 -- 3.14 | bundled | `pylsp` |
 | JavaScript | ES2021+, Node 20/22/24 LTS | bundled | `typescript-language-server --stdio` |
 | TypeScript | TypeScript 5.x, Node 20/22/24 LTS | bundled | `typescript-language-server --stdio` |
-| Go | 1.21 -- 1.25 | attach | `gopls serve` |
+| Go | 1.21 -- 1.25 | attach | `tcp://127.0.0.1:2091` |
 | C | C11, C17, C23 | attach | `tcp://127.0.0.1:2087` |
 | C++ | C++17, C++20, C++23 | attach | `tcp://127.0.0.1:2088` |
 | Java | 11, 17, 21, 25 | attach | `tcp://127.0.0.1:2089` |
@@ -232,7 +232,7 @@ Tested on popular open-source projects:
 | [Flask](https://github.com/pallets/flask) | Python | 24 | 910 | 48 groups |
 | [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) | Java | 47 | 270 | 17 groups |
 
-Every finding is verified via VF2 graph isomorphism — zero false positives.
+Exact, pattern, and block findings are verified via VF2 graph isomorphism. Near-duplicates are matched via hierarchy hash prefix similarity (~80% structural identity).
 
 ## Star History
 

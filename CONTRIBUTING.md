@@ -5,16 +5,18 @@
 ```bash
 git clone https://github.com/Thaylo/astrograph.git
 cd astrograph
-pip install -e ".[dev]"
+uv sync --extra dev
 
 # If working on tree-sitter language plugins:
-pip install -e ".[dev,treesitter]"
+uv sync --extra dev --extra treesitter
 ```
 
-Run the test suite:
+Run the test suite (in safe slices to avoid resource exhaustion):
 
 ```bash
-pytest tests/ -q
+uv run pytest tests/test_event_driven.py tests/test_paths.py -q      # Core
+uv run pytest tests/test_server.py -q                                  # Integration
+uv run pytest tests/languages/ tests/test_semantic_tokens.py -q        # Language plugins
 ```
 
 Verify local LSP prerequisites (useful for plugin-backed languages):
@@ -25,8 +27,13 @@ astrograph-cli install-lsps --dry-run
 ```
 
 Current first-party plugin-backed languages:
-- `python` (`PythonLSPPlugin`)
-- `javascript_lsp` (`JavaScriptLSPPlugin`)
+- `python` (`PythonLSPPlugin`) — bundled
+- `javascript_lsp` (`JavaScriptLSPPlugin`) — bundled
+- `typescript_lsp` (`TypeScriptLSPPlugin`) — bundled
+- `c_lsp` (`CLSPPlugin`) — TCP attach
+- `cpp_lsp` (`CppLSPPlugin`) — TCP attach
+- `java_lsp` (`JavaLSPPlugin`) — TCP attach
+- `go_lsp` (`GoLSPPlugin`) — TCP attach
 
 For behavior-affecting defaults and rationale, see
 [`DECISIONS_AND_TRADE_OFFS.md`](DECISIONS_AND_TRADE_OFFS.md).
@@ -268,4 +275,4 @@ mypy src/astrograph
 pytest tests/ -q
 ```
 
-Coverage threshold is 92%. The `_treesitter_base.py` module is excluded from coverage since it requires tree-sitter grammars.
+Coverage threshold is 85%. The `_treesitter_base.py` module is excluded from coverage since it requires tree-sitter grammars.
