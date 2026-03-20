@@ -118,7 +118,7 @@ jobs:
       - name: Run test suite
         env:
           ASTOGRAPH_TEST_IMAGE: astrograph-local:test
-        run: uv run pytest -q --cov-fail-under=85
+        run: uv run pytest -q --cov=src/astrograph --cov-report= --cov-fail-under=85
 
   publish:
     runs-on: ubuntu-latest

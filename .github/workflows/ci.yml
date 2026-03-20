@@ -43,7 +43,7 @@ jobs:
         run: docker build -t astrograph-local:test .
 
       - name: Run unit tests
-        run: uv run pytest -q --ignore=tests/test_e2e_docker.py --cov-fail-under=85
+        run: uv run pytest -q --ignore=tests/test_e2e_docker.py --cov=src/astrograph --cov-report= --cov-fail-under=85
 
       - name: Run e2e Docker tests
         env:

@@ -61,12 +61,11 @@ include = ["src/astrograph"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 asyncio_mode = "auto"
-# Coverage is measured on every run so that CI can enforce --cov-fail-under.
-# The threshold is NOT in addopts — pass it explicitly when you need it:
-#   uv run pytest --cov-fail-under=85
-# Threshold was 92% pre-safety-hardening; lowered to 85% after adding ~430 lines
-# of defensive watcher/quarantine/governor code that requires real OS storms to cover.
-addopts = "--tb=short --no-header --cov=src/astrograph --cov-report= --timeout=30"
+# Coverage is NOT in addopts — it caused macOS system freezes by instrumenting
+# every test run. CI passes --cov flags explicitly; local runs stay fast.
+#   CI:    uv run pytest --cov=src/astrograph --cov-report= --cov-fail-under=85
+#   Local: uv run pytest (no coverage overhead)
+addopts = "--tb=short --no-header --timeout=30"
 
 [tool.coverage.run]
 source = ["src/astrograph"]
