@@ -147,14 +147,19 @@ class _StdioReader:
                 continue
             name, value = header_line.split(":", 1)
             if name.strip().lower() == "content-length":
-                content_length = int(value.strip())
+                try:
+                    content_length = int(value.strip())
+                except ValueError as err:
+                    raise ValueError(f"Invalid Content-Length header: {value.strip()!r}") from err
                 break
 
         if content_length is None:
             raise ValueError("Missing Content-Length header in framed message")
 
-        # Guard against oversized Content-Length (max 256 MB)
+        # Guard against invalid Content-Length values
         _MAX_CONTENT_LENGTH = 256 * 1024 * 1024
+        if content_length < 0:
+            raise ValueError(f"Negative Content-Length: {content_length}")
         if content_length > _MAX_CONTENT_LENGTH:
             raise ValueError(
                 f"Content-Length {content_length} exceeds maximum {_MAX_CONTENT_LENGTH}"
