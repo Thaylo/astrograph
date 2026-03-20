@@ -1,6 +1,6 @@
 [project]
 name = "astrograph"
-version = "0.5.80"
+version = "0.5.81"
 description = "MCP server for structural code duplication detection and language-aware semantic analysis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,6 +21,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
     "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
     "mypy>=1.8",
     "ruff>=0.2",
     "pre-commit>=3.6",

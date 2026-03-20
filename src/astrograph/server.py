@@ -259,7 +259,7 @@ def create_server() -> Server:
             ),
             Tool(
                 name="metadata_erase",
-                description="Erase all persisted metadata (.metadata_astrograph/). Resets server to idle.",
+                description="Erase all persisted metadata. Resets server to idle.",
                 inputSchema={
                     "type": "object",
                     "properties": {},

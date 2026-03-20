@@ -56,6 +56,19 @@ def _lsp_texts_signal(
         )
 
 
+def _lsp_keyword_signal(
+    signals: list[SemanticSignal],
+    keyword_texts: set[str],
+    keyword: str,
+    key: str,
+    value: str,
+    confidence: float = 0.95,
+) -> None:
+    """Append an ``origin='lsp'`` signal when *keyword* is present."""
+    if keyword in keyword_texts:
+        signals.append(SemanticSignal(key=key, value=value, confidence=confidence, origin="lsp"))
+
+
 # ---------------------------------------------------------------------------
 # clangd  (C / C++)
 # ---------------------------------------------------------------------------
@@ -398,16 +411,20 @@ class GoplsProfile:
 
         # Keyword-based signals
         keyword_texts = token_index.texts_of_type("keyword")
-        if "defer" in keyword_texts:
-            signals.append(
-                SemanticSignal(key="go.defer_recover", value="defer", confidence=0.95, origin="lsp")
-            )
-        if "go" in keyword_texts:
-            signals.append(
-                SemanticSignal(
-                    key="go.concurrency", value="goroutine", confidence=0.95, origin="lsp"
-                )
-            )
+        _lsp_keyword_signal(
+            signals,
+            keyword_texts,
+            keyword="defer",
+            key="go.defer_recover",
+            value="defer",
+        )
+        _lsp_keyword_signal(
+            signals,
+            keyword_texts,
+            keyword="go",
+            key="go.concurrency",
+            value="goroutine",
+        )
 
         return signals
 

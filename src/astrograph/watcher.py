@@ -8,6 +8,7 @@ index updates automatically.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -26,10 +27,75 @@ HAS_WATCHDOG = True
 
 logger = logging.getLogger(__name__)
 
+_WATCHER_MAX_PENDING = max(1, int(os.environ.get("ASTROGRAPH_WATCH_MAX_PENDING", "256")))
+_WATCHER_MAX_EVENTS_PER_WINDOW = max(
+    1, int(os.environ.get("ASTROGRAPH_WATCH_MAX_EVENTS_PER_WINDOW", "512"))
+)
+_WATCHER_STORM_WINDOW_SECONDS = max(
+    0.1, float(os.environ.get("ASTROGRAPH_WATCH_STORM_WINDOW_SECONDS", "1.0"))
+)
+_WATCHER_COOLDOWN_SECONDS = max(
+    0.1, float(os.environ.get("ASTROGRAPH_WATCH_COOLDOWN_SECONDS", "5.0"))
+)
+_WATCHER_SHUTDOWN_JOIN_TIMEOUT = max(
+    0.1, float(os.environ.get("ASTROGRAPH_WATCH_SHUTDOWN_JOIN_TIMEOUT", "1.0"))
+)
+_WATCHER_OBSERVER_JOIN_TIMEOUT = max(
+    0.1, float(os.environ.get("ASTROGRAPH_WATCH_OBSERVER_JOIN_TIMEOUT", "2.0"))
+)
+_WATCHER_DISABLED = os.environ.get("ASTROGRAPH_DISABLE_WATCH", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_WATCHER_MAX_ACTIVE = max(1, int(os.environ.get("ASTROGRAPH_WATCH_MAX_ACTIVE", "4")))
+
+
+class WatcherGovernor:
+    """Process-wide safety governor for live file watching."""
+
+    _lock = threading.Lock()
+    _active_roots: set[str] = set()
+
+    @classmethod
+    def try_acquire(cls, root: Path) -> bool:
+        """Reserve one watcher slot for *root* if capacity allows."""
+        key = str(root)
+        with cls._lock:
+            if key in cls._active_roots:
+                return True
+            if len(cls._active_roots) >= _WATCHER_MAX_ACTIVE:
+                return False
+            cls._active_roots.add(key)
+            return True
+
+    @classmethod
+    def release(cls, root: Path) -> None:
+        """Release the watcher slot for *root*."""
+        with cls._lock:
+            cls._active_roots.discard(str(root))
+
+    @classmethod
+    def active_count(cls) -> int:
+        """Expose the active watcher count for tests and diagnostics."""
+        with cls._lock:
+            return len(cls._active_roots)
+
 
 def _should_skip_path(path: Path) -> bool:
     """Check if a path should be skipped based on directory names."""
     return any(_is_skip_dir(part) for part in path.parts)
+
+
+def _is_tooling_artifact(path: Path) -> bool:
+    """Ignore tool-owned metadata and SQLite churn sources."""
+    name = path.name
+    if name in {"index.db", "index.db-wal", "index.db-shm"}:
+        return True
+    if ".metadata_astrograph" in path.parts:
+        return True
+    return False
 
 
 class DebouncedCallback:
@@ -54,6 +120,13 @@ class DebouncedCallback:
         """Schedule a debounced callback for the given path."""
         with self._cv:
             if not self._running:
+                return
+            if len(self._pending) >= _WATCHER_MAX_PENDING and path not in self._pending:
+                logger.warning(
+                    "Dropping debounced path %s because pending queue reached %d items",
+                    path,
+                    _WATCHER_MAX_PENDING,
+                )
                 return
             self._pending[path] = time.monotonic() + self.delay
             self._cv.notify()
@@ -96,7 +169,7 @@ class DebouncedCallback:
             self._running = False
             self._pending.clear()
             self._cv.notify()
-        self._worker.join(timeout=1.0)
+        self._worker.join(timeout=_WATCHER_SHUTDOWN_JOIN_TIMEOUT)
 
 
 class SourceFileHandler(FileSystemEventHandler):
@@ -114,6 +187,7 @@ class SourceFileHandler(FileSystemEventHandler):
         debounce_delay: float = 0.1,
         ignore_spec: IgnoreSpec | None = None,
         root_path: Path | None = None,
+        on_storm_quarantine: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._on_modified = DebouncedCallback(on_modified, debounce_delay)
@@ -121,10 +195,50 @@ class SourceFileHandler(FileSystemEventHandler):
         self._on_deleted = on_deleted  # No debounce for deletes
         self._ignore_spec = ignore_spec
         self._root_path = root_path
+        self._event_times: list[float] = []
+        self._storm_suppressed_until = 0.0
+        self._quarantined = False
+        self._on_storm_quarantine = on_storm_quarantine
+
+    def _record_event_rate(self) -> bool:
+        """Return True when the watcher should suppress events due to a storm."""
+        now = time.monotonic()
+        if self._quarantined or now < self._storm_suppressed_until:
+            return True
+
+        window_start = now - _WATCHER_STORM_WINDOW_SECONDS
+        self._event_times = [t for t in self._event_times if t >= window_start]
+        self._event_times.append(now)
+
+        if len(self._event_times) > _WATCHER_MAX_EVENTS_PER_WINDOW:
+            self._storm_suppressed_until = now + _WATCHER_COOLDOWN_SECONDS
+            self._event_times.clear()
+            self._quarantined = True
+            logger.warning(
+                "Suppressing file-watch events for %.2fs after storm detection on %s",
+                _WATCHER_COOLDOWN_SECONDS,
+                self._root_path,
+            )
+            if self._on_storm_quarantine is not None:
+                try:
+                    self._on_storm_quarantine()
+                except Exception:
+                    logger.exception("Error in storm quarantine callback")
+            return True
+        return False
+
+    @property
+    def quarantined(self) -> bool:
+        """Whether the handler is currently in storm quarantine."""
+        if self._quarantined and time.monotonic() >= self._storm_suppressed_until:
+            self._quarantined = False
+        return self._quarantined
 
     def _is_supported_source_file(self, path: str) -> bool:
         """Check if path is a supported source file we should track."""
         p = Path(path)
+        if _is_tooling_artifact(p):
+            return False
         registry = LanguageRegistry.get()
         if registry is None:
             return False
@@ -146,6 +260,9 @@ class SourceFileHandler(FileSystemEventHandler):
         if not event.is_directory:
             src = str(event.src_path)
             if self._is_supported_source_file(src):
+                if self._record_event_rate():
+                    logger.debug("Suppressed %s event during watcher cooldown: %s", event_type, src)
+                    return
                 logger.debug(f"File {event_type}: {src}")
                 handler(src)
 
@@ -194,6 +311,7 @@ class FileWatcher(StartCloseOnExitMixin):
         on_file_deleted: Callable[[str], None],
         debounce_delay: float = 0.1,
         ignore_spec: IgnoreSpec | None = None,
+        on_storm_quarantine: Callable[[], None] | None = None,
     ) -> None:
         """
         Initialize the file watcher.
@@ -205,6 +323,7 @@ class FileWatcher(StartCloseOnExitMixin):
             on_file_deleted: Callback when a source file is deleted
             debounce_delay: Seconds to wait before processing rapid events
             ignore_spec: Optional ignore patterns for file exclusion
+            on_storm_quarantine: Callback when storm quarantine activates
         """
         self.root_path = Path(root_path).resolve()
         self._handler = SourceFileHandler(
@@ -214,9 +333,11 @@ class FileWatcher(StartCloseOnExitMixin):
             debounce_delay=debounce_delay,
             ignore_spec=ignore_spec,
             root_path=self.root_path,
+            on_storm_quarantine=on_storm_quarantine,
         )
         self._observer: BaseObserver | None = None
         self._started = False
+        self._governor_acquired = False
 
     def start(self) -> None:
         """Start watching for file changes."""
@@ -224,12 +345,25 @@ class FileWatcher(StartCloseOnExitMixin):
             logger.debug(f"Already watching: {self.root_path}")
             return
 
+        if _WATCHER_DISABLED:
+            logger.info("File watching disabled by ASTROGRAPH_DISABLE_WATCH for %s", self.root_path)
+            return
+
         if not self.root_path.is_dir():
             raise ValueError(f"Watch path is not a directory: {self.root_path}")
+
+        if not WatcherGovernor.try_acquire(self.root_path):
+            logger.warning(
+                "Refusing to watch %s because the global watcher budget (%d) is exhausted",
+                self.root_path,
+                _WATCHER_MAX_ACTIVE,
+            )
+            return
 
         self._observer = Observer()
         self._observer.schedule(self._handler, str(self.root_path), recursive=True)
         self._observer.start()
+        self._governor_acquired = True
         self._started = True
         logger.info(f"Started watching: {self.root_path}")
 
@@ -242,8 +376,12 @@ class FileWatcher(StartCloseOnExitMixin):
 
         if self._observer is not None:
             self._observer.stop()
-            self._observer.join(timeout=5.0)
+            self._observer.join(timeout=_WATCHER_OBSERVER_JOIN_TIMEOUT)
             self._observer = None
+
+        if self._governor_acquired:
+            WatcherGovernor.release(self.root_path)
+            self._governor_acquired = False
 
         self._started = False
         logger.info(f"Stopped watching: {self.root_path}")

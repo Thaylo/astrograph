@@ -510,6 +510,7 @@ def process_b(items):
         result = tools.analyze()
         # Should show findings with suppress calls or no findings
         assert "suppress(wl_hash=" in result.text or "No significant duplicates" in result.text
+        tools.close()
 
     def test_analyze_dispatch(self):
         """Test that analyze can be called via dispatch."""
@@ -520,6 +521,7 @@ def process_b(items):
 
         # No code indexed
         assert "No code indexed" in result.text
+        tools.close()
 
     def test_similar_code_detection(self):
         """Test that similar (but not identical) code is detected."""
@@ -567,3 +569,4 @@ def process_b(items):
         result = tools.analyze()
         # Should find them as similar or not find them - either is valid with internal threshold
         assert "pattern" in result.text or "No significant duplicates" in result.text
+        tools.close()

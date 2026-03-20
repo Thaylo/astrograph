@@ -158,6 +158,11 @@ class EventDrivenIndex(CloseOnExitMixin):
         self._cache_hits = 0
         self._cache_misses = 0
 
+        # Degraded state — set when watcher enters storm quarantine
+        self._degraded = False
+        self._degraded_reason: str | None = None
+        self._degraded_since: float = 0.0
+
     # =========================================================================
     # Lifecycle
     # =========================================================================
@@ -195,6 +200,7 @@ class EventDrivenIndex(CloseOnExitMixin):
             on_file_deleted=self._on_file_deleted,
             debounce_delay=self._debounce_delay,
             ignore_spec=self._ignore_spec,
+            on_storm_quarantine=self._on_storm_quarantine,
         )
         self._watcher.start()
         logger.info(f"Started file watching: {root}")
@@ -233,6 +239,10 @@ class EventDrivenIndex(CloseOnExitMixin):
         if self._shutdown.is_set():
             logger.debug(f"Ignoring file {event_type} during shutdown: {path}")
             return
+        # Recover from degraded state when events flow again
+        if self._degraded:
+            self._clear_degraded()
+            self._schedule_resync()
         logger.debug(f"Processing file {event_type}: {path}")
         handler(path)
         self._file_events_processed += 1
@@ -535,6 +545,97 @@ class EventDrivenIndex(CloseOnExitMixin):
         )
 
     # =========================================================================
+    # Degraded State
+    # =========================================================================
+
+    def _on_storm_quarantine(self) -> None:
+        """Called when the watcher enters storm quarantine."""
+        self._degraded = True
+        self._degraded_reason = "storm_quarantine"
+        self._degraded_since = time.time()
+        self._cache.invalidate()
+        logger.warning("Index degraded: watcher entered storm quarantine")
+
+    def _clear_degraded(self) -> None:
+        """Clear degraded state after recovery."""
+        reason = self._degraded_reason
+        self._degraded = False
+        self._degraded_reason = None
+        self._degraded_since = 0.0
+        logger.info("Index recovered from degraded state (%s)", reason)
+
+    def _schedule_resync(self) -> None:
+        """Schedule a bounded incremental resync after quarantine recovery."""
+        watched = self._watched_path
+        if watched is None or self._shutdown.is_set():
+            return
+
+        def _resync() -> None:
+            if self._shutdown.is_set():
+                return
+            try:
+                logger.info("Post-quarantine resync: %s", watched)
+                (
+                    _entries,
+                    added,
+                    updated,
+                    _unchanged,
+                    changed_files,
+                    removed_files,
+                ) = self.index.index_directory_incremental(
+                    str(watched),
+                    recursive=True,
+                    include_blocks=True,
+                    ignore_spec=self._ignore_spec,
+                )
+
+                if self._persistence is not None and (changed_files or removed_files):
+                    for fp in changed_files:
+                        if fp in self.index.file_metadata:
+                            file_entries = [
+                                self.index.entries[eid]
+                                for eid in self.index.file_entries.get(fp, [])
+                                if eid in self.index.entries
+                            ]
+                            self._persistence.save_file_entries(
+                                fp, file_entries, self.index.file_metadata[fp]
+                            )
+                    for fp in removed_files:
+                        self._persistence.delete_file_entries(fp)
+                    self._persistence.save_index_metadata(self.index)
+
+                if added or updated or removed_files:
+                    logger.info(
+                        "Post-quarantine resync: %d added, %d updated, %d removed",
+                        added,
+                        updated,
+                        len(removed_files),
+                    )
+                    self._invalidate_cache_and_recompute()
+                else:
+                    logger.info("Post-quarantine resync: no changes detected")
+            except Exception:
+                logger.exception("Error during post-quarantine resync")
+
+        thread = threading.Thread(target=_resync, daemon=True)
+        thread.start()
+
+    @property
+    def degraded(self) -> bool:
+        """Whether the index is in a degraded state (e.g., after watcher quarantine)."""
+        return self._degraded
+
+    @property
+    def degraded_reason(self) -> str | None:
+        """Reason for degraded state, or None if not degraded."""
+        return self._degraded_reason
+
+    @property
+    def degraded_since(self) -> float:
+        """Timestamp when degraded state began (0 if not degraded)."""
+        return self._degraded_since
+
+    # =========================================================================
     # Stats
     # =========================================================================
 
@@ -556,6 +657,9 @@ class EventDrivenIndex(CloseOnExitMixin):
             "persistence": persistence_stats,
             "watching": self.is_watching,
             "watched_path": str(self._watched_path) if self._watched_path else None,
+            "degraded": self._degraded,
+            "degraded_reason": self._degraded_reason,
+            "degraded_since": self._degraded_since,
             "cache_valid": self._cache.is_valid(),
             "cache_computed_at": self._cache.computed_at,
             "file_events_processed": self._file_events_processed,

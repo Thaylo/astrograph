@@ -25,6 +25,7 @@ from typing import Any, cast
 
 import networkx as nx
 
+from ._paths import get_persistence_path as _get_persistence_path
 from .canonical_hash import (
     fingerprints_compatible,
     structural_fingerprint,
@@ -61,8 +62,7 @@ def _env_flag(name: str) -> bool:
 logger = logging.getLogger(__name__)
 
 
-# Persistence directory name for cached index
-PERSISTENCE_DIR = ".metadata_astrograph"
+PERSISTENCE_DIR = ".metadata_astrograph"  # kept for test imports; not used for path resolution
 LEGACY_ANALYSIS_REPORT = "analysis_report.txt"
 _SEMANTIC_MODES = frozenset({"off", "annotate", "differentiate"})
 _MUTATING_TOOL_NAMES = frozenset(
@@ -79,6 +79,11 @@ _MUTATING_TOOL_NAMES = frozenset(
     }
 )
 _MUTATING_LSP_SETUP_MODES = frozenset({"auto_bind", "bind", "unbind"})
+
+
+def _default_watch_enabled() -> bool:
+    """Conservative default: explicit opt-in for live watching."""
+    return _env_flag("ASTROGRAPH_ENABLE_WATCH") and not _env_flag("ASTROGRAPH_DISABLE_WATCH")
 
 
 def _generate_default_ignore_content() -> str:
@@ -162,34 +167,6 @@ def _requires_index(func: Callable[..., ToolResult]) -> Callable[..., ToolResult
     return wrapper
 
 
-def _get_persistence_path(indexed_path: str) -> Path:
-    """
-    Get metadata directory for an indexed codebase.
-
-    In Docker with read-only mounts, the metadata is stored at the workspace
-    root (which has a tmpfs mount) rather than the indexed subdirectory.
-    """
-    base = Path(indexed_path).resolve()
-    if base.is_file():
-        base = base.parent
-
-    persistence_path = base / PERSISTENCE_DIR
-
-    # In Docker, /workspace might be read-only but /workspace/.metadata_astrograph
-    # has a tmpfs mount. If we're indexing a subdirectory, use the root.
-    workspace = Path("/workspace")
-    if workspace.exists() and Path("/.dockerenv").exists() and str(base).startswith("/workspace/"):
-        # Use workspace root for persistence (has tmpfs mount)
-        persistence_path = workspace / PERSISTENCE_DIR
-
-    return persistence_path
-
-
-def _get_sqlite_path(indexed_path: str) -> Path:
-    """Get SQLite database path for an indexed codebase."""
-    return _get_persistence_path(indexed_path) / "index.db"
-
-
 class ToolResult:
     """Result from a tool invocation."""
 
@@ -230,7 +207,7 @@ class CodeStructureTools(CloseOnExitMixin):
         else:
             self._event_driven_index = EventDrivenIndex(
                 persistence_path=None,  # Set during index_codebase
-                watch_enabled=True,
+                watch_enabled=_default_watch_enabled(),
             )
             self.index = self._event_driven_index.index
 
@@ -389,8 +366,8 @@ class CodeStructureTools(CloseOnExitMixin):
         Automatically extracts functions, classes, methods, and code blocks
         (for, while, if, try, with) for comprehensive duplicate detection.
 
-        Index and suppressions are persisted to `.metadata_astrograph/` in the
-        indexed directory. Add to `.gitignore` if desired.
+        Index and suppressions are persisted to a user-level data directory
+        (outside the project) to avoid interfering with file watchers.
 
         Also starts file watching for automatic updates on changes.
 
@@ -485,7 +462,7 @@ class CodeStructureTools(CloseOnExitMixin):
         sqlite_path = None
         if not disable_persistence:
             persistence_path = _get_persistence_path(path)
-            persistence_path.mkdir(exist_ok=True)
+            persistence_path.mkdir(parents=True, exist_ok=True)
             sqlite_path = persistence_path / "index.db"
 
         # Close old event-driven index (stops watcher, closes SQLite connection)
@@ -644,7 +621,7 @@ class CodeStructureTools(CloseOnExitMixin):
             return None
         try:
             persistence_path = _get_persistence_path(self._last_indexed_path)
-            persistence_path.mkdir(exist_ok=True)
+            persistence_path.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             report_file = persistence_path / f"analysis_report_{timestamp}.txt"
             report_file.write_text(content)
@@ -867,9 +844,7 @@ class CodeStructureTools(CloseOnExitMixin):
                 summary_parts.append(f"- {suppressed_line}")
 
             line_count_report = full_output.count("\n") + 1
-            summary_parts.append(
-                f"\n**Details:** `{PERSISTENCE_DIR}/{report_path.name}` ({line_count_report} lines)"
-            )
+            summary_parts.append(f"\n**Details:** `{report_path}` ({line_count_report} lines)")
             summary_parts.append(
                 "Read the file to see locations and refactoring opportunities.\n"
                 "> Refactor first. Only suppress intentional patterns (API symmetry, test isolation, framework boilerplate)."
@@ -1425,10 +1400,20 @@ class CodeStructureTools(CloseOnExitMixin):
                 "Next: call `set_workspace` or `index_codebase` then `lsp_setup(mode='inspect')`."
             )
         stats = self.index.get_stats()
-        return ToolResult(
-            f"**Ready** — {stats['function_entries']} code units across {stats['indexed_files']} files.\n"
-            "Next: call `lsp_setup(mode='inspect')` for guided LSP setup."
-        )
+        lines = [
+            f"**Ready** — {stats['function_entries']} code units across {stats['indexed_files']} files."
+        ]
+        edi = self._event_driven_index
+        if edi is not None:
+            if edi.degraded:
+                lines.append(
+                    f"**Degraded** watcher — {edi.degraded_reason}. "
+                    "Index may be stale; a resync will run automatically."
+                )
+            elif edi.is_watching:
+                lines.append("Watcher: active")
+        lines.append("Next: call `lsp_setup(mode='inspect')` for guided LSP setup.")
+        return ToolResult("\n".join(lines))
 
     def _lsp_setup_workspace(self) -> Path:
         """Resolve workspace root used for LSP binding persistence."""
@@ -2217,7 +2202,7 @@ class CodeStructureTools(CloseOnExitMixin):
 
     def metadata_erase(self) -> ToolResult:
         """
-        Erase all persisted metadata (.metadata_astrograph/).
+        Erase all persisted metadata.
 
         Deletes the SQLite database, suppressions, analysis reports,
         and resets the in-memory index. Server returns to idle state.
@@ -2231,7 +2216,7 @@ class CodeStructureTools(CloseOnExitMixin):
         self.index.clear()
         self.index.clear_suppressions()
 
-        # Delete persistence directory
+        # Delete persistence directory (data dir) + legacy in-project dir
         erased = False
         bindings_removed = False
         if self._last_indexed_path:
@@ -2240,11 +2225,16 @@ class CodeStructureTools(CloseOnExitMixin):
             if persistence_path.exists():
                 shutil.rmtree(persistence_path, ignore_errors=True)
                 erased = True
+            # Also remove legacy in-project .metadata_astrograph/ if present
+            legacy_path = Path(self._last_indexed_path).resolve() / PERSISTENCE_DIR
+            if legacy_path.is_dir():
+                shutil.rmtree(legacy_path, ignore_errors=True)
+                erased = True
 
         # Create fresh event-driven index (no persistence until next index_codebase)
         self._event_driven_index = EventDrivenIndex(
             persistence_path=None,
-            watch_enabled=True,
+            watch_enabled=_default_watch_enabled(),
         )
         self.index = self._event_driven_index.index
 

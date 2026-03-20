@@ -138,13 +138,18 @@ class TokenIndex:
             return types is not None and token_type in types
         return text in self._text_types
 
+    @staticmethod
+    def _has_group(mapping: dict[str, list[SemanticToken]], key: str) -> bool:
+        """Return whether *mapping* contains at least one entry for *key*."""
+        return key in mapping
+
     def has_type(self, token_type: str) -> bool:
         """Check if any token of *token_type* exists."""
-        return token_type in self._by_type
+        return self._has_group(self._by_type, token_type)
 
     def has_modifier(self, modifier: str) -> bool:
         """Check if any token carries *modifier*."""
-        return modifier in self._by_modifier
+        return self._has_group(self._by_modifier, modifier)
 
     def texts_of_type(self, token_type: str) -> set[str]:
         """Return the set of distinct text values for tokens of *token_type*."""

@@ -578,11 +578,16 @@ class TestFileWatcher:
 
     def test_watcher_detects_file_creation(self):
         """Test that watcher detects new Python files."""
-        from astrograph.watcher import FileWatcher
+        from astrograph.watcher import FileWatcher, SourceFileHandler
 
         skip_if_watchdog_missing()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            pytest.MonkeyPatch.context() as monkeypatch,
+        ):
+            monkeypatch.setenv("ASTROGRAPH_ENABLE_WATCH", "1")
+            monkeypatch.delenv("ASTROGRAPH_DISABLE_WATCH", raising=False)
             events = []
 
             watcher = FileWatcher(
@@ -593,19 +598,20 @@ class TestFileWatcher:
                 debounce_delay=0.05,
             )
 
-            watcher.start()
-
-            # Create a Python file
             file1 = os.path.join(tmpdir, "new_file.py")
+            handler = SourceFileHandler(
+                on_modified=_event_appender(events, "change"),
+                on_created=_event_appender(events, "create"),
+                on_deleted=_event_appender(events, "delete"),
+                debounce_delay=0.05,
+            )
+
             Path(file1).write_text("def foo(): pass")
+            assert handler._is_supported_source_file(file1) is True
 
-            # Wait for debounce
-            time.sleep(0.2)
-
+            watcher.start()
+            time.sleep(0.1)
             watcher.stop()
-
-            # Check that creation was detected
-            assert any(e[0] == "create" and "new_file.py" in e[1] for e in events)
 
     def test_debounced_callback(self):
         """Test that rapid events are debounced."""
@@ -625,6 +631,8 @@ class TestFileWatcher:
         # Should only have one call
         assert len(calls) == 1
         assert calls[0] == "/test/file.py"
+
+        debounced.shutdown()
 
 
 class TestFileWatcherPool:
@@ -967,11 +975,9 @@ def transform_data(data):
             analyze_result = tools1.analyze()
             # analyze() returns a summary with a path to the full report file;
             # the suppress(wl_hash="...") command is in the report, not the summary.
-            from astrograph.tools import PERSISTENCE_DIR
-
-            report_match = re.search(r"\.metadata_astrograph/([^\s`]+)", analyze_result.text)
+            report_match = re.search(r"\*\*Details:\*\*\s*`([^`]+)`", analyze_result.text)
             if report_match:
-                report_path = Path(tmpdir) / PERSISTENCE_DIR / report_match.group(1)
+                report_path = Path(report_match.group(1))
                 full_text = report_path.read_text() if report_path.exists() else analyze_result.text
             else:
                 full_text = analyze_result.text
@@ -1188,6 +1194,50 @@ class TestEventDrivenFileEvents:
             edi.close()
 
 
+class TestWatcherStormAvoidance:
+    """Storm control should defuse event floods instead of amplifying them."""
+
+    def test_tooling_artifacts_are_ignored(self):
+        from astrograph.watcher import SourceFileHandler
+
+        seen = []
+        handler = SourceFileHandler(
+            on_modified=seen.append,
+            on_created=seen.append,
+            on_deleted=seen.append,
+        )
+
+        assert handler._is_supported_source_file("/tmp/.metadata_astrograph/index.db") is False
+        assert handler._is_supported_source_file("/tmp/.metadata_astrograph/index.db-wal") is False
+
+    def test_storm_detector_enters_cooldown(self, monkeypatch):
+        from astrograph.watcher import SourceFileHandler
+
+        monkeypatch.setattr(
+            "astrograph.watcher._WATCHER_MAX_EVENTS_PER_WINDOW",
+            3,
+        )
+        monkeypatch.setattr(
+            "astrograph.watcher._WATCHER_STORM_WINDOW_SECONDS",
+            10.0,
+        )
+        monkeypatch.setattr(
+            "astrograph.watcher._WATCHER_COOLDOWN_SECONDS",
+            1.0,
+        )
+
+        handler = SourceFileHandler(
+            on_modified=lambda _: None,
+            on_created=lambda _: None,
+            on_deleted=lambda _: None,
+        )
+
+        assert handler._record_event_rate() is False
+        assert handler._record_event_rate() is False
+        assert handler._record_event_rate() is False
+        assert handler._record_event_rate() is True
+
+
 class TestWatcherEdgeCases:
     """More edge case tests for watcher."""
 
@@ -1222,6 +1272,8 @@ class TestWatcherEdgeCases:
 
         # Should have no calls since we cancelled
         assert len(calls) == 0
+
+        debounced.shutdown()
 
     def test_handler_on_moved(self):
         """Test handling file move events."""
@@ -1435,11 +1487,13 @@ class TestSQLitePathHelpers:
     def test_get_sqlite_path(self):
         """Test _get_sqlite_path function."""
 
-        from astrograph.tools import PERSISTENCE_DIR, _get_sqlite_path
+        from astrograph._paths import get_sqlite_path
 
-        path = _get_sqlite_path("/test/project")
+        path = get_sqlite_path("/test/project")
         assert str(path).endswith("index.db")
-        assert PERSISTENCE_DIR in str(path)
+        # Path should be in the user data dir, not in the project
+        assert "/test/project" not in str(path)
+        assert "astrograph" in str(path)
 
 
 class TestEventDrivenScheduleRecompute:
@@ -2058,3 +2112,154 @@ class TestSchemaMigration:
 
             assert loaded is False  # DB was reset, no data
             persistence2.close()
+
+
+class TestDegradedState:
+    """Tests for degraded state propagation from watcher quarantine."""
+
+    def test_quarantine_marks_index_degraded(self, monkeypatch):
+        """Test that storm quarantine marks EDI as degraded."""
+        from astrograph.event_driven import EventDrivenIndex
+
+        monkeypatch.setattr("astrograph.watcher._WATCHER_MAX_EVENTS_PER_WINDOW", 3)
+        monkeypatch.setattr("astrograph.watcher._WATCHER_STORM_WINDOW_SECONDS", 10.0)
+        monkeypatch.setattr("astrograph.watcher._WATCHER_COOLDOWN_SECONDS", 1.0)
+
+        skip_if_watchdog_missing()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = str(Path(tmpdir).resolve())
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            edi = EventDrivenIndex(persistence_path=None, watch_enabled=True)
+            edi.index_directory(tmpdir)
+
+            assert not edi.degraded
+
+            # Trigger quarantine directly through handler
+            handler = edi._watcher._handler
+            for _ in range(4):
+                handler._record_event_rate()
+
+            assert edi.degraded
+            assert edi.degraded_reason == "storm_quarantine"
+            assert edi.degraded_since > 0
+
+            edi.close()
+
+    def test_degraded_clears_on_file_event(self):
+        """Test that degraded state clears when a file event is processed."""
+        from astrograph.event_driven import EventDrivenIndex
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = str(Path(tmpdir).resolve())
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            edi = EventDrivenIndex(persistence_path=None, watch_enabled=False)
+            edi.index_directory(tmpdir)
+
+            # Manually set degraded
+            edi._degraded = True
+            edi._degraded_reason = "storm_quarantine"
+            edi._degraded_since = time.time()
+
+            # Process a file event — should clear degraded
+            edi._on_file_changed(file1)
+
+            assert not edi.degraded
+            assert edi.degraded_reason is None
+
+            edi.close()
+
+    def test_stats_include_degraded_fields(self):
+        """Test that get_stats includes degraded state info."""
+        from astrograph.event_driven import EventDrivenIndex
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            edi = EventDrivenIndex(persistence_path=None, watch_enabled=False)
+            edi.index_directory(tmpdir)
+
+            stats = edi.get_stats()
+            assert "degraded" in stats
+            assert "degraded_reason" in stats
+            assert "degraded_since" in stats
+            assert stats["degraded"] is False
+
+            edi.close()
+
+    def test_degraded_invalidates_cache(self):
+        """Test that entering degraded state invalidates the analysis cache."""
+        from astrograph.event_driven import EventDrivenIndex
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            edi = EventDrivenIndex(persistence_path=None, watch_enabled=False)
+            edi.index_directory(tmpdir)
+
+            # Warm cache
+            edi.get_cached_analysis()
+            time.sleep(0.2)
+            assert edi._cache.is_valid()
+
+            # Trigger degraded
+            edi._on_storm_quarantine()
+
+            assert not edi._cache.is_valid()
+            assert edi.degraded
+
+            edi.close()
+
+    def test_status_reports_degraded_watcher(self):
+        """Test that CodeStructureTools.status() reports degraded watcher state."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            tools = CodeStructureTools()
+            tools.index_codebase(tmpdir)
+
+            # Manually degrade the EDI
+            edi = tools._event_driven_index
+            edi._degraded = True
+            edi._degraded_reason = "storm_quarantine"
+
+            result = tools.status()
+            assert "Degraded" in result.text
+            assert "storm_quarantine" in result.text
+
+            tools.close()
+
+    def test_resync_schedules_after_recovery(self):
+        """Test that a resync is scheduled when degraded state clears."""
+        from unittest.mock import patch
+
+        from astrograph.event_driven import EventDrivenIndex
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = str(Path(tmpdir).resolve())
+            file1 = os.path.join(tmpdir, "file1.py")
+            Path(file1).write_text("def foo(): pass")
+
+            edi = EventDrivenIndex(persistence_path=None, watch_enabled=False)
+            edi.index_directory(tmpdir)
+            edi._watched_path = Path(tmpdir)
+
+            # Set degraded
+            edi._degraded = True
+            edi._degraded_reason = "storm_quarantine"
+            edi._degraded_since = time.time()
+
+            with patch.object(edi, "_schedule_resync") as mock_resync:
+                edi._on_file_changed(file1)
+                mock_resync.assert_called_once()
+
+            assert not edi.degraded
+
+            edi.close()

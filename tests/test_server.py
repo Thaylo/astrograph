@@ -49,6 +49,8 @@ class TestResolveDockerPath:
     @pytest.fixture(autouse=True)
     def _tools(self):
         self.tools = CodeStructureTools()
+        yield
+        self.tools.close()
 
     @staticmethod
     def _workspace_is_dir_mock(original_is_dir, workspace_path: str):
@@ -105,26 +107,31 @@ class TestResolveDockerPath:
             assert result == src_dir
 
     def test_persistence_path_normal(self):
-        """Test persistence path for normal (non-Docker) environments."""
+        """Test persistence path for normal (non-Docker) environments.
+
+        Metadata is stored outside the project directory in a user data dir.
+        """
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _get_persistence_path(tmpdir)
-            assert str(result).endswith(".metadata_astrograph")
-            assert tmpdir in str(result)
+            # Path should NOT be inside the project directory
+            assert tmpdir not in str(result)
+            # Should be under the astrograph data dir
+            assert "astrograph" in str(result)
 
     def test_persistence_path_docker_subdirectory(self):
         """Test persistence path redirects to workspace root in Docker."""
-        original_exists = Path.exists
+        with patch("astrograph._paths._is_docker", return_value=True):
+            original_exists = Path.exists
 
-        def mock_exists(self):
-            path_str = str(self)
-            if path_str == "/workspace" or path_str == "/.dockerenv":
-                return True
-            return original_exists(self)
+            def mock_exists(self):
+                if str(self) == "/workspace":
+                    return True
+                return original_exists(self)
 
-        with patch.object(Path, "exists", mock_exists):
-            result = _get_persistence_path("/workspace/src")
-            assert str(result) == "/workspace/.metadata_astrograph"
+            with patch.object(Path, "exists", mock_exists):
+                result = _get_persistence_path("/workspace/src")
+                assert str(result) == "/workspace/.metadata_astrograph"
 
     def test_resolve_docker_path_with_mock_docker_env(self):
         """Test Docker path resolution with mocked Docker environment."""
@@ -179,28 +186,27 @@ class TestResolveDockerPath:
             Path(py_file).write_text("def foo(): pass\n")
 
             tools = CodeStructureTools()
-            with patch.object(tools, "_require_index", return_value=None):
-                # Edit a file that exists — old_string won't be found
-                result = tools.edit(py_file, "nonexistent_string_xyz", "new")
-                assert "/workspace" not in result.text
-                assert "old_string not found" in result.text
+            try:
+                with patch.object(tools, "_require_index", return_value=None):
+                    # Edit a file that exists — old_string won't be found
+                    result = tools.edit(py_file, "nonexistent_string_xyz", "new")
+                    assert "/workspace" not in result.text
+                    assert "old_string not found" in result.text
 
-                # Write to a path that can't be created
-                result = tools.write("/nonexistent/dir/file.py", "def bar(): pass")
-                assert "/workspace" not in result.text
-                assert "Failed to write" in result.text
+                    # Write to a path that can't be created
+                    result = tools.write("/nonexistent/dir/file.py", "def bar(): pass")
+                    assert "/workspace" not in result.text
+                    assert "Failed to write" in result.text
+            finally:
+                tools.close()
 
 
-def _get_analyze_details(tools, result):
+def _get_analyze_details(_tools, result):
     """Read full analyze details from report file if it exists, else inline text."""
-    if ".metadata_astrograph/" not in result.text:
-        return result.text
-    match = re.search(r"\.metadata_astrograph/([^`\s]+)", result.text)
+    match = re.search(r"\*\*Details:\*\*\s*`([^`]+)`", result.text)
     if not match:
         return result.text
-    indexed = Path(tools._last_indexed_path).resolve()
-    base = indexed.parent if not indexed.is_dir() else indexed
-    report = base / PERSISTENCE_DIR / match.group(1)
+    report = Path(match.group(1))
     return report.read_text() if report.exists() else result.text
 
 
@@ -402,19 +408,16 @@ class TestAnalyze:
     def test_analyze_uses_timestamped_report_only(self, tools, sample_python_file):
         tools.index_codebase(sample_python_file)
         result = tools.analyze()
-        if ".metadata_astrograph/" not in result.text:
+        match = re.search(r"\*\*Details:\*\*\s*`([^`]+)`", result.text)
+        if not match:
             pytest.fail("No duplicates found — sample_python_file must produce duplicates")
 
-        match = re.search(r"\.metadata_astrograph/([^`\s]+)", result.text)
-        assert match
-        report_name = match.group(1)
-        assert report_name.startswith("analysis_report_")
-        assert report_name != "analysis_report.txt"
+        report_path = Path(match.group(1))
+        assert report_path.name.startswith("analysis_report_")
+        assert report_path.name != "analysis_report.txt"
         assert "Latest:" not in result.text
 
-        indexed = Path(tools._last_indexed_path).resolve()
-        base = indexed.parent if not indexed.is_dir() else indexed
-        legacy_report = base / PERSISTENCE_DIR / "analysis_report.txt"
+        legacy_report = report_path.parent / "analysis_report.txt"
         assert not legacy_report.exists()
 
 
@@ -2281,7 +2284,7 @@ class TestLSPSetupTool:
             assert bind_payload["ok"] is True
             assert bind_payload["language"] == "python"
 
-            bindings_path = Path(tmpdir) / PERSISTENCE_DIR / "lsp_bindings.json"
+            bindings_path = _get_persistence_path(tmpdir) / "lsp_bindings.json"
             persisted = json.loads(bindings_path.read_text())
             assert persisted["python"][0] == sys.executable
 
@@ -2620,9 +2623,12 @@ class TestMCPServerIntegration:
     def test_get_and_set_tools(self):
         original = get_tools()
         new_tools = CodeStructureTools()
-        set_tools(new_tools)
-        assert get_tools() is new_tools
-        set_tools(original)  # Restore
+        try:
+            set_tools(new_tools)
+            assert get_tools() is new_tools
+        finally:
+            set_tools(original)  # Restore
+            new_tools.close()
 
 
 class TestAnalyzeWithDuplicates:
@@ -3251,19 +3257,25 @@ class TestAnalyzeEventDriven:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write("def foo(): pass\ndef bar(): pass")
             f.flush()
-            tools.index_codebase(f.name)
+            with patch.dict(
+                os.environ,
+                {"ASTROGRAPH_ENABLE_WATCH": "1"},
+                clear=False,
+            ):
+                os.environ.pop("ASTROGRAPH_DISABLE_WATCH", None)
+                tools.index_codebase(f.name)
 
-            edi = tools._event_driven_index
-            assert edi is not None
-            assert edi.is_watching, "Watcher should be active after single-file indexing"
+                edi = tools._event_driven_index
+                assert edi is not None
+                assert edi.is_watching, "Watcher should be active after single-file indexing"
         os.unlink(f.name)
 
 
 class TestPersistence:
-    """Tests for index persistence to .metadata_astrograph folder (SQLite)."""
+    """Tests for index persistence (SQLite in user data dir)."""
 
     def test_index_creates_persistence_folder(self):
-        """Test that indexing creates .metadata_astrograph folder with SQLite DB."""
+        """Test that indexing creates persistence folder with SQLite DB."""
         with tempfile.TemporaryDirectory() as tmpdir:
             file1 = os.path.join(tmpdir, "file1.py")
             Path(file1).write_text("def foo(): pass")
@@ -3271,9 +3283,11 @@ class TestPersistence:
             tools = CodeStructureTools()
             tools.index_codebase(tmpdir)
 
-            persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
-            assert os.path.isdir(persistence_path)
-            assert os.path.isfile(os.path.join(persistence_path, "index.db"))
+            persistence_path = _get_persistence_path(tmpdir)
+            assert persistence_path.is_dir()
+            assert (persistence_path / "index.db").is_file()
+            # Metadata must NOT be inside the project directory
+            assert PERSISTENCE_DIR not in os.listdir(tmpdir)
             tools.close()
 
     def test_index_loads_cached_index(self):
@@ -3287,9 +3301,9 @@ class TestPersistence:
             tools1.index_codebase(tmpdir)
             tools1.close()
 
-            # Verify persistence file exists
-            persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
-            assert os.path.isfile(os.path.join(persistence_path, "index.db"))
+            # Verify persistence file exists in data dir
+            persistence_path = _get_persistence_path(tmpdir)
+            assert (persistence_path / "index.db").is_file()
 
             # Second tools instance (simulating new session) - should load from cache
             tools2 = CodeStructureTools()
@@ -3388,9 +3402,9 @@ def transform_data(data):
             tools = CodeStructureTools()
             tools.index_codebase(file1)
 
-            # Persistence folder should be created in parent directory
-            persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
-            assert os.path.isdir(persistence_path)
+            # Persistence folder should be created in user data dir
+            persistence_path = _get_persistence_path(file1)
+            assert persistence_path.is_dir()
             tools.close()
 
 
@@ -4086,7 +4100,10 @@ class TestStatusTool:
     def test_status_during_background_indexing(self):
         """Status should return indexing state when background indexing is running."""
         tools = CodeStructureTools()
-        _assert_status_reports_indexing(tools)
+        try:
+            _assert_status_reports_indexing(tools)
+        finally:
+            tools.close()
 
     def test_call_tool_status(self, tools, sample_python_file):
         """Test call_tool dispatch for status."""
@@ -4131,15 +4148,15 @@ def transform_data(data):
             _suppress_first_hash_from_analysis(tools)
 
             # Verify persistence exists
-            persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
-            assert os.path.isdir(persistence_path)
+            persistence_path = _get_persistence_path(tmpdir)
+            assert persistence_path.is_dir()
 
             # Erase
             result = tools.metadata_erase()
             assert "Erased" in result.text
 
             # Verify persistence is gone
-            assert not os.path.exists(persistence_path)
+            assert not persistence_path.exists()
 
             # Verify server is idle
             status = tools.status()
@@ -4147,6 +4164,7 @@ def transform_data(data):
 
             # Verify suppressions are gone
             assert len(tools.index.suppressed_hashes) == 0
+            tools.close()
 
     def test_erase_then_reindex(self):
         """After erase, re-indexing should work from scratch."""
@@ -4217,8 +4235,8 @@ def transform_data(data):
             assert "ready" in status.text.lower()
 
             # Persistence should be recreated
-            persistence_path = os.path.join(tmpdir, PERSISTENCE_DIR)
-            assert os.path.isdir(persistence_path)
+            persistence_path = _get_persistence_path(tmpdir)
+            assert persistence_path.is_dir()
             tools.close()
 
     def test_call_tool_metadata_recompute_baseline(self):
@@ -4279,6 +4297,7 @@ class TestWorkspaceEnvVar:
             tools = CodeStructureTools()
             result = tools.status()
             assert "idle" in result.text.lower()
+            tools.close()
 
 
 class TestStartupWorkspaceDetection:
@@ -4333,19 +4352,25 @@ class TestBlockingDuringIndexing:
     def test_analyze_waits_for_background_index(self):
         """Analyze should wait for background indexing, then report no index."""
         tools = CodeStructureTools()
-        tools._bg_index_done.clear()
-        _start_background_index_completion(tools)
-        result = tools.analyze()
-        # After waiting, empty index → "No code indexed"
-        assert "No code indexed" in result.text
+        try:
+            tools._bg_index_done.clear()
+            _start_background_index_completion(tools)
+            result = tools.analyze()
+            # After waiting, empty index → "No code indexed"
+            assert "No code indexed" in result.text
+        finally:
+            tools.close()
 
     def test_check_waits_for_background_index(self):
         """Check should wait for background indexing, then report no index."""
         tools = CodeStructureTools()
-        tools._bg_index_done.clear()
-        _start_background_index_completion(tools)
-        result = tools.check("def foo(): pass")
-        assert "No code indexed" in result.text
+        try:
+            tools._bg_index_done.clear()
+            _start_background_index_completion(tools)
+            result = tools.check("def foo(): pass")
+            assert "No code indexed" in result.text
+        finally:
+            tools.close()
 
 
 class TestGenerateIgnore:
@@ -4484,25 +4509,33 @@ def transform_data(data):
         """analyze() works via direct find_* calls when no EDI is present."""
         index = CodeStructureIndex()
         tools = CodeStructureTools(index=index)
-        assert tools._event_driven_index is None
-
-        _index_temp_code_file(tools, self._DUPLICATE_CODE)
-        result = tools.analyze()
-        # Should work — either finds duplicates or reports none
-        assert result.text
+        try:
+            assert tools._event_driven_index is None
+            _index_temp_code_file(tools, self._DUPLICATE_CODE)
+            result = tools.analyze()
+            # Should work — either finds duplicates or reports none
+            assert result.text
+        finally:
+            tools.close()
 
     def test_single_file_watcher_active(self):
         """Single-file indexing goes through EDI and starts the watcher."""
-        tools = CodeStructureTools()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(self._DUPLICATE_CODE)
-            f.flush()
-            tools.index_codebase(f.name)
+        with patch.dict(
+            os.environ,
+            {"ASTROGRAPH_ENABLE_WATCH": "1"},
+            clear=False,
+        ):
+            os.environ.pop("ASTROGRAPH_DISABLE_WATCH", None)
+            tools = CodeStructureTools()
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+                f.write(self._DUPLICATE_CODE)
+                f.flush()
+                tools.index_codebase(f.name)
 
-            edi = tools._event_driven_index
-            assert edi is not None
-            assert edi.is_watching, "Watcher should be active after single-file indexing"
-            tools.close()
+                edi = tools._event_driven_index
+                assert edi is not None
+                assert edi.is_watching, "Watcher should be active after single-file indexing"
+                tools.close()
         os.unlink(f.name)
 
 
@@ -4515,30 +4548,39 @@ class TestMCPResources:
 
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        result = asyncio.run(
-            server.request_handlers[ListResourcesRequest](
-                ListResourcesRequest(method="resources/list")
+        try:
+            set_tools(tools)
+            result = asyncio.run(
+                server.request_handlers[ListResourcesRequest](
+                    ListResourcesRequest(method="resources/list")
+                )
             )
-        )
-        resources = result.root.resources
-        assert len(resources) == 3
-        uris = {str(r.uri) for r in resources}
-        assert "astrograph://status" in uris
-        assert "astrograph://analysis/latest" in uris
-        assert "astrograph://suppressions" in uris
+            resources = result.root.resources
+            assert len(resources) == 3
+            uris = {str(r.uri) for r in resources}
+            assert "astrograph://status" in uris
+            assert "astrograph://analysis/latest" in uris
+            assert "astrograph://suppressions" in uris
+        finally:
+            tools.close()
 
     def test_read_resource_status(self):
         """Reading status resource returns status text."""
         tools = CodeStructureTools()
-        text = tools.read_resource_status()
-        assert "idle" in text.lower()
+        try:
+            text = tools.read_resource_status()
+            assert "idle" in text.lower()
+        finally:
+            tools.close()
 
     def test_read_resource_analysis_no_index(self):
         """Reading analysis resource before indexing returns appropriate message."""
         tools = CodeStructureTools()
-        text = tools.read_resource_analysis()
-        assert "No codebase indexed" in text or "No analysis reports" in text
+        try:
+            text = tools.read_resource_analysis()
+            assert "No codebase indexed" in text or "No analysis reports" in text
+        finally:
+            tools.close()
 
     def test_read_resource_analysis_after_analyze(self, tools):
         """Reading analysis resource after analysis returns report content."""
@@ -4570,8 +4612,11 @@ def transform_data(data):
     def test_read_resource_suppressions_empty(self):
         """Reading suppressions resource when none suppressed."""
         tools = CodeStructureTools()
-        text = tools.read_resource_suppressions()
-        assert "no suppressions" in text.lower()
+        try:
+            text = tools.read_resource_suppressions()
+            assert "no suppressions" in text.lower()
+        finally:
+            tools.close()
 
 
 class TestMCPPrompts:
@@ -4583,15 +4628,20 @@ class TestMCPPrompts:
 
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        result = asyncio.run(
-            server.request_handlers[ListPromptsRequest](ListPromptsRequest(method="prompts/list"))
-        )
-        prompts = result.root.prompts
-        assert len(prompts) == 2
-        names = {p.name for p in prompts}
-        assert "review-duplicates" in names
-        assert "setup-lsp" in names
+        try:
+            set_tools(tools)
+            result = asyncio.run(
+                server.request_handlers[ListPromptsRequest](
+                    ListPromptsRequest(method="prompts/list")
+                )
+            )
+            prompts = result.root.prompts
+            assert len(prompts) == 2
+            names = {p.name for p in prompts}
+            assert "review-duplicates" in names
+            assert "setup-lsp" in names
+        finally:
+            tools.close()
 
     def test_get_prompt_review_duplicates(self):
         """get_prompt for review-duplicates returns structured result."""
@@ -4599,20 +4649,23 @@ class TestMCPPrompts:
 
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        result = asyncio.run(
-            server.request_handlers[GetPromptRequest](
-                GetPromptRequest(
-                    method="prompts/get",
-                    params=GetPromptRequestParams(name="review-duplicates"),
+        try:
+            set_tools(tools)
+            result = asyncio.run(
+                server.request_handlers[GetPromptRequest](
+                    GetPromptRequest(
+                        method="prompts/get",
+                        params=GetPromptRequestParams(name="review-duplicates"),
+                    )
                 )
             )
-        )
-        prompt_result = result.root
-        assert prompt_result.description is not None
-        assert "all" in prompt_result.description
-        assert len(prompt_result.messages) == 1
-        assert "SUPPRESS" in prompt_result.messages[0].content.text
+            prompt_result = result.root
+            assert prompt_result.description is not None
+            assert "all" in prompt_result.description
+            assert len(prompt_result.messages) == 1
+            assert "SUPPRESS" in prompt_result.messages[0].content.text
+        finally:
+            tools.close()
 
     def test_get_prompt_review_duplicates_with_focus(self):
         """get_prompt for review-duplicates with focus arg."""
@@ -4620,19 +4673,22 @@ class TestMCPPrompts:
 
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        result = asyncio.run(
-            server.request_handlers[GetPromptRequest](
-                GetPromptRequest(
-                    method="prompts/get",
-                    params=GetPromptRequestParams(
-                        name="review-duplicates", arguments={"focus": "source"}
-                    ),
+        try:
+            set_tools(tools)
+            result = asyncio.run(
+                server.request_handlers[GetPromptRequest](
+                    GetPromptRequest(
+                        method="prompts/get",
+                        params=GetPromptRequestParams(
+                            name="review-duplicates", arguments={"focus": "source"}
+                        ),
+                    )
                 )
             )
-        )
-        prompt_result = result.root
-        assert "source" in prompt_result.description
+            prompt_result = result.root
+            assert "source" in prompt_result.description
+        finally:
+            tools.close()
 
     def test_get_prompt_setup_lsp(self):
         """get_prompt for setup-lsp returns structured result."""
@@ -4640,19 +4696,22 @@ class TestMCPPrompts:
 
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        result = asyncio.run(
-            server.request_handlers[GetPromptRequest](
-                GetPromptRequest(
-                    method="prompts/get",
-                    params=GetPromptRequestParams(name="setup-lsp"),
+        try:
+            set_tools(tools)
+            result = asyncio.run(
+                server.request_handlers[GetPromptRequest](
+                    GetPromptRequest(
+                        method="prompts/get",
+                        params=GetPromptRequestParams(name="setup-lsp"),
+                    )
                 )
             )
-        )
-        prompt_result = result.root
-        assert prompt_result.description is not None
-        assert len(prompt_result.messages) == 1
-        assert "LSP" in prompt_result.messages[0].content.text
+            prompt_result = result.root
+            assert prompt_result.description is not None
+            assert len(prompt_result.messages) == 1
+            assert "LSP" in prompt_result.messages[0].content.text
+        finally:
+            tools.close()
 
     def test_get_prompt_setup_lsp_with_language(self):
         """get_prompt for setup-lsp with language arg."""
@@ -4660,19 +4719,22 @@ class TestMCPPrompts:
 
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        result = asyncio.run(
-            server.request_handlers[GetPromptRequest](
-                GetPromptRequest(
-                    method="prompts/get",
-                    params=GetPromptRequestParams(
-                        name="setup-lsp", arguments={"language": "python"}
-                    ),
+        try:
+            set_tools(tools)
+            result = asyncio.run(
+                server.request_handlers[GetPromptRequest](
+                    GetPromptRequest(
+                        method="prompts/get",
+                        params=GetPromptRequestParams(
+                            name="setup-lsp", arguments={"language": "python"}
+                        ),
+                    )
                 )
             )
-        )
-        prompt_result = result.root
-        assert "python" in prompt_result.description
+            prompt_result = result.root
+            assert "python" in prompt_result.description
+        finally:
+            tools.close()
 
     def test_get_prompt_unknown_raises(self):
         """get_prompt for unknown name raises ValueError."""
@@ -4680,16 +4742,19 @@ class TestMCPPrompts:
 
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        with pytest.raises(ValueError, match="Unknown prompt"):
-            asyncio.run(
-                server.request_handlers[GetPromptRequest](
-                    GetPromptRequest(
-                        method="prompts/get",
-                        params=GetPromptRequestParams(name="nonexistent"),
+        try:
+            set_tools(tools)
+            with pytest.raises(ValueError, match="Unknown prompt"):
+                asyncio.run(
+                    server.request_handlers[GetPromptRequest](
+                        GetPromptRequest(
+                            method="prompts/get",
+                            params=GetPromptRequestParams(name="nonexistent"),
+                        )
                     )
                 )
-            )
+        finally:
+            tools.close()
 
 
 class TestMCPCompletions:
@@ -4720,51 +4785,69 @@ class TestMCPCompletions:
         """Completion for review-duplicates focus returns all options."""
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        completion = self._complete(server, "review-duplicates", "focus")
-        assert set(completion.values) == {"all", "source", "tests"}
+        try:
+            set_tools(tools)
+            completion = self._complete(server, "review-duplicates", "focus")
+            assert set(completion.values) == {"all", "source", "tests"}
+        finally:
+            tools.close()
 
     def test_review_duplicates_focus_prefix(self):
         """Completion for review-duplicates focus with prefix filters."""
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        completion = self._complete(server, "review-duplicates", "focus", "s")
-        assert completion.values == ["source"]
+        try:
+            set_tools(tools)
+            completion = self._complete(server, "review-duplicates", "focus", "s")
+            assert completion.values == ["source"]
+        finally:
+            tools.close()
 
     def test_setup_lsp_language_all(self):
         """Completion for setup-lsp language returns all options."""
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        completion = self._complete(server, "setup-lsp", "language")
-        assert len(completion.values) == 7
-        assert "python" in completion.values
-        assert "go_lsp" in completion.values
+        try:
+            set_tools(tools)
+            completion = self._complete(server, "setup-lsp", "language")
+            assert len(completion.values) == 7
+            assert "python" in completion.values
+            assert "go_lsp" in completion.values
+        finally:
+            tools.close()
 
     def test_setup_lsp_language_prefix(self):
         """Completion for setup-lsp language with prefix filters."""
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        completion = self._complete(server, "setup-lsp", "language", "c")
-        assert set(completion.values) == {"c_lsp", "cpp_lsp"}
+        try:
+            set_tools(tools)
+            completion = self._complete(server, "setup-lsp", "language", "c")
+            assert set(completion.values) == {"c_lsp", "cpp_lsp"}
+        finally:
+            tools.close()
 
     def test_unknown_prompt_returns_none(self):
         """Completion for unknown prompt returns empty."""
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        completion = self._complete(server, "nonexistent", "arg")
-        assert completion.values == []
+        try:
+            set_tools(tools)
+            completion = self._complete(server, "nonexistent", "arg")
+            assert completion.values == []
+        finally:
+            tools.close()
 
     def test_unknown_argument_returns_none(self):
         """Completion for unknown argument returns empty."""
         server = create_server()
         tools = CodeStructureTools()
-        set_tools(tools)
-        completion = self._complete(server, "review-duplicates", "nonexistent")
-        assert completion.values == []
+        try:
+            set_tools(tools)
+            completion = self._complete(server, "review-duplicates", "nonexistent")
+            assert completion.values == []
+        finally:
+            tools.close()
 
 
 class TestSetWorkspace:

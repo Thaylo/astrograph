@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-PERSISTENCE_DIR = ".metadata_astrograph"
+from ._paths import get_persistence_path as _get_persistence_path
+
 LSP_BINDINGS_FILENAME = "lsp_bindings.json"
 _SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 _VALIDATION_MODES = frozenset({"production", "bootstrap"})
@@ -182,9 +183,14 @@ def language_variant_policy(language_id: str | None = None) -> dict[str, dict[st
     return {key: dict(value) for key, value in _LANGUAGE_VARIANT_POLICY.items()}
 
 
+def _resolved_validation_mode(mode_override: str | None = None) -> str:
+    """Resolve validation mode from optional override, env, and defaults."""
+    return _normalized_validation_mode_with_override(mode_override)
+
+
 def _normalized_validation_mode() -> str:
     """Resolve runtime validation mode for attach-based endpoints."""
-    return _normalized_validation_mode_with_override(None)
+    return _resolved_validation_mode()
 
 
 def _normalize_validation_mode(value: str | None) -> str | None:
@@ -302,7 +308,7 @@ def _probe_attach_lsp_semantics(
 
     probe = _probe_document(language_id)
     workspace_root = _normalize_workspace_root(workspace)
-    probe_path = workspace_root / PERSISTENCE_DIR / probe["suffix"]
+    probe_path = _get_persistence_path(workspace_root) / probe["suffix"]
     probe_path.parent.mkdir(parents=True, exist_ok=True)
 
     client = SocketLSPClient(parsed[0], request_timeout=timeout)
@@ -537,7 +543,7 @@ def _availability_validation(
     project_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate whether a discovered command should count as usable."""
-    effective_mode = _normalized_validation_mode_with_override(validation_mode)
+    effective_mode = _resolved_validation_mode(validation_mode)
     transport = str(probe.get("transport", "subprocess"))
     endpoint_reachable = bool(probe.get("available", False))
     compile_status = _compile_commands_status(
@@ -943,7 +949,8 @@ def detect_workspace_root() -> Path:
 
 def lsp_bindings_path(workspace: str | Path | None = None) -> Path:
     """Path to persisted LSP binding overrides."""
-    return _normalize_workspace_root(workspace) / PERSISTENCE_DIR / LSP_BINDINGS_FILENAME
+    ws = _normalize_workspace_root(workspace)
+    return _get_persistence_path(ws) / LSP_BINDINGS_FILENAME
 
 
 def parse_command(command: Sequence[str] | str | None) -> list[str]:

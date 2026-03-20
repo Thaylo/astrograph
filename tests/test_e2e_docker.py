@@ -17,9 +17,11 @@ from pathlib import Path
 
 import pytest
 
-# Docker image to test — no default: pytest_configure guards this module so
-# ASTOGRAPH_TEST_IMAGE is always set when tests reach this line.  KeyError is
-# preferable to silently pulling the published production image.
+if not os.environ.get("ASTOGRAPH_TEST_IMAGE"):
+    pytest.skip("Set ASTOGRAPH_TEST_IMAGE to run Docker e2e tests", allow_module_level=True)
+
+# Docker image to test — no default: this module is skipped at import time if
+# ASTOGRAPH_TEST_IMAGE is missing, so this remains explicit and safe.
 DOCKER_IMAGE = os.environ["ASTOGRAPH_TEST_IMAGE"]
 
 
@@ -787,8 +789,6 @@ def pytest_configure(_config):
     machines that would pull and spin up containers, potentially freezing the
     machine.  CI always sets the variable (to a freshly-built local image).
     """
-    if not os.environ.get("ASTOGRAPH_TEST_IMAGE"):
-        pytest.skip("Set ASTOGRAPH_TEST_IMAGE to run Docker e2e tests", allow_module_level=True)
     try:
         subprocess.run(["docker", "--version"], capture_output=True, timeout=5)
     except (subprocess.TimeoutExpired, FileNotFoundError):

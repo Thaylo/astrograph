@@ -324,6 +324,18 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
             )
         )
 
+    @staticmethod
+    def _append_value_signal(
+        signals: list[SemanticSignal],
+        key: str,
+        value: str | float,
+        confidence: float,
+    ) -> None:
+        """Append a scalar semantic signal with AST origin."""
+        signals.append(
+            SemanticSignal(key=key, value=str(value), confidence=confidence, origin="ast")
+        )
+
     def extract_semantic_profile(
         self,
         source: str,
@@ -349,14 +361,7 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
 
         # 2. Annotation density (always emitted)
         density = self._compute_annotation_density(tree)
-        signals.append(
-            SemanticSignal(
-                key="python.type_annotation.density",
-                value=density,
-                confidence=0.85,
-                origin="ast",
-            )
-        )
+        self._append_value_signal(signals, "python.type_annotation.density", density, 0.85)
         extra_coverage += 0.10
 
         # 3. Decorators
@@ -367,13 +372,11 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
 
         # 4. Async constructs (always emitted)
         has_async = self._detect_async_constructs(tree)
-        signals.append(
-            SemanticSignal(
-                key="python.async.present",
-                value="yes" if has_async else "no",
-                confidence=0.95,
-                origin="ast",
-            )
+        self._append_value_signal(
+            signals,
+            "python.async.present",
+            "yes" if has_async else "no",
+            0.95,
         )
         extra_coverage += 0.10
 
@@ -381,27 +384,13 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
         plus_result = self._infer_plus_binding(tree)
         if plus_result is not None:
             binding, confidence = plus_result
-            signals.append(
-                SemanticSignal(
-                    key="python.plus_binding",
-                    value=binding,
-                    confidence=confidence,
-                    origin="ast",
-                )
-            )
+            self._append_value_signal(signals, "python.plus_binding", binding, confidence)
             extra_coverage += 0.15
 
         # 6. Class style
         class_style = self._detect_class_style(tree)
         if class_style is not None:
-            signals.append(
-                SemanticSignal(
-                    key="python.class_style",
-                    value=class_style,
-                    confidence=0.9,
-                    origin="ast",
-                )
-            )
+            self._append_value_signal(signals, "python.class_style", class_style, 0.9)
             extra_coverage += 0.10
 
         # 7. Pattern matching (always emitted, Python 3.10+)
@@ -410,13 +399,11 @@ class PythonLSPPlugin(ConfiguredLSPLanguagePluginBase):
             if hasattr(ast, "Match")
             else False
         )
-        signals.append(
-            SemanticSignal(
-                key="python.pattern_matching.present",
-                value="yes" if has_match else "no",
-                confidence=0.95,
-                origin="ast",
-            )
+        self._append_value_signal(
+            signals,
+            "python.pattern_matching.present",
+            "yes" if has_match else "no",
+            0.95,
         )
         extra_coverage += 0.05
 
