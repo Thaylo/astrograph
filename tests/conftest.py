@@ -27,6 +27,19 @@ def _safe_test_runtime(monkeypatch):
         monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
         monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
         yield
+        # Reset singletons to prevent cross-test resource leaks
+        import contextlib
+
+        from astrograph.tools import CodeStructureTools
+        from astrograph.watcher import WatcherGovernor
+
+        with CodeStructureTools._live_lock:
+            live = CodeStructureTools._live_instance
+            CodeStructureTools._live_instance = None
+        if live is not None:
+            with contextlib.suppress(Exception):
+                live.close()
+        WatcherGovernor.reset()
         shutil.rmtree(home, ignore_errors=True)
 
 

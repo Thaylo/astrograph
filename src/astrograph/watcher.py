@@ -82,6 +82,12 @@ class WatcherGovernor:
         with cls._lock:
             return len(cls._active_roots)
 
+    @classmethod
+    def reset(cls) -> None:
+        """Clear all watcher slots (for test isolation)."""
+        with cls._lock:
+            cls._active_roots.clear()
+
 
 def _should_skip_path(path: Path) -> bool:
     """Check if a path should be skipped based on directory names."""

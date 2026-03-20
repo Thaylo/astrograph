@@ -189,6 +189,12 @@ class CodeStructureTools(CloseOnExitMixin):
     _MIN_BLOCK_DUPLICATE_NODES = 10  # Reduce noisy tiny if/for block duplicates
     _MIN_BLOCK_DUPLICATE_LINES = 3  # Treat 1-2 line guards as acceptable repetition
 
+    # Singleton — only one production instance should be alive at a time.
+    # Creating a new production instance auto-closes the previous one,
+    # preventing leaked watchers, threads, and SQLite connections.
+    _live_instance: CodeStructureTools | None = None
+    _live_lock = threading.Lock()
+
     def __init__(
         self,
         index: CodeStructureIndex | None = None,
@@ -198,13 +204,26 @@ class CodeStructureTools(CloseOnExitMixin):
 
         Args:
             index: Optional pre-existing index (for testing only).
+                   Test instances bypass singleton tracking.
         """
         self._event_driven_index: EventDrivenIndex | None = None
 
         if index is not None:
-            # Testing path: use provided index directly without event-driven wrapper
+            # Testing path: lightweight, no singleton tracking
             self.index = index
         else:
+            # Production path: enforce singleton, auto-close previous instance
+            with CodeStructureTools._live_lock:
+                prev = CodeStructureTools._live_instance
+                CodeStructureTools._live_instance = self
+            if prev is not None and prev is not self:
+                try:
+                    prev.close()
+                except Exception:
+                    logger.debug(
+                        "Error closing previous CodeStructureTools instance", exc_info=True
+                    )
+
             self._event_driven_index = EventDrivenIndex(
                 persistence_path=None,  # Set during index_codebase
                 watch_enabled=_default_watch_enabled(),
@@ -2645,8 +2664,19 @@ class CodeStructureTools(CloseOnExitMixin):
 
     def close(self) -> None:
         """Clean up resources (file watchers, database connections)."""
+        with CodeStructureTools._live_lock:
+            if CodeStructureTools._live_instance is self:
+                CodeStructureTools._live_instance = None
         self._wait_for_background_index()
         self._close_event_driven_index()
+
+    @classmethod
+    def get_instance(cls) -> CodeStructureTools:
+        """Get the singleton instance, creating one if needed."""
+        with cls._live_lock:
+            if cls._live_instance is not None:
+                return cls._live_instance
+        return cls()
 
     def get_event_driven_stats(self) -> dict | None:
         """Get event-driven mode statistics (returns None if no event-driven index)."""

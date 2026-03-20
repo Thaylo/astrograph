@@ -46,8 +46,8 @@ from . import __version__
 from .stdio_transport import dual_stdio_server
 from .tools import CodeStructureTools
 
-# Global tools instance
-_tools = CodeStructureTools()
+# Global tools instance (singleton — only one alive at a time)
+_tools = CodeStructureTools.get_instance()
 
 
 def get_tools() -> CodeStructureTools:
@@ -56,7 +56,7 @@ def get_tools() -> CodeStructureTools:
 
 
 def set_tools(tools: CodeStructureTools) -> None:
-    """Set the global tools instance (for testing)."""
+    """Replace the global tools instance (for testing)."""
     global _tools
     _tools = tools
 

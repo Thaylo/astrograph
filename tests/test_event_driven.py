@@ -930,6 +930,47 @@ class TestEventDrivenTools:
         assert tools._event_driven_index is not None
         tools.close()
 
+    def test_singleton_auto_closes_previous(self):
+        """Creating a new production instance auto-closes the previous one."""
+        tools1 = CodeStructureTools()
+        edi1 = tools1._event_driven_index
+        assert edi1 is not None
+
+        # Second instance should auto-close tools1
+        tools2 = CodeStructureTools()
+        assert CodeStructureTools._live_instance is tools2
+
+        # tools1's EDI should have been closed (shutdown set)
+        assert edi1._shutdown.is_set()
+
+        tools2.close()
+
+    def test_singleton_get_instance_reuses(self):
+        """get_instance() returns existing instance if alive."""
+        tools1 = CodeStructureTools()
+        tools2 = CodeStructureTools.get_instance()
+        assert tools1 is tools2
+        tools1.close()
+
+    def test_singleton_get_instance_creates_if_none(self):
+        """get_instance() creates new instance if none alive."""
+        instance = CodeStructureTools.get_instance()
+        assert instance is not None
+        assert CodeStructureTools._live_instance is instance
+        instance.close()
+
+    def test_test_instances_bypass_singleton(self):
+        """Instances with index= bypass singleton tracking."""
+        from astrograph.index import CodeStructureIndex
+
+        prod = CodeStructureTools()
+        CodeStructureTools(index=CodeStructureIndex())
+
+        # Singleton should still point to prod, not test instance
+        assert CodeStructureTools._live_instance is prod
+
+        prod.close()
+
     def test_event_driven_index_codebase(self):
         """Test indexing codebase."""
         with tempfile.TemporaryDirectory() as tmpdir:
