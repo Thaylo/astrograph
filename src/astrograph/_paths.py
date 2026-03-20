@@ -36,7 +36,10 @@ def _get_data_dir() -> Path:
 
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg:
-        return Path(xdg) / "astrograph"
+        xdg_path = Path(xdg)
+        if xdg_path.is_absolute():
+            return xdg_path / "astrograph"
+        logger.warning("XDG_DATA_HOME is not absolute, ignoring: %s", xdg)
 
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "astrograph"
@@ -67,6 +70,8 @@ def get_persistence_path(indexed_path: str | Path) -> Path:
 
     Automatically migrates from the legacy in-project location on first access.
     """
+    if not indexed_path or not str(indexed_path).strip():
+        raise ValueError("indexed_path must not be empty")
     base = Path(indexed_path).resolve()
     if base.is_file():
         base = base.parent

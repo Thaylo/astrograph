@@ -84,8 +84,16 @@ class WatcherGovernor:
 
     @classmethod
     def reset(cls) -> None:
-        """Clear all watcher slots (for test isolation)."""
+        """Clear all watcher slots (for test isolation).
+
+        Only safe when no watchers are actively running.
+        """
         with cls._lock:
+            if cls._active_roots:
+                logger.debug(
+                    "WatcherGovernor.reset() clearing %d active slot(s)",
+                    len(cls._active_roots),
+                )
             cls._active_roots.clear()
 
 
@@ -139,6 +147,7 @@ class DebouncedCallback:
 
     def _run(self) -> None:
         """Worker loop to execute debounced callbacks without spawning threads."""
+        due_paths: list[str] = []
         while True:
             with self._cv:
                 if not self._running and not self._pending:

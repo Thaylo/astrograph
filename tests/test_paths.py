@@ -26,6 +26,13 @@ class TestGetDataDir:
         monkeypatch.setenv("XDG_DATA_HOME", "/xdg/share")
         assert _get_data_dir() == Path("/xdg/share/astrograph")
 
+    def test_xdg_data_home_relative_ignored(self, monkeypatch):
+        """Relative XDG_DATA_HOME violates spec and is ignored."""
+        monkeypatch.delenv("ASTROGRAPH_DATA_DIR", raising=False)
+        monkeypatch.setenv("XDG_DATA_HOME", "relative/path")
+        result = _get_data_dir()
+        assert result.is_absolute()
+
     def test_darwin_default(self, monkeypatch):
         monkeypatch.delenv("ASTROGRAPH_DATA_DIR", raising=False)
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
@@ -138,6 +145,18 @@ class TestGetPersistencePath:
             result = get_persistence_path(tmpdir)
             assert tmpdir not in str(result)
             assert "astrograph" in str(result)
+
+    def test_empty_path_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            get_persistence_path("")
+
+    def test_whitespace_path_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            get_persistence_path("   ")
 
     def test_file_path_uses_parent(self):
         with tempfile.TemporaryDirectory() as tmpdir:

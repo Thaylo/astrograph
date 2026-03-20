@@ -193,7 +193,7 @@ class CodeStructureTools(CloseOnExitMixin):
     # Creating a new production instance auto-closes the previous one,
     # preventing leaked watchers, threads, and SQLite connections.
     _live_instance: CodeStructureTools | None = None
-    _live_lock = threading.Lock()
+    _live_lock = threading.RLock()
 
     def __init__(
         self,
@@ -216,13 +216,14 @@ class CodeStructureTools(CloseOnExitMixin):
             with CodeStructureTools._live_lock:
                 prev = CodeStructureTools._live_instance
                 CodeStructureTools._live_instance = self
-            if prev is not None and prev is not self:
-                try:
-                    prev.close()
-                except Exception:
-                    logger.debug(
-                        "Error closing previous CodeStructureTools instance", exc_info=True
-                    )
+                if prev is not None and prev is not self:
+                    try:
+                        prev.close()
+                    except Exception:
+                        logger.debug(
+                            "Error closing previous CodeStructureTools instance",
+                            exc_info=True,
+                        )
 
             self._event_driven_index = EventDrivenIndex(
                 persistence_path=None,  # Set during index_codebase
@@ -239,6 +240,7 @@ class CodeStructureTools(CloseOnExitMixin):
         self._bg_index_done = threading.Event()
         self._bg_index_done.set()  # Initially "done" (no background work)
         self._bg_index_progress: str = ""
+        self._bg_index_error: str | None = None
         # Serialize mutating tool calls for shared-agent/container deployments.
         self._mutation_lock = threading.RLock()
 
