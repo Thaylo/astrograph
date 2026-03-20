@@ -2238,10 +2238,11 @@ class TestLSPSetupTool:
         assert "servers" in payload
         assert "bindings" in payload
         assert "agent_directive" in payload
-        assert "recommended_actions" in payload
-        assert isinstance(payload["recommended_actions"], list)
-        assert "language_variant_policy" in payload
-        assert "version_status" in payload["servers"][0]
+        assert "actions" in payload
+        assert isinstance(payload["actions"], list)
+        # Compact format: servers have language/available/transport/state
+        assert "language" in payload["servers"][0]
+        assert "available" in payload["servers"][0]
 
     def test_lsp_setup_inspect_scoped_language(self, tools):
         payload = json.loads(tools.lsp_setup(mode="inspect", language="cpp_lsp").text)
@@ -2249,14 +2250,7 @@ class TestLSPSetupTool:
         assert payload["ok"] is True
         assert payload["scope_language"] == "cpp_lsp"
         assert [status["language"] for status in payload["servers"]] == ["cpp_lsp"]
-        assert payload["recommended_actions"][0]["arguments"]["language"] == "cpp_lsp"
-        assert all(
-            step["arguments"].get("language") == "cpp_lsp" for step in payload["resolution_loop"]
-        )
-        assert all(
-            action.get("language") in (None, "cpp_lsp") for action in payload["recommended_actions"]
-        )
-        assert set(payload["language_variant_policy"]) == {"cpp_lsp"}
+        assert payload["actions"][0]["args"]["language"] == "cpp_lsp"
 
     def test_lsp_setup_inspect_rejects_unknown_language(self, tools):
         payload = json.loads(tools.lsp_setup(mode="inspect", language="rust_lsp").text)
@@ -2319,7 +2313,7 @@ class TestLSPSetupTool:
             )
             payload = json.loads(result.text)
             assert any(change["language"] == "python" for change in payload["changes"])
-            assert "recommended_actions" in payload
+            assert "actions" in payload
             assert payload["agent_directive"]
             tools.close()
 
@@ -2351,11 +2345,8 @@ class TestLSPSetupTool:
 
             assert payload["scope_language"] == "python"
             assert payload["scope_languages"] == ["python"]
-            assert all(status["language"] == "python" for status in payload["statuses"])
-            assert payload["recommended_actions"][0]["arguments"]["language"] == "python"
-            assert all(
-                step["arguments"].get("language") == "python" for step in payload["resolution_loop"]
-            )
+            assert all(status["language"] == "python" for status in payload["servers"])
+            assert payload["actions"][0]["args"]["language"] == "python"
             tools.close()
 
     def test_lsp_setup_recommended_actions_include_docker_host_alias(self, tools):
